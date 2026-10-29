@@ -48,7 +48,7 @@ LLAMA_SWAP_URL=http://localhost:8080
 # LLAMA_SWAP_API_KEY=
 
 # --- GPU ---
-VRAM_LIMIT_GB=16
+VRAM_LIMIT_GB=16        #Fall Back VRAM limit in case it cant get this data from the GPU
 # GPU_INDEX=0            # Benchmark one GPU only. Empty = aggregate all GPUs.
 GPU_POLL_MS=200
 
@@ -98,6 +98,8 @@ If you want to test the dashboard generation without running models, you can bui
 python benchmark.py --demo
 ```
 
+If python doesnt work, try  python3
+
 ## 📊 Outputs
 
 All results are saved to the directory specified in `OUTPUT_DIR` (default: `./results`).
@@ -107,7 +109,7 @@ All results are saved to the directory specified in `OUTPUT_DIR` (default: `./re
 * `benchmark_report.md`: A summarized Markdown report detailing the top 3 models and full dataset comparisons.
 
 ## Reference
-[lamma-swap] (https://github.com/mostlygeek/llama-swap)
+[llama-swap] (https://github.com/mostlygeek/llama-swap)
 
 ## Dashboard example
 
