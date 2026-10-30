@@ -4,7 +4,7 @@ An automated, real-load benchmark for LLMs served by [llama-swap](https://github
 
 For every model on your server it measures generation speed (Technical + Logic prompts), prefill speed, load time, Time To First Token (TTFT), prompt-cache efficiency and context size, while tracking GPU power, VRAM, temperature and CPU power. From those it derives energy per token, efficiency and (optionally) electricity cost, then builds a self-contained interactive dashboard.
 
-![Llama-swap Benchmark Dashboard](image_016cc2.png)
+<img width="1581" height="649" alt="d1" src="https://github.com/user-attachments/assets/3ef8bbda-d3db-4583-8ed6-fcf3fd3f0a47" />
 
 ## 📦 Features
 
@@ -187,4 +187,14 @@ All results are saved to `OUTPUT_DIR` (default: `results/` next to the script).
 
 ## Dashboard Example
 
+<img width="1581" height="707" alt="d5" src="https://github.com/user-attachments/assets/df4ffbff-0d42-4b8d-a99c-19cc768a0739" />
 
+<img width="1581" height="707" alt="d6" src="https://github.com/user-attachments/assets/35c8544e-a4ad-47aa-a9db-5297e12a695c" />
+
+<img width="1581" height="730" alt="d2" src="https://github.com/user-attachments/assets/50767d75-53b0-4490-8cae-a0bb4864a7b0" />
+
+<img width="1581" height="696" alt="d3" src="https://github.com/user-attachments/assets/72eda03f-dcc0-45c3-8816-5868ee159282" />
+
+<img width="1581" height="813" alt="d4" src="https://github.com/user-attachments/assets/5c485f6e-0bf7-4c67-a1d0-963439c9aa0c" />
+
+htmlpreview.github.io/?[https://github.com/Maximo101/llama-swap-llm-benchmark/blob/main/examples/benchmark_dashboard.html](https://github.com/Maximo101/llama-swap-llm-benchmark/blob/main/examples/benchmark_dashboard.html)
