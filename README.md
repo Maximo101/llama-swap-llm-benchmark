@@ -196,5 +196,3 @@ All results are saved to `OUTPUT_DIR` (default: `results/` next to the script).
 <img width="1581" height="696" alt="d3" src="https://github.com/user-attachments/assets/72eda03f-dcc0-45c3-8816-5868ee159282" />
 
 <img width="1581" height="813" alt="d4" src="https://github.com/user-attachments/assets/5c485f6e-0bf7-4c67-a1d0-963439c9aa0c" />
-
-[View Live Dashboard Preview](https://htmlpreview.github.io/?https://raw.githubusercontent.com/Maximo101/llama-swap-llm-benchmark/main/examples/benchmark_dashboard.html)
