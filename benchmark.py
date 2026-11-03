@@ -33,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -111,8 +112,24 @@ class Config:
     hw_cpu: str | None
     hw_ram: str | None
     hw_gpu: str | None
+    strata_url: str | None
+    strata_api_key: str | None
+    strata_model: str | None
+    strata_params_b: float | None
+    strata_active_b: float | None
+    strata_quant: str | None
+    strata_ctx: int | None
+    goldilocks_vram_only: bool
+    ram_process_pattern: str
+    ram_poll_ms: int
+    spill_threshold_gb: float
+    ram_overhead_gb: float | None
     tech_prompt: str
     logic_prompt: str
+    backend: str = "llama-swap"       # set at run time: "llama-swap" or "strata"
+    strata_model_id: str | None = None      # id reported by Strata's /v1/models
+    strata_ctx_detected: int | None = None  # context size read from Strata's API
+    strata_details: list | None = None      # [[endpoint, [[key, value], ...]], ...] for the dashboard
 
     @property
     def chat_url(self): return f"{self.base_url}/v1/chat/completions"
@@ -160,6 +177,18 @@ def load_config() -> Config:
         rate_offpeak=_env("ELECTRICITY_RATE_OFFPEAK", None, float),
         currency=_env("CURRENCY_SYMBOL", "$"),
         hw_cpu=_env("HW_CPU"), hw_ram=_env("HW_RAM"), hw_gpu=_env("HW_GPU"),
+        strata_url=(_env("STRATA_URL") or _env("STRATA_SWAP_URL") or "").rstrip("/") or None,
+        strata_api_key=_env("STRATA_API_KEY"),
+        strata_model=_env("STRATA_MODEL"),
+        strata_params_b=_env("STRATA_PARAMS_B", None, float),
+        strata_active_b=_env("STRATA_ACTIVE_B", None, float),
+        strata_quant=_env("STRATA_QUANT"),
+        strata_ctx=_env("STRATA_CTX", None, int),
+        goldilocks_vram_only=_env("GOLDILOCKS_VRAM_ONLY", False, bool),
+        ram_process_pattern=_env("RAM_PROCESS_PATTERN", "llama-server"),
+        ram_poll_ms=max(200, _env("RAM_POLL_MS", 500, int)),
+        spill_threshold_gb=_env("RAM_SPILL_THRESHOLD_GB", 2.0, float),
+        ram_overhead_gb=_env("RAM_OVERHEAD_GB", None, float),
         tech_prompt=_env("TECH_PROMPT", "Explain quantum computing in 3 sentences."),
         logic_prompt=_env("LOGIC_PROMPT", "Outline a 101 Biology textbook. Give 2 experiments and a 3-question quiz."),
     )
@@ -321,6 +350,7 @@ class HostMeter:
     RAPL energy_uj is often root-only; run as root (e.g. the Unraid terminal) or relax permissions."""
 
     def __init__(self, cfg):
+        self.ram = RamSampler(cfg)
         self.domains = []
         for d in sorted(Path(cfg.rapl_path).glob("intel-rapl:*")):
             if re.fullmatch(r"intel-rapl:\d+", d.name):     # package domains only, no sub-zones
@@ -350,6 +380,14 @@ class HostMeter:
         except (OSError, ValueError, KeyError):
             return None
 
+    @staticmethod
+    def _mem_total_gb():
+        try:
+            m = dict(l.split(":") for l in Path("/proc/meminfo").read_text().splitlines() if ":" in l)
+            return float(m["MemTotal"].split()[0]) / 1024 ** 2
+        except (OSError, ValueError, KeyError):
+            return None
+
     def snap(self):
         energy = []
         for path, mx in self.domains:
@@ -370,6 +408,166 @@ class HostMeter:
             out["cpu_util"] = 100 * (1 - (b["stat"][1] - a["stat"][1]) / (b["stat"][0] - a["stat"][0]))
         out["sys_mem_gb"] = self._mem_gb()
         return out
+
+
+def parse_launch_args(argv) -> dict:
+    """Read the llama-server launch flags that decide what lives in system RAM instead of VRAM."""
+    toks = []
+    for a in argv:
+        toks.extend(a.split("=", 1) if a.startswith("--") and "=" in a else [a])
+    info = {"ngl": None, "n_cpu_moe": None, "cpu_moe": False, "no_kv_offload": False, "ot_cpu": False, "ctx": None}
+    for i, a in enumerate(toks):
+        nxt = toks[i + 1] if i + 1 < len(toks) else ""
+        try:
+            if a in ("-ngl", "--n-gpu-layers", "--gpu-layers"):
+                info["ngl"] = 999 if nxt.lower() == "all" else int(nxt)
+            elif a in ("--n-cpu-moe", "-ncmoe"):
+                info["n_cpu_moe"] = int(nxt)
+            elif a in ("--cpu-moe", "-cmoe"):
+                info["cpu_moe"] = True
+            elif a in ("--no-kv-offload", "-nkvo"):
+                info["no_kv_offload"] = True
+            elif a in ("-ot", "--override-tensor"):
+                info["ot_cpu"] = info["ot_cpu"] or "cpu" in nxt.lower()
+            elif a in ("-c", "--ctx-size"):
+                info["ctx"] = int(nxt)
+        except ValueError:
+            pass
+    return info
+
+
+def offload_summary(info) -> str:
+    """Human-readable list of CPU-offload flags; '' means the model was launched fully on the GPU."""
+    parts = []
+    if info["n_cpu_moe"]:
+        parts.append(f"n-cpu-moe {info['n_cpu_moe']}")
+    if info["cpu_moe"]:
+        parts.append("cpu-moe")
+    if info["ngl"] is not None and info["ngl"] < 99:
+        parts.append(f"ngl {info['ngl']}")
+    if info["no_kv_offload"]:
+        parts.append("KV on CPU")
+    if info["ot_cpu"]:
+        parts.append("override-tensor CPU")
+    return ", ".join(parts)
+
+
+def find_listener_pids(port) -> set:
+    """PIDs of processes LISTENing on a TCP port, whatever they are called (needs root to see other users' fds)."""
+    inodes = set()
+    for f in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(f).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            parts = line.split()
+            if len(parts) > 9 and parts[3] == "0A" and int(parts[1].rsplit(":", 1)[1], 16) == port:
+                inodes.add(parts[9])
+    pids = set()
+    if not inodes:
+        return pids
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            for fd in os.listdir(f"/proc/{d}/fd"):
+                try:
+                    link = os.readlink(f"/proc/{d}/fd/{fd}")
+                except OSError:
+                    continue
+                if link.startswith("socket:[") and link[8:-1] in inodes:
+                    pids.add(int(d))
+                    break
+        except OSError:
+            continue
+    return pids
+
+
+class RamSampler(threading.Thread):
+    """Every RAM_POLL_MS: system RAM in use (MemTotal - MemAvailable, the figure htop / Home Assistant show)
+    and the resident memory (RSS) of the inference-server process(es), matched by executable name
+    (RAM_PROCESS_PATTERN). The process RSS is the best available estimate of how much of the model and
+    cache lives in system RAM instead of VRAM. Processes in Docker are visible from the host's /proc."""
+
+    def __init__(self, cfg):
+        super().__init__(daemon=True)
+        self.interval = cfg.ram_poll_ms / 1000
+        self.pattern = re.compile(cfg.ram_process_pattern)
+        self.page = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
+        self.samples, self.pids, self._scanned = [], set(), 0.0
+        self.listen_port = None      # set in Strata mode: find the server by the port it listens on
+        self._halt, self._lock = threading.Event(), threading.Lock()
+
+    def find_processes(self) -> set:
+        if self.listen_port:      # Strata: no known executable name, so use the listening socket
+            def comm(p):
+                try:
+                    return Path(f"/proc/{p}/comm").read_text().strip()
+                except OSError:
+                    return ""
+            pids = {p for p in find_listener_pids(self.listen_port) if comm(p) != "docker-proxy"}
+            if pids:
+                return pids
+        found = set()
+        try:
+            names = os.listdir("/proc")
+        except OSError:
+            return found
+        for d in names:
+            if not d.isdigit() or int(d) == os.getpid():
+                continue
+            try:
+                argv0 = Path(f"/proc/{d}/cmdline").read_bytes().split(b"\0")[0].decode("utf-8", "ignore")
+            except OSError:
+                continue
+            if argv0 and self.pattern.search(os.path.basename(argv0)):
+                found.add(int(d))
+        return found
+
+    def launch_info(self):
+        """Launch flags of the (largest) inference-server process, or None if unreadable."""
+        with self._lock:
+            pids = list(self.pids)
+        best = max(pids, key=lambda p: self.rss_gb([p]) or 0, default=None)
+        if best is None:
+            return None
+        try:
+            argv = Path(f"/proc/{best}/cmdline").read_bytes().decode("utf-8", "ignore").split("\0")
+        except OSError:
+            return None
+        return parse_launch_args([a for a in argv[1:] if a])
+
+    def rescan(self):
+        found = self.find_processes()
+        with self._lock:
+            self.pids, self._scanned = found, time.time()
+
+    def rss_gb(self, pids=None):
+        with self._lock:
+            pids = list(self.pids) if pids is None else pids
+        total, seen = 0, False
+        for pid in pids:
+            try:
+                total += int(Path(f"/proc/{pid}/statm").read_text().split()[1]) * self.page
+                seen = True
+            except (OSError, ValueError, IndexError):
+                with self._lock:
+                    self.pids.discard(pid)
+        return total / 1024 ** 3 if seen else None
+
+    def run(self):
+        while not self._halt.is_set():
+            if time.time() - self._scanned > 3:
+                self.rescan()
+            self.samples.append((time.time(), {"ram_gb": HostMeter._mem_gb(), "proc_gb": self.rss_gb()}))
+            self._halt.wait(self.interval)
+
+    def window(self, t0, t1):
+        got = [s for t, s in self.samples if t0 <= t <= t1]
+        return got or ([self.samples[-1][1]] if self.samples else [])
+
+    def stop(self): self._halt.set()
 
 
 class HaCpuPoller(threading.Thread):
@@ -414,6 +612,9 @@ def post_chat(cfg, session, payload, timeout):
         if resp.status_code == 503 and attempt < cfg.retries:
             time.sleep(2)
             continue
+        if resp.status_code in (401, 403):
+            raise BenchError(f"HTTP {resp.status_code}: authentication failed - check the API key for "
+                             f"{cfg.backend} ({resp.text[:120]})")
         if resp.status_code == 404:
             raise BenchError("model not found (404)")
         if resp.status_code >= 400:
@@ -440,10 +641,117 @@ _VOCAB = ("river stone copper window engine garden signal marble orbit harvest p
           "mirror falcon cobalt prairie summit voyage lattice monsoon plume fabric glacier beacon").split()
 
 
+_STRATA_PATHS = ["/api/about", "/api/info", "/api/status", "/api/stats", "/api/system", "/api/monitor",
+                 "/api/model", "/api/models", "/api/config", "/api/props", "/api/hardware", "/api/version",
+                 "/props", "/health", "/v1/models"]
+# Never call anything that could change state or expose chats, even with GET.
+_STRATA_SKIP = re.compile(r"unload|load|stop|shutdown|delete|reset|clear|restart|kill|chat|complet|messages|"
+                          r"embed|history|conversation|session|log|stream|event|request", re.I)
+_STRATA_INFO = re.compile(r"about|info|model|system|config|status|health|version|props|hardware|engine", re.I)
+
+
+def strata_discover(cfg, session) -> dict:
+    """Find what Strata's own web UI reads: endpoints referenced in its JavaScript plus common guesses.
+    GET only, state-changing / chat endpoints are skipped. Returns {path: json | {'_status': code}}."""
+    from urllib.parse import urljoin
+    paths = list(_STRATA_PATHS)
+    try:
+        html = session.get(cfg.strata_url + "/", timeout=5).text
+        for src in re.findall(r'(?:src|href)=["\']([^"\']+\.js)["\']', html)[:8]:
+            js = session.get(urljoin(cfg.strata_url + "/", src), timeout=10).text
+            for m in re.findall(r'["\'`](/(?:api|v1)/[A-Za-z0-9_\-/]+)["\'`]', js) + \
+                     re.findall(r'fetch\(\s*["\'`](/[A-Za-z0-9_\-/]+)["\'`]', js):
+                if m not in paths:
+                    paths.append(m)
+    except requests.RequestException:
+        pass
+    found = {}
+    for path in paths[:40]:
+        if path != "/v1/models" and _STRATA_SKIP.search(path):
+            continue
+        try:
+            r = session.get(cfg.strata_url + path, timeout=5)
+        except requests.RequestException:
+            continue
+        if r.status_code >= 400:
+            found[path] = {"_status": r.status_code}
+            continue
+        try:
+            found[path] = r.json()
+        except ValueError:
+            found[path] = {"_text": r.text[:500]}
+    return found
+
+
+def _scalars(obj, prefix="", out=None, depth=0):
+    out = out if out is not None else []
+    if len(out) >= 60 or depth > 4:
+        return out
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            _scalars(v, f"{prefix}.{k}" if prefix else str(k), out, depth + 1)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj[:6]):
+            _scalars(v, f"{prefix}[{i}]", out, depth + 1)
+    elif isinstance(obj, (str, int, float, bool)) and not (isinstance(obj, str) and len(obj) > 120):
+        out.append([prefix, obj])
+    return out
+
+
+def strata_details(found: dict) -> list:
+    """Scalar values from the info-like endpoints, for the dashboard's 'Strata details' panel."""
+    out = []
+    for path, data in found.items():
+        if path.startswith("/v1/") or not _STRATA_INFO.search(path) or not isinstance(data, dict) or "_status" in data:
+            continue
+        rows = _scalars(data)
+        if rows:
+            out.append([path, rows])
+    return out
+
+
+def ctx_from_details(details):
+    """Context size (tokens) from Strata's info endpoints, if a plausible field is present."""
+    pat = re.compile(r"(?:^|\.)(?:n_ctx|ctx_size|ctx|context_size|context_length|context_tokens|context|max_context)$", re.I)
+    for _, rows in details or []:
+        for k, v in rows:
+            if pat.search(k) and isinstance(v, (int, float)) and 512 <= v <= 4_194_304:
+                return int(v)
+    return None
+
+
+def probe_strata(cfg):
+    """--probe-strata: list what Strata's API exposes and save the raw JSON for inspection."""
+    if not cfg.strata_url:
+        sys.exit("[error] Set STRATA_URL in .env first.")
+    cfg.backend, cfg.base_url = "strata", cfg.strata_url
+    found = strata_discover(cfg, make_session(cfg, "strata"))
+    for path, data in found.items():
+        if isinstance(data, dict) and "_status" in data:
+            print(f"  GET {path} -> HTTP {data['_status']}")
+        else:
+            keys = list(data)[:14] if isinstance(data, dict) else f"list of {len(data)}"
+            print(f"  GET {path} -> OK, {keys}")
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    path = cfg.output_dir / "strata_probe.json"
+    text = json.dumps(found, indent=1)
+    path.write_text(text if len(text) < 300_000 else text[:300_000], encoding="utf-8")
+    print(f"\nRaw responses saved to {path}. Review it before sharing; it is data from your Strata server.")
+
+
 def get_ctx(cfg, session, model):
     """Active context size (tokens) of the loaded model. Primary: llama-server's /props, reached
     through llama-swap's /upstream/<model>/ route. Fallback: a -c/--ctx-size flag in /running (if shown)."""
     from urllib.parse import quote
+    if cfg.backend == "strata":
+        if cfg.strata_ctx or cfg.strata_ctx_detected:
+            return cfg.strata_ctx or cfg.strata_ctx_detected
+        try:   # works if Strata is a llama-server; otherwise set STRATA_CTX
+            j = session.get(f"{cfg.base_url}/props", timeout=10).json()
+            n = (j.get("default_generation_settings") or {}).get("n_ctx") or j.get("n_ctx")
+            return int(n) if n else None
+        except (requests.RequestException, ValueError, AttributeError):
+            return None
     try:
         r = session.get(f"{cfg.base_url}/upstream/{quote(model, safe='')}/props", timeout=10)
         if r.ok:
@@ -499,6 +807,7 @@ def measure(cfg, session, gpu, host, ha, model, prompt, max_tokens, timeout, cac
         raise BenchError("could not determine tokens/sec")
 
     g = gpu.window(t0, t1)
+    rw = host.ram.window(t0, t1)
     h = host.diff(a, b)
     cpu_w = h.get("cpu_w")
     if cpu_w is None and ha:
@@ -512,7 +821,8 @@ def measure(cfg, session, gpu, host, ha, model, prompt, max_tokens, timeout, cac
             "gpu_w": gpu_w, "gpu_peak_w": _max(_col(g, "gpu_w")), "gpu_util": _avg(_col(g, "gpu_util")),
             "gpu_temp": _max(_col(g, "gpu_temp")), "vram_gb": _max(_col(g, "vram_gb")),
             "vram_total_gb": _max(_col(g, "vram_total_gb")),
-            "cpu_w": cpu_w, "cpu_util": h.get("cpu_util"), "sys_mem_gb": h.get("sys_mem_gb")}
+            "cpu_w": cpu_w, "cpu_util": h.get("cpu_util"),
+            "ram_gb": _max(_col(rw, "ram_gb")), "proc_gb": _max(_col(rw, "proc_gb"))}
 
 
 def cache_test(cfg, session, gpu, host, ha, model) -> dict:
@@ -532,10 +842,11 @@ def cache_test(cfg, session, gpu, host, ha, model) -> dict:
 # Per-model benchmark and post-processing
 # --------------------------------------------------------------------------- #
 
-FIELDS = ["timestamp", "model", "status", "error", "params_b", "active_b", "arch", "quant", "ctx_size", "load_s",
+FIELDS = ["timestamp", "model", "status", "error", "params_b", "active_b", "arch", "offload", "quant", "ctx_size", "load_s",
           "tech_tps", "logic_tps", "avg_tps", "prefill_tps", "prefill_tokens", "cache_hit_pct", "cache_speedup",
           "ttft_ms", "gen_ms", "latency_s", "gpu_w", "gpu_peak_w", "idle_gpu_w", "gpu_util", "gpu_temp",
-          "vram_gb", "vram_delta_gb", "vram_total_gb", "vram_pct", "cpu_w", "cpu_util", "sys_mem_gb",
+          "vram_gb", "vram_delta_gb", "vram_total_gb", "vram_pct", "cpu_w", "cpu_util",
+          "ram_total_gb", "ram_used_gb", "ram_pct", "ram_idle_gb", "ram_delta_gb", "ram_proc_gb", "ram_spill_gb", "ram_overhead_gb",
           "energy_wh", "j_per_token", "cost_1m_peak", "cost_1m_off", "cost_1kq_peak", "cost_1kq_off",
           "tps_per_watt", "goldilocks", "eligible"]
 
@@ -549,27 +860,40 @@ def blank(name):
 
 def bench_model(cfg, session, gpu, host, ha, model, unload_state) -> dict:
     r = blank(model)
+    strata = cfg.backend == "strata"
+    if strata:      # no filename to parse, so take the model facts from .env
+        r.update(params_b=cfg.strata_params_b, active_b=cfg.strata_active_b,
+                 quant=cfg.strata_quant or parse_quant(cfg.strata_model_id or model))
     try:
-        # 1. clean slate + idle baseline, so VRAM / power can be attributed to this model
-        unloaded = unload_all(cfg, session)
-        if not unloaded and not unload_state["warned"]:
+        # 1. clean slate + idle baseline, so VRAM / power can be attributed to this model.
+        #    Strata serves one always-loaded model: nothing to unload, so no load time / VRAM delta.
+        unloaded = False if strata else unload_all(cfg, session)
+        if not strata and not unloaded and not unload_state["warned"]:
             unload_state["warned"] = True
             print("  [warn] could not unload models via the API; load time and VRAM delta will be skipped")
-        time.sleep(cfg.settle)
+        time.sleep(min(cfg.settle, 1.0) if strata else cfg.settle)
         now = time.time()
         base = gpu.window(now - max(0.5, min(3.0, cfg.settle)), now) if gpu.ok else []
         r["idle_gpu_w"] = _avg(_col(base, "gpu_w"))
         base_vram = _avg(_col(base, "vram_gb"))
+        ram_idle = _avg(_col(host.ram.window(now - max(0.5, min(3.0, cfg.settle)), now), "ram_gb"))
 
         # 2. cold load (also the warm-up)
         t = time.time()
         post_chat(cfg, session, {"model": model, "max_tokens": 8, "stream": False,
                                  "messages": [{"role": "user", "content": "hi"}]}, cfg.timeout_load)
         r["load_s"] = (time.time() - t) if unloaded else None
+        host.ram.rescan()                       # the server process (re)started during the load
         r["ctx_size"] = get_ctx(cfg, session, model)
+        if not strata:          # flags are only meaningful for llama.cpp children launched by llama-swap
+            launch = host.ram.launch_info()
+            if launch:
+                r["offload"] = offload_summary(launch) or "none"
+                r["ctx_size"] = r["ctx_size"] or launch["ctx"]
         if r["ctx_size"] is None and not unload_state.get("ctx_warned"):
             unload_state["ctx_warned"] = True
-            print("  [warn] could not read the context size (tried /upstream/<model>/props and /running)")
+            print("  [warn] could not read the context size ("
+                  + ("set STRATA_CTX in .env)" if strata else "tried /upstream/<model>/props and /running)"))
 
         # 3. timed tests
         spec = {"tech": (cfg.tech_prompt, cfg.max_tokens_tech, cfg.timeout_tech, False),
@@ -608,7 +932,10 @@ def bench_model(cfg, session, gpu, host, ha, model, unload_state) -> dict:
     r["cpu_w"], r["cpu_util"] = _avg(_col(gen, "cpu_w")), _avg(_col(gen, "cpu_util"))
     r["gpu_peak_w"], r["gpu_temp"] = _max(_col(every, "gpu_peak_w")), _max(_col(every, "gpu_temp"))
     r["vram_gb"], r["vram_total_gb"] = _max(_col(every, "vram_gb")), _max(_col(every, "vram_total_gb"))
-    r["sys_mem_gb"] = _max(_col(every, "sys_mem_gb"))
+    r["ram_used_gb"], r["ram_proc_gb"] = _max(_col(every, "ram_gb")), _max(_col(every, "proc_gb"))
+    r["ram_total_gb"] = HostMeter._mem_total_gb()
+    if r["ram_used_gb"] is not None and ram_idle is not None and unloaded:
+        r["ram_idle_gb"], r["ram_delta_gb"] = ram_idle, max(0.0, r["ram_used_gb"] - ram_idle)
     if r["vram_gb"] is not None and base_vram is not None and unloaded:
         r["vram_delta_gb"] = max(0.0, r["vram_gb"] - base_vram)
     e_tech, e_logic = _avg(_col(runs["tech"], "energy_j")), _avg(_col(runs["logic"], "energy_j"))
@@ -621,6 +948,10 @@ def bench_model(cfg, session, gpu, host, ha, model, unload_state) -> dict:
 
 def finalize(results, cfg):
     """Derive params/quant/VRAM%/efficiency and the Goldilocks score."""
+    # Typical server RAM of models launched fully on the GPU (CUDA context, pinned buffers, leftover mapped pages)
+    ov = [r["ram_proc_gb"] for r in results if r["status"] == "ok" and r["offload"] == "none"
+          and r["ram_proc_gb"] is not None]
+    overhead = cfg.ram_overhead_gb if cfg.ram_overhead_gb is not None else _median(ov)
     for r in results:
         r["params_b"] = r["params_b"] or parse_params(r["model"])
         r["quant"] = r["quant"] or parse_quant(r["model"])
@@ -633,6 +964,20 @@ def finalize(results, cfg):
         r["vram_total_gb"] = total
         if r["vram_gb"] is not None and total:
             r["vram_pct"] = r["vram_gb"] / total * 100
+        if r["ram_used_gb"] is not None and r["ram_total_gb"]:
+            r["ram_pct"] = r["ram_used_gb"] / r["ram_total_gb"] * 100
+        # RAM spill estimate
+        r["ram_overhead_gb"] = overhead
+        if r["offload"] == "none":                       # launched fully on the GPU: nothing is meant to spill
+            r["ram_spill_gb"] = 0.0
+        elif r["offload"]:                               # CPU-offload flags: server RAM above the typical overhead
+            src = r["ram_proc_gb"] if r["ram_proc_gb"] is not None else r["ram_delta_gb"]
+            if src is not None:
+                r["ram_spill_gb"] = max(0.0, src - (overhead or 0.0))
+        else:                                            # launch flags unknown (e.g. Strata): size threshold
+            src = r["ram_proc_gb"] if r["ram_proc_gb"] is not None else r["ram_delta_gb"]
+            if src is not None:
+                r["ram_spill_gb"] = src if src >= cfg.spill_threshold_gb else 0.0
         watts = (r["gpu_w"] or 0) + (r["cpu_w"] or 0)
         if watts and r["avg_tps"]:
             r["tps_per_watt"] = r["avg_tps"] / watts
@@ -645,7 +990,8 @@ def finalize(results, cfg):
         if r["params_b"] and r["avg_tps"]:
             p = math.log(r["params_b"]) if cfg.goldilocks_mode == "log" else r["params_b"]
             r["goldilocks"] = p * r["avg_tps"]
-            r["eligible"] = r["vram_pct"] is None or r["vram_pct"] <= cfg.goldilocks_max_vram_pct
+            fits = r["vram_pct"] is None or r["vram_pct"] <= cfg.goldilocks_max_vram_pct
+            r["eligible"] = fits and not (cfg.goldilocks_vram_only and (r["ram_spill_gb"] or 0) > 0)
     return results
 
 
@@ -661,18 +1007,54 @@ def write_csv(results, path, append=False):
         w.writerows(_rounded(r) for r in results)
 
 
-def discover_models(cfg, session):
+def make_session(cfg, backend):
+    """HTTP session with the right credentials. The Strata auth scheme is not known here, so the key is
+    sent both as 'Authorization: Bearer' and 'x-api-key' (servers ignore the header they don't use)."""
+    s = requests.Session()
+    key = cfg.strata_api_key if backend == "strata" else cfg.api_key
+    if key:
+        s.headers["Authorization"] = f"Bearer {key}"
+        if backend == "strata":
+            s.headers["x-api-key"] = key
+    return s
+
+
+def detect_backend(cfg):
+    """Use llama-swap if it answers; otherwise fall back to a single Strata endpoint (if STRATA_URL is set).
+    Returns (session, model_ids) and sets cfg.backend / cfg.base_url."""
+    session, why = make_session(cfg, "llama-swap"), ""
     try:
-        r = session.get(cfg.models_url, timeout=10)
+        r = session.get(cfg.models_url, timeout=5)
         r.raise_for_status()
         ids = [m["id"] for m in r.json().get("data", [])]
+        if cfg.model_filter:
+            ids = [m for m in ids if re.search(cfg.model_filter, m)]
+        if ids:
+            return session, ids
+        why = "it lists no models (check MODEL_FILTER)"
     except (requests.RequestException, ValueError, KeyError) as e:
-        sys.exit(f"[error] Could not list models from {cfg.models_url}: {e}")
-    if cfg.model_filter:
-        ids = [m for m in ids if re.search(cfg.model_filter, m)]
-    if not ids:
-        sys.exit("[error] No models found (check LLAMA_SWAP_URL / MODEL_FILTER).")
-    return ids
+        why = e.__class__.__name__
+    if not cfg.strata_url:
+        sys.exit(f"[error] llama-swap at {cfg.base_url} is unavailable ({why}). "
+                 "Set STRATA_URL in .env to fall back to a single Strata endpoint.")
+
+    print(f"[info] llama-swap unavailable ({why}); falling back to Strata at {cfg.strata_url}")
+    cfg.backend, cfg.base_url = "strata", cfg.strata_url
+    session = make_session(cfg, "strata")
+    reachable, name = False, cfg.strata_model
+    for path in ("/health", "/v1/models"):
+        try:
+            r = session.get(cfg.strata_url + path, timeout=5)
+            reachable = True
+            if path == "/v1/models" and r.ok:
+                data = r.json().get("data") or []
+                cfg.strata_model_id = data[0].get("id") if data and isinstance(data[0], dict) else None
+                name = name or cfg.strata_model_id
+        except (requests.RequestException, ValueError):
+            pass
+    if not reachable:
+        sys.exit(f"[error] Strata at {cfg.strata_url} is not reachable either.")
+    return session, [name or "strata"]
 
 
 # --------------------------------------------------------------------------- #
@@ -692,7 +1074,8 @@ def demo_results(cfg):
                  ttft_ms=60 + 15000 / tps, gen_ms=300 / tps * 1000, latency_s=lat, gpu_w=gw,
                  gpu_peak_w=gw * 1.15, idle_gpu_w=12, gpu_util=88, gpu_temp=62 + gw / 20, vram_gb=vram,
                  vram_delta_gb=vram - 0.6, vram_total_gb=cfg.vram_limit_gb, cpu_w=cw, cpu_util=25,
-                 sys_mem_gb=18, energy_wh=(gw + cw) * lat * 2 / 3600, j_per_token=(gw + cw) / tps)
+                 ram_total_gb=64, ram_used_gb=24 + cw / 4, ram_idle_gb=24, ram_delta_gb=cw / 4, ram_proc_gb=(cw / 3 if cw >= 55 else 1.4),
+                 offload=("n-cpu-moe 22" if cw >= 55 else "none"), energy_wh=(gw + cw) * lat * 2 / 3600, j_per_token=(gw + cw) / tps)
         out.append(r)
     return out
 
@@ -701,11 +1084,27 @@ def check(cfg):
     """Verify every telemetry source for ~3 seconds. Run this before a long benchmark."""
     print(f"Hardware: {detect_hardware(cfg) or 'not detected'}")
     print(f"llama-swap: {cfg.base_url}")
+    ls_ok = False
     try:
-        n = len(requests.get(cfg.models_url, timeout=5).json().get("data", []))
+        n = len(make_session(cfg, "llama-swap").get(cfg.models_url, timeout=5).json().get("data", []))
         print(f"  OK, {n} model(s) listed")
+        ls_ok = True
     except (requests.RequestException, ValueError) as e:
-        print(f"  FAILED: {e}")
+        print(f"  FAILED: {e.__class__.__name__}")
+    if cfg.strata_url:
+        print(f"Strata fallback: {cfg.strata_url} (API key {'set' if cfg.strata_api_key else 'NOT set'})"
+              + ("  [not used while llama-swap is up]" if ls_ok else ""))
+        s = make_session(cfg, "strata")
+        for method, path, body in (("GET", "/health", None), ("GET", "/v1/models", None),
+                                   ("POST", "/v1/chat/completions",
+                                    {"model": cfg.strata_model or "strata", "max_tokens": 1,
+                                     "messages": [{"role": "user", "content": "hi"}]})):
+            try:
+                r = s.request(method, cfg.strata_url + path, json=body, timeout=15)
+                hint = "  <- authentication failed: check STRATA_API_KEY" if r.status_code in (401, 403) else ""
+                print(f"  {method} {path} -> HTTP {r.status_code}{hint}")
+            except requests.RequestException as e:
+                print(f"  {method} {path} -> FAILED: {e.__class__.__name__}")
     gpu = GpuStream(cfg)
     ok = gpu.start()
     time.sleep(2)
@@ -720,7 +1119,40 @@ def check(cfg):
     a = host.snap(); time.sleep(2); h = host.diff(a, host.snap())
     print(f"CPU power via RAPL: {'OK, %.1f W' % h['cpu_w'] if 'cpu_w' in h else 'NOT AVAILABLE'}"
           + ("" if host.rapl_ok else f" (no readable domains under {cfg.rapl_path}; run as root, or set HA_* as a fallback)"))
-    print(f"CPU util: {h.get('cpu_util', float('nan')):.0f}%   RAM used: {h.get('sys_mem_gb') or float('nan'):.1f} GB")
+    used, total = h.get("sys_mem_gb"), HostMeter._mem_total_gb()
+    print(f"CPU util: {h.get('cpu_util', float('nan')):.0f}%   RAM: "
+          + (f"{used:.1f} / {total:.1f} GB used ({used / total * 100:.0f}%)" if used and total else "unavailable"))
+    ram = RamSampler(cfg)
+    if cfg.strata_url:
+        port = urlparse(cfg.strata_url).port or 80
+        ram.listen_port = port
+        pids = find_listener_pids(port)
+        print(f"Strata server process (listening on port {port}): "
+              + (", ".join(f"{Path(f'/proc/{p}/comm').read_text().strip()} (pid {p}) using {ram.rss_gb([p]) or 0:.1f} GB RAM"
+                           for p in sorted(pids)) if pids else "not found on this host (needs root; Docker bridge ports show docker-proxy)"))
+        print("  Run `python benchmark.py --probe-strata` to see what Strata's API exposes.")
+    procs = ram.find_processes()
+    if procs:
+        for pid in sorted(procs):
+            try:
+                name = Path(f"/proc/{pid}/comm").read_text().strip()
+            except OSError:
+                name = "?"
+            print(f"Inference process matching RAM_PROCESS_PATTERN={cfg.ram_process_pattern!r}: "
+                  f"{name} (pid {pid}) using {ram.rss_gb([pid]) or 0:.1f} GB RAM")
+    else:
+        big = []
+        for d in os.listdir("/proc"):
+            if d.isdigit():
+                gb = ram.rss_gb([int(d)])
+                if gb:
+                    try:
+                        big.append((gb, Path(f"/proc/{d}/comm").read_text().strip(), d))
+                    except OSError:
+                        pass
+        print(f"No process matches RAM_PROCESS_PATTERN={cfg.ram_process_pattern!r} (server RAM will be blank; "
+              "RAM spill falls back to the system-RAM delta). Largest processes by RAM - set the pattern to your "
+              "inference server's name: " + ", ".join(f"{n} {g:.1f} GB" for g, n, _ in sorted(big, reverse=True)[:5]))
     if cfg.ha_url and cfg.ha_token and cfg.ha_cpu_entity:
         print("Home Assistant CPU-power fallback: configured")
 
@@ -747,15 +1179,15 @@ def render_markdown(results, cfg, path):
     for i, r in enumerate(sorted(ok, key=lambda r: -r["avg_tps"]), 1):
         L.append(f"| {i} | {r['model']} | {_emoji(r['avg_tps'])} {_f(r['avg_tps'])} |")
     L += ["", "## Full Model Comparison", "",
-          "| Model | Params | Quant | Ctx | Load s | VRAM | GPU W | CPU W | Wh | J/tok | TTFT ms | Prefill t/s | Tech | Logic | Avg |",
-          "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+          "| Model | Params | Quant | Ctx | Load s | VRAM | RAM spill GB | GPU W | CPU W | Wh | J/tok | TTFT ms | Prefill t/s | Tech | Logic | Avg |",
+          "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in results:
         if r["status"] != "ok":
-            L.append(f"| {r['model']} | | | | | | | | | | | | | | ERR: {r['error']} |")
+            L.append(f"| {r['model']} | | | | | | | | | | | | | | | ERR: {r['error']} |")
             continue
         p = r["vram_pct"]
         vram = "–" if p is None else f"{r['vram_gb']:.1f} GB [{'=' * round(min(p, 100) / 10):<10}] {p:.0f}%"
-        L.append(f"| {r['model']} | {_f(r['params_b'], 0)}B | {r['quant']} | {_f((r['ctx_size'] or 0) / 1024 or None, 0)}k | {_f(r['load_s'])} | {vram} | "
+        L.append(f"| {r['model']} | {_f(r['params_b'], 0)}B | {r['quant']} | {_f((r['ctx_size'] or 0) / 1024 or None, 0)}k | {_f(r['load_s'])} | {vram} | {_f(r['ram_spill_gb'])} | "
                  f"{_f(r['gpu_w'], 0)} | {_f(r['cpu_w'], 0)} | {_f(r['energy_wh'], 3)} | {_f(r['j_per_token'])} | "
                  f"{_f(r['ttft_ms'], 0)} | {_f(r['prefill_tps'], 0)} | {_f(r['tech_tps'])} | {_f(r['logic_tps'])} | "
                  f"{_emoji(r['avg_tps'])} {_f(r['avg_tps'])} |")
@@ -782,7 +1214,9 @@ def render_dashboard(results, cfg, path, cpu_source="none", hardware=""):
             "poll_ms": cfg.gpu_poll_ms, "cpu_source": cpu_source, "prefill_words": cfg.prefill_words,
             "hardware": hardware, "currency": cfg.currency, "has_cost": cfg.rate_peak is not None,
             "rate_peak": cfg.rate_peak, "rate_off": cfg.rate_offpeak if cfg.rate_offpeak is not None else cfg.rate_peak,
-            "cache_test": cfg.cache_test}
+            "cache_test": cfg.cache_test, "backend": "Strata" if cfg.backend == "strata" else "llama.cpp via llama-swap",
+            "spill_threshold_gb": cfg.spill_threshold_gb,
+            "strata_details": cfg.strata_details if cfg.backend == "strata" else None}
     blob = json.dumps({"meta": meta, "models": results}).replace("</", "<\\/")
     Path(path).write_text(HTML_TEMPLATE.replace("__DATA__", blob), encoding="utf-8")
 
@@ -832,11 +1266,14 @@ small.d{font-size:11px;margin-left:4px}.good{color:#3fb950}.bad{color:#f85149}.d
 .toolbar{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;margin-bottom:10px;min-height:28px}
 .tablewrap2{overflow-x:auto}
 .qt th,.qt td{background:transparent}.qt th{position:static}
+summary{cursor:pointer}
 footer{margin-top:40px}
 @media(max-width:900px){body{padding:12px}.charts{grid-template-columns:1fr}.fz{position:static}}
 </style></head><body>
 <h1>llama-swap Benchmark</h1>
 <div class="sub" id="hdr"></div>
+
+<div id="sdetails" style="margin-top:12px"></div>
 
 <div class="card filters" id="filters"></div>
 
@@ -865,6 +1302,8 @@ const D = __DATA__, META = D.meta, ALL = D.models;
 const $ = id => document.getElementById(id);
 const isOK = m => m.status === 'ok' && m.avg_tps != null;
 const ALLOK = ALL.filter(isOK);
+const OVH = ALL.find(m=>m.ram_overhead_gb!=null)?.ram_overhead_gb;
+const IDLE = (() => { const v = ALL.map(m=>m.ram_idle_gb).filter(x=>x!=null).sort((a,b)=>a-b); return v.length ? v[Math.floor(v.length/2)] : null; })();
 const cur = META.currency;
 
 // Chart.js cannot resolve CSS var(): every chart colour below is a literal hex value.
@@ -878,7 +1317,7 @@ Chart.defaults.color = '#e6edf3';
 Chart.defaults.borderColor = '#30363d';
 Chart.defaults.maintainAspectRatio = false;
 
-const state = {filters:{quant:new Set(), arch:new Set(), size:new Set(), vram95:false, hideErr:false},
+const state = {filters:{quant:new Set(), arch:new Set(), size:new Set(), vram95:false, hideErr:false, noSpill:false},
                sk:'avg_tps', sd:-1, base:null, rate:'peak'};
 
 /* ---------- filters ---------- */
@@ -890,6 +1329,7 @@ function pass(m){
   if (f.arch.size && !f.arch.has(m.arch)) return false;
   if (f.size.size && !f.size.has(bucket(m.params_b))) return false;
   if (f.vram95 && m.vram_pct!=null && m.vram_pct>=95) return false;
+  if (f.noSpill && (m.ram_spill_gb||0) > 0) return false;
   if (f.hideErr && m.status!=='ok') return false;
   return true;
 }
@@ -903,11 +1343,11 @@ function buildFilters(){
     grp('Quant','quant',quants.map(q=>[q,q])) +
     (archs.length>1 ? grp('Type','arch',archs.map(a=>[a,a])) : '') +
     grp('Size','size',sizes) +
-    grp('Show','x',[['vram95','Hide VRAM \u226595%'],['hideErr','Hide failed']]) +
+    grp('Show','x',[['vram95','Hide VRAM \u226595%'],['noSpill','VRAM-only (hide RAM spill)'],['hideErr','Hide failed']]) +
     `<div class="fg"><button class="tog" data-reset="1">Reset</button><span id="fcount"></span></div>`;
   $('filters').onclick = e => {
     const b = e.target.closest('button'); if(!b) return;
-    if (b.dataset.reset){ Object.values(state.filters).forEach(v=>v instanceof Set?v.clear():0); state.filters.vram95=state.filters.hideErr=false;
+    if (b.dataset.reset){ Object.values(state.filters).forEach(v=>v instanceof Set?v.clear():0); state.filters.vram95=state.filters.hideErr=state.filters.noSpill=false;
       document.querySelectorAll('#filters .tog').forEach(x=>x.classList.remove('on')); return render(); }
     const g=b.dataset.g, v=b.dataset.v; if(!g) return;
     if (g==='x') state.filters[v] = !state.filters[v];
@@ -995,6 +1435,16 @@ function renderCharts(OKR){
         scales:{x:{stacked:true, title:axTitle('GPU watts')}, y:{stacked:true, ticks:yTicks}}}});
   }
 
+  const mm = OKR.filter(m=>m.vram_gb!=null).sort((a,b)=>((b.vram_gb||0)+(b.ram_proc_gb||0))-((a.vram_gb||0)+(a.ram_proc_gb||0)));
+  if (box('mem', mm, Math.max(380, mm.length*30+100))){
+    mk('c_mem', {type:'bar',
+      data:{labels:mm.map(m=>m.model), datasets:[
+        {label:'VRAM used', data:mm.map(m=>m.vram_gb), backgroundColor:'#58a6ff', borderColor:'#58a6ff', borderWidth:1},
+        {label:'Inference-server RAM', data:mm.map(m=>m.ram_proc_gb??0), backgroundColor:'#f0883e', borderColor:'#f0883e', borderWidth:1}]},
+      options:{indexAxis:'y', plugins:{legend:{display:true}, tooltip:{callbacks:{footer:c=>'Total: '+c.reduce((s,x)=>s+x.parsed.x,0).toFixed(1)+' GB'}}},
+        scales:{x:{stacked:true, title:axTitle('GB')}, y:{stacked:true, ticks:yTicks}}}});
+  }
+
   const qs = quantGroups(OKR);
   if (box('quant', qs, 340)){
     const colors = qs.map(x=>tpsColor(x.avg));
@@ -1017,7 +1467,7 @@ function renderPodium(OKR){
     <div class="card ${cls[i]}"><div class="rank">#${i+1} GOLDILOCKS</div>
     <div class="pname">${esc(m.model)}</div>
     <div class="stat"><b style="color:${tpsColor(m.avg_tps)}">${fmt(m.avg_tps)}</b> tok/s &middot; ${m.params_b}B params &middot; ctx ${ctxFmt(m.ctx_size)}</div>
-    <div class="stat">VRAM <b>${fmt(m.vram_gb)} GB</b> (${fmt(m.vram_pct,0)}%) &middot; GPU <b>${fmt(m.gpu_w,0)} W</b> &middot; CPU <b>${fmt(m.cpu_w,0)} W</b></div>
+    <div class="stat">VRAM <b>${fmt(m.vram_gb)} GB</b> (${fmt(m.vram_pct,0)}%) &middot; GPU <b>${fmt(m.gpu_w,0)} W</b> &middot; CPU <b>${fmt(m.cpu_w,0)} W</b>${m.ram_spill_gb>0?` &middot; <span class="err">RAM spill ${fmt(m.ram_spill_gb)} GB</span>`:''}</div>
     <div class="stat">Score <b>${fmt(m.goldilocks,0)}</b> &middot; <b>${fmt(m.j_per_token,2)}</b> J/token</div>
     <div class="radarbox"><canvas id="rad${i}"></canvas></div></div>`).join('')
     : '<div class="card sub">No eligible models for the current filters (need parsable params and a speed result).</div>';
@@ -1039,9 +1489,9 @@ function renderQuant(OKR){
 }
 
 /* ---------- comparison table ---------- */
-const FZ = [260,64,84,78,236], FL = [0,260,324,408,486];   // widths / left offsets of the 5 frozen columns
+const FROZEN = {model:260, params_b:64, quant:84, load_s:78, vram_gb:236};   // widths of the frozen columns
 const rateKey = () => state.rate==='off' ? 'off' : 'peak';
-const COLS = [
+const ALLCOLS = [
  {k:'model',l:'Model'},
  {k:'params_b',l:'Params',f:v=>v+'B',nodelta:1},
  {k:'quant',l:'Quant',nodelta:1},
@@ -1049,6 +1499,11 @@ const COLS = [
  {k:'vram_gb',l:'VRAM',better:'low'},
  {k:'ctx_size',l:'Ctx',f:ctxFmt,nodelta:1},
  {k:'arch',l:'Type',nodelta:1},
+ {k:'offload',l:'CPU offload',nodelta:1},
+ {k:'ram_delta_gb',l:'RAM vs idle GB',dec:1,better:'low'},
+ {k:'ram_used_gb',l:'System RAM',better:'low'},
+ {k:'ram_spill_gb',l:'RAM spill GB',dec:1,better:'low'},
+ {k:'ram_proc_gb',l:'Server RAM GB',dec:1,better:'low'},
  {k:'gpu_w',l:'GPU W',dec:0,better:'low'},
  {k:'idle_gpu_w',l:'Idle W',dec:0,better:'low'},
  {k:'gpu_peak_w',l:'Peak W',dec:0,better:'low'},
@@ -1069,8 +1524,16 @@ const COLS = [
  {k:'logic_tps',l:'Logic TPS',tps:1,better:'high'},
  {k:'avg_tps',l:'Avg TPS',tps:1,better:'high'},
  {k:'goldilocks',l:'Goldilocks',dec:0,better:'high'}
-].filter(c=>!c.cost || META.has_cost);
+];
 const val = (m,c) => c.get ? c.get(m) : m[c.k];
+// Columns with no data in this run (e.g. Load s / RAM delta on Strata) are hidden instead of shown empty.
+const COLS = ALLCOLS.filter(c => c.k==='model' || ALL.some(m => m.status==='ok' && val(m,c)!=null));
+const HIDDEN = ALLCOLS.filter(c => !COLS.includes(c)).map(c => c.l);
+const FZ = {}; let fzLeft = 0;
+COLS.forEach(c => { if (FROZEN[c.k]) { FZ[c.k] = {left:fzLeft, w:FROZEN[c.k]}; fzLeft += FROZEN[c.k]; } });
+const LASTFZ = [...COLS].reverse().find(c => FZ[c.k])?.k;
+const fzStyle = c => FZ[c.k] ? ` style="left:${FZ[c.k].left}px;width:${FZ[c.k].w}px;min-width:${FZ[c.k].w}px;max-width:${FZ[c.k].w}px"` : '';
+const fzClass = c => FZ[c.k] ? 'fz'+(c.k===LASTFZ?' last':'') : '';
 
 function deltaHtml(m, c, v, base){
   if (!base || m.model===base.model || c.nodelta || v==null) return '';
@@ -1081,22 +1544,23 @@ function deltaHtml(m, c, v, base){
   const cl = small || good==null ? 'dn' : (good ? 'good' : 'bad');
   return `<small class="d ${cl}">${pct>0?'+':''}${pct.toFixed(0)}%</small>`;
 }
-function cell(m, c, ci, base){
-  const v = val(m,c), fz = ci<5;
-  const st = fz ? ` style="left:${FL[ci]}px;width:${FZ[ci]}px;min-width:${FZ[ci]}px;max-width:${FZ[ci]}px"` : '';
-  let cls = fz ? 'fz'+(ci===4?' last':'') : '', inner;
+function cell(m, c, base){
+  const v = val(m,c), st = fzStyle(c);
+  let cls = fzClass(c), inner;
   const dl = deltaHtml(m,c,v,base);
   if (c.k==='model'){
     const star = base && base.model===m.model ? '\u2605 ' : '';
     inner = `<div class="clip" title="${esc(v)}${m.error?' \u2014 '+esc(m.error):''}">${star}${esc(v)}${m.status!=='ok'?` <span class="err">ERR: ${esc(m.error)}</span>`:''}</div>`;
-  } else if (c.k==='vram_gb'){
+  } else if (c.k==='vram_gb' || c.k==='ram_used_gb'){
     if (v==null) inner = '&ndash;';
     else {
-      const raw = m.vram_pct ?? 0, p = Math.min(raw,100), warn = raw >= 95;
+      const raw = (c.k==='vram_gb' ? m.vram_pct : m.ram_pct) ?? 0, p = Math.min(raw,100), warn = raw >= 95;
       if (warn) cls += ' warn';
       inner = `<div class="clip">${v.toFixed(1)} GB<span class="bar"><i style="width:${p}%;background:${warn?'#f85149':vramColor(p)}"></i></span><span class="${warn?'err':''}">${warn?'\u26A0 ':''}${raw.toFixed(0)}%</span>${dl}</div>`;
     }
-  } else if (c.k==='quant' || c.k==='arch') inner = esc(v ?? '\u2013');
+  } else if (c.k==='ram_spill_gb'){
+    inner = (v==null ? '&ndash;' : (v>0 ? `<span class="err">\u26A0 ${v.toFixed(1)}</span>` : '0')) + dl;
+  } else if (c.k==='quant' || c.k==='arch' || c.k==='offload') inner = esc(v ?? '\u2013');
   else if (v==null) inner = '&ndash;';
   else if (c.f) inner = c.f(v);
   else {
@@ -1114,11 +1578,10 @@ function renderTable(){
     if (x==null && y==null) return 0; if (x==null) return 1; if (y==null) return -1;
     return (typeof x==='string' ? x.localeCompare(y) : x-y) * state.sd;
   });
-  $('tbl').innerHTML = '<thead><tr>' + COLS.map((c,i)=>{
-      const fz = i<5, st = fz ? ` style="left:${FL[i]}px;width:${FZ[i]}px;min-width:${FZ[i]}px;max-width:${FZ[i]}px"` : '';
-      return `<th class="${fz?'fz'+(i===4?' last':''):''}" data-k="${c.k}"${st}>${c.l}${state.sk===c.k?(state.sd<0?' \u25BC':' \u25B2'):''}</th>`;
+  $('tbl').innerHTML = '<thead><tr>' + COLS.map(c=>{
+      return `<th class="${fzClass(c)}" data-k="${c.k}"${fzStyle(c)}>${c.l}${state.sk===c.k?(state.sd<0?' \u25BC':' \u25B2'):''}</th>`;
     }).join('') + '</tr></thead><tbody>' +
-    rows.map(m=>`<tr data-m="${encodeURIComponent(m.model)}"${base&&base.model===m.model?' class="sel"':''}>${COLS.map((c,i)=>cell(m,c,i,base)).join('')}</tr>`).join('') + '</tbody>';
+    rows.map(m=>`<tr data-m="${encodeURIComponent(m.model)}"${base&&base.model===m.model?' class="sel"':''}>${COLS.map(c=>cell(m,c,base)).join('')}</tr>`).join('') + '</tbody>';
   wrap.scrollLeft = sx; wrap.scrollTop = sy;
   renderToolbar(base);
 }
@@ -1129,7 +1592,8 @@ function renderToolbar(base){
   const bl = base
     ? `<span><span class="good">\u2605 Baseline:</span> <b>${esc(base.model)}</b> &mdash; other rows show change vs this model (green = better, red = worse). <button class="tog" data-clear="1">Clear baseline</button></span>`
     : '<span class="sub">Click a column header to sort (click again to reverse). Click a row to use it as a 100% baseline; click it again to clear.</span>';
-  $('toolbar').innerHTML = bl + rate;
+  const hid = HIDDEN.length ? `<span class="sub">Hidden (no data this run): ${HIDDEN.join(', ')}</span>` : '';
+  $('toolbar').innerHTML = bl + rate + hid;
 }
 function bindTable(){
   $('tblwrap').onclick = e => {
@@ -1157,23 +1621,28 @@ function render(){
   renderPodium(OKR); renderCharts(OKR); renderQuant(OKR); renderTable();
 }
 
-$('hdr').innerHTML = `${META.count} models &middot; ${esc(META.generated)} &middot; llama.cpp via llama-swap<br>` +
+$('hdr').innerHTML = `${META.count} models &middot; ${esc(META.generated)} &middot; ${esc(META.backend)}<br>` +
   `<b style="color:#e6edf3">Host:</b> ${META.hardware ? esc(META.hardware) : 'VRAM limit '+META.vram_limit+' GB'} &middot; ` +
-  `<b style="color:#e6edf3">Power:</b> GPU via nvidia-smi (${META.poll_ms} ms), CPU via ${esc(META.cpu_source)}`;
+  `<b style="color:#e6edf3">Power:</b> GPU via nvidia-smi (${META.poll_ms} ms), CPU via ${esc(META.cpu_source)}` +
+  (IDLE!=null ? ` &middot; <b style="color:#e6edf3">Idle RAM baseline:</b> ${IDLE.toFixed(1)} GB` : '');
 const CH = [['tps','Avg generation speed (tok/s)'],['vram','VRAM vs speed (bubble = params)'],['eff','Power efficiency (tok/s per W, GPU + CPU)'],
   ['jt','Energy per token (J, lower is better)'],['ttft','TTFT leaderboard (ms, lower is better)'],['lat','Latency vs throughput (top-left is best)'],
-  ['pg','Prefill vs generation speed (tok/s, log scale)'],['pwr','Active vs idle GPU power (W)'],['quant','Avg TPS by quantization']];
+  ['pg','Prefill vs generation speed (tok/s, log scale)'],['pwr','Active vs idle GPU power (W)'],['mem','Memory footprint: VRAM vs inference-server RAM (GB)'],['quant','Avg TPS by quantization']];
 $('charts').innerHTML = CH.map(([id,t])=>`<div class="card"><h3>${t}</h3><div class="chartbox" id="b_${id}"><canvas id="c_${id}"></canvas></div><p class="sub" id="e_${id}" hidden>No data for this chart (telemetry unavailable, or filtered out).</p></div>`).join('');
+if (META.strata_details && META.strata_details.length)
+  $('sdetails').innerHTML = '<details class="card"><summary><b>Strata details</b> <span class="sub">(read from its API; click to expand)</span></summary>' +
+    META.strata_details.map(([p,rows])=>`<h3>${esc(p)}</h3><table class="qt">${rows.map(([k,v])=>`<tr><td style="text-align:left">${esc(k)}</td><td style="text-align:left">${esc(v)}</td></tr>`).join('')}</table>`).join('') + '</details>';
 buildFilters(); bindTable(); render();
 
 $('meth').innerHTML = `<ul>
- <li><b>Backend:</b> llama-swap (OpenAI-compatible <code>/v1/chat/completions</code>), non-streaming. The prompt cache is disabled for all speed tests.</li>
- <li><b>Per model:</b> all models unloaded &rarr; idle baseline sampled &rarr; cold load (Load s) &rarr; Technical, Logic${META.prefill_words?` and prefill (~${META.prefill_words}-word, unique prompt)`:''} tests, median of ${META.runs} run(s).</li>
+ <li><b>Backend:</b> ${esc(META.backend)} (OpenAI-compatible <code>/v1/chat/completions</code>), non-streaming. The prompt cache is disabled for all speed tests.</li>
+ <li><b>Per model:</b> ${META.backend==='Strata'?'single always-loaded model (no unload, load time or VRAM delta); idle power sampled with the model resident':'all models unloaded &rarr; idle baseline sampled &rarr; cold load (Load s)'} &rarr; Technical, Logic${META.prefill_words?` and prefill (~${META.prefill_words}-word, unique prompt)`:''} tests, median of ${META.runs} run(s).</li>
  <li><b>Prompts:</b> Technical &mdash; &ldquo;${esc(META.prompts[0])}&rdquo;; Logic &mdash; &ldquo;${esc(META.prompts[1])}&rdquo;.</li>
  <li><b>Speed:</b> <code>timings.predicted_per_second</code>, falling back to completion_tokens / wall time. <b>TTFT</b> is approximated by <code>timings.prompt_ms</code>; <b>Prefill t/s</b> is <code>timings.prompt_per_second</code> on the long prompt (<b>Prefill tok</b> = its size).</li>
  <li><b>Ctx</b> is the context size the model was loaded with (read from llama-server <code>/props</code>). VRAM and prefill speed depend on it, so compare models with similar Ctx.</li>
  ${META.cache_test?'<li><b>Cache hit %</b> / <b>Cache &times;:</b> a long prompt is sent cold, then again with a short follow-up appended (a multi-turn proxy). Hit % = share of the second prompt reused from the KV cache (<code>cache_n</code>); &times; = how much faster its prompt processing was than the cold one.</li>':''}
  <li><b>GPU:</b> one persistent <code>nvidia-smi</code> stream, windowed to each request. Power = mean; peak W, temp and VRAM = maximum. <b>Idle W</b> is sampled with no model loaded. <b>CPU:</b> ${esc(META.cpu_source)}.</li>
+ <li><b>RAM:</b> <b>RAM vs idle</b> is the increase in system RAM over a baseline sampled with all models unloaded (llama-swap only). <b>System RAM</b> is the absolute figure (MemTotal &minus; MemAvailable, peak during the tests); it can differ a little from other dashboards that use another formula or sample at another moment. <b>Server RAM</b> is the peak resident memory of the inference-server process, which always includes some overhead (CUDA context, pinned buffers, mapped pages). <b>CPU offload</b> is read from the server's launch command (<code>-ngl</code> below 99, <code>--n-cpu-moe</code>, <code>--cpu-moe</code>, <code>--no-kv-offload</code>, <code>-ot ...CPU</code>). <b>RAM spill</b> is 0 for models launched fully on the GPU; for models with CPU offload it is Server RAM minus the typical overhead${OVH!=null?` (${OVH.toFixed(1)} GB, the median Server RAM of this run's fully-GPU models)`:''}. When launch flags can't be read (e.g. Strata) it is Server RAM if at least ${META.spill_threshold_gb} GB, otherwise 0. It is an estimate.</li>
  <li><b>Energy:</b> (mean GPU W + mean CPU W) &times; request time; Energy Wh covers one Technical plus one Logic request. <b>J/token</b> = energy &divide; generated tokens. <b>Efficiency</b> = avg TPS &divide; (GPU W + CPU W).</li>
  ${META.has_cost?`<li><b>Cost:</b> measured GPU + CPU energy only (not the rest of the system) &times; your electricity rate. ${cur}/1k queries = average of the Technical and Logic requests above, so it scales with the max_tokens setting.</li>`:''}
  <li><b>Goldilocks:</b> ${META.goldilocks_mode==='log'?'ln(params&nbsp;B)':'params&nbsp;B'} &times; avg TPS, VRAM &le; ${META.max_vram_pct}% of the GPU. Params are parsed from the filename and are <i>total</i> (not active) parameters. <b>Radar:</b> Speed, Efficiency and Reasoning (params) are relative to the best model in this run; VRAM economy = 100% &minus; VRAM%.</li>
@@ -1190,12 +1659,15 @@ $('meth').innerHTML = `<ul>
 def main():
     ap = argparse.ArgumentParser(description="Benchmark every model on a llama-swap server (run on the GPU host).")
     ap.add_argument("--check", action="store_true", help="test telemetry sources and exit")
+    ap.add_argument("--probe-strata", action="store_true", help="list what Strata's API exposes and save it")
     ap.add_argument("--demo", action="store_true", help="build a dashboard from synthetic data (no server)")
     args = ap.parse_args()
 
     cfg = load_config()
     if args.check:
         return check(cfg)
+    if args.probe_strata:
+        return probe_strata(cfg)
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results, cpu_source, hardware = [], "n/a", ""
@@ -1204,15 +1676,20 @@ def main():
         results, cpu_source = demo_results(cfg), "demo data"
         hardware = detect_hardware(cfg) or "Demo system (synthetic data)"
     else:
-        session = requests.Session()
-        if cfg.api_key:
-            session.headers["Authorization"] = f"Bearer {cfg.api_key}"
-        models = discover_models(cfg, session)
+        session, models = detect_backend(cfg)
         hardware = detect_hardware(cfg)
 
         gpu = GpuStream(cfg)
         gpu.ok = gpu.start()
         host = HostMeter(cfg)
+        host.ram.start()
+        if cfg.backend == "strata":
+            host.ram.listen_port = urlparse(cfg.base_url).port or 80
+            found = strata_discover(cfg, session)
+            cfg.strata_details = strata_details(found)
+            cfg.strata_ctx_detected = ctx_from_details(cfg.strata_details)
+            print(f"Strata: read {len(cfg.strata_details)} info endpoint(s); context "
+                  f"{cfg.strata_ctx or cfg.strata_ctx_detected or 'unknown'}")
         ha = None
         if host.rapl_ok:
             cpu_source = "RAPL package power"
@@ -1245,6 +1722,7 @@ def main():
             print("\nInterrupted: writing partial results.")
         finally:
             gpu.stop()
+            host.ram.stop()
             if ha:
                 ha.stop()
 
@@ -1252,6 +1730,10 @@ def main():
         sys.exit("No results to write.")
     finalize(results, cfg)
     ok = [r for r in results if r["status"] == "ok"]
+    if not args.demo and not ok:
+        csv_path = cfg.output_dir / f"benchmark_{stamp}.csv"
+        write_csv(results, csv_path)
+        sys.exit(f"\nNo model completed successfully, so no dashboard was written (errors are in {csv_path}).")
     if not args.demo and ok and all((r["vram_gb"] or 0) < 0.5 for r in ok):
         print("\n[warn] VRAM looks ~0 for every model: GPU telemetry is missing or from the wrong GPU (see GPU_INDEX).")
     csv_path = cfg.output_dir / f"benchmark_{stamp}.csv"
