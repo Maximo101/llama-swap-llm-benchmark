@@ -6,7 +6,7 @@ An automated, real-load benchmark for LLMs served by [llama-swap](https://github
 
 For every model on your server it measures generation speed (Technical + Logic prompts), prefill speed, load time, Time To First Token (TTFT), prompt-cache efficiency and context size, while tracking GPU power, VRAM, temperature and CPU power. From those it derives energy per token, efficiency and (optionally) electricity cost, then builds a self-contained interactive dashboard. Following the speed tests, it can now run comprehensive dataset-based evaluations to grade reasoning and coding capabilities.
 
-<img width="1591" height="648" alt="d1" src="https://github.com/user-attachments/assets/71a7cf23-fca5-42f5-b89d-afb3708fd2f4" />
+<img width="1591" height="771" alt="d1" src="https://github.com/user-attachments/assets/cac1664d-0da4-4080-ba53-0d97fb9852f0" />
 
 ## 📦 Features
 
@@ -22,7 +22,9 @@ For every model on your server it measures generation speed (Technical + Logic p
 * **Interactive dashboard:** Filters, sortable and baseline-comparable table, ten charts (including new Accuracy & Pass Rate graphs) and a radar per podium model.
 * **Rich outputs:** Per-run CSV, appended history CSV, optional Markdown report, per-question eval JSONL logs, and the HTML dashboard.
 
-<img width="1591" height="712" alt="d77" src="https://github.com/user-attachments/assets/541c5569-7074-4c7c-91ed-28400c5a0b4d" />
+<img width="1577" height="522" alt="ddd1" src="https://github.com/user-attachments/assets/07405b67-34bb-4253-b546-d1f5e7e64eae" />
+
+<img width="1577" height="522" alt="ddd2" src="https://github.com/user-attachments/assets/b44419e2-f477-4d3c-9d53-e7b8120cc51f" />
 
 ## 🛠️ Prerequisites
 
@@ -219,3 +221,20 @@ All results are saved to `OUTPUT_DIR` (default: `results/` next to the script).
 * **Docker/Sandbox issues during evals:** If evaluation coding tests fail due to docker restrictions, ensure Docker is properly installed or adjust `EVAL_CODE_SANDBOX` in `.env`.
 
 ## Dashboard Example
+
+<img width="1257" height="743" alt="dd1" src="https://github.com/user-attachments/assets/84a76941-1f59-41f5-b4e0-915c4465c2e7" />
+
+<img width="1257" height="734" alt="d2" src="https://github.com/user-attachments/assets/305b1bd9-20cc-406f-8475-a0cdb915352b" />
+
+<img width="1257" height="700" alt="d3" src="https://github.com/user-attachments/assets/d9c14362-a9ae-4090-85cd-7bd79f8c67e7" />
+
+<img width="1257" height="693" alt="d4" src="https://github.com/user-attachments/assets/a1ef35bc-06aa-4fcb-8516-e1d9b688874f" />
+
+<img width="1257" height="821" alt="d5" src="https://github.com/user-attachments/assets/50e2fd35-8846-4307-9c0b-efa45f89f740" />
+
+<img width="1257" height="800" alt="d6" src="https://github.com/user-attachments/assets/2c33a5c7-a479-461d-a5f8-8a144d8fd935" />
+
+<img width="1591" height="702" alt="b1" src="https://github.com/user-attachments/assets/fbd10f64-67a1-4bf4-b3aa-d57b2c891e23" />
+
+
+
