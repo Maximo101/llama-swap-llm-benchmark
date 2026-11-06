@@ -1,2 +1,4 @@
 requests>=2.31
 python-dotenv>=1.0
+datasets>=2.16.0
+huggingface_hub>=0.20.0
