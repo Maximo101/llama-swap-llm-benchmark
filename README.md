@@ -36,26 +36,21 @@ For every model on your server it measures generation speed (Technical + Logic p
 ## 🔬 Installation
 
 1. Clone the repository:
-   ```bash
-   git clone [https://github.com/Maximo101/llama-swap-llm-benchmark.git](https://github.com/Maximo101/llama-swap-llm-benchmark.git)
-   cd llama-swap-llm-benchmark
-
+```bash
+git clone [https://github.com/Maximo101/llama-swap-llm-benchmark.git](https://github.com/Maximo101/llama-swap-llm-benchmark.git)
+cd llama-swap-llm-benchmark
 ```
 
 2. Install dependencies:
 ```bash
 pip install -r requirements.txt
-
 ```
-
 
 *(Note: `datasets` and `huggingface_hub` are now required for evaluation testing).*
 3. Configure your environment:
-```bash
-cp .env.example .env
-
-```
-
+   ```bash
+   cp .env.example .env
+   ```
 
 Edit `.env` to match your setup.
 
