@@ -1,8 +1,8 @@
 .env
 results/
+tests/
+venv/
+SS/
 __pycache__/
 *.pyc
 .venv/
-*.csv
-*.html
-*.MD
