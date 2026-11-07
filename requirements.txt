@@ -1,4 +1,9 @@
 requests>=2.31
-python-dotenv>=1.0
-datasets>=2.16.0
-huggingface_hub>=0.20.0
+python-dotenv>=1.0          # .env loading (a built-in fallback reader exists, python-dotenv is still recommended)
+
+# GPU telemetry: official NVIDIA NVML bindings (imported as `pynvml`). Without it the tool falls back to nvidia-smi.
+nvidia-ml-py>=12.535
+
+# Evaluation phase
+aiohttp>=3.9                # native asyncio HTTP client for EVAL_CONCURRENCY > 1 (falls back to a thread pool without it)
+datasets>=2.19              # Hugging Face datasets (GPQA, MMLU-Pro, HumanEval, MBPP, LiveCodeBench, GSM8K, MATH-500)

@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llama-swap Benchmark Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--text:#e6edf3;--mute:#8b949e}
+*{box-sizing:border-box}
+body{margin:0 auto;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;padding:24px;max-width:1600px}
+a{color:#58a6ff}
+h1{margin:0 0 4px}h2{margin:36px 0 12px;border-bottom:1px solid var(--line);padding-bottom:6px}
+.sub{color:var(--mute)}
+.grid{display:grid;gap:16px;align-items:start}.podium{grid-template-columns:repeat(auto-fit,minmax(270px,1fr))}
+.charts{grid-template-columns:repeat(auto-fit,minmax(560px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;overflow:hidden}
+.card h3{margin:0 0 8px;font-size:15px}
+.rank{font-size:12px;font-weight:700;letter-spacing:.08em}
+.gold{border-color:#d4a72c}.gold .rank{color:#d4a72c}.silver{border-color:#9aa4b0}.silver .rank{color:#9aa4b0}
+.bronze{border-color:#bf7a3a}.bronze .rank{color:#bf7a3a}
+.pname{font-weight:600;word-break:break-all;margin:4px 0 8px}.stat{color:var(--mute)}.stat b{color:var(--text)}
+.radarbox{position:relative;height:210px;margin-top:8px}
+.chartbox{position:relative;height:380px}
+/* filter bar */
+.filters{position:sticky;top:0;z-index:30;margin:16px 0;padding:10px 14px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
+.fg{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.fg>span{color:var(--mute);font-size:12px;margin-right:2px}
+.tog{background:#21262d;color:var(--text);border:1px solid var(--line);border-radius:14px;padding:3px 11px;font:inherit;font-size:12px;cursor:pointer}
+.tog:hover{border-color:#58a6ff}.tog.on{background:#1f3a5f;border-color:#58a6ff}
+/* table: vertical scroll, frozen header and first five columns */
+#tblwrap{max-height:72vh;overflow:auto;position:relative;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%}
+th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;background:var(--card)}
+th{position:sticky;top:0;z-index:3;cursor:pointer;color:var(--mute);user-select:none}
+th:hover{color:var(--text)}
+th:first-child,td:first-child{text-align:left}
+.fz{position:sticky;z-index:2}th.fz{z-index:5}.fz.last{border-right:2px solid #484f58}
+td.warn{background:#3a1d1f}
+tr[data-m]{cursor:pointer}tr[data-m]:hover td{background:#1c2128}tr.sel td{background:#1f2a3d}
+.hl{color:#ff4d4d!important;font-weight:700}
+.mn{cursor:pointer}.mn:hover{text-decoration:underline}
+#charts canvas:not(#c_quant),#evcharts canvas{cursor:pointer}
+.hint-ok{color:#3fb950}.hint-room{color:#d29922}.hint-tight{color:#f85149}
+.clip{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar{display:inline-block;width:70px;height:8px;background:#21262d;border-radius:4px;vertical-align:middle;margin:0 6px;overflow:hidden}
+.bar i{display:block;height:100%}
+.err{color:#f85149;font-weight:600}
+small.d{font-size:11px;margin-left:4px}.good{color:#3fb950}.bad{color:#f85149}.dn{color:var(--mute)}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;margin-bottom:10px;min-height:28px}
+.tablewrap2{overflow-x:auto}
+.qt th,.qt td{background:transparent}.qt th{position:static}
+summary{cursor:pointer}
+footer{margin-top:40px}
+@media(max-width:900px){body{padding:12px}.charts{grid-template-columns:1fr}.fz{position:static}}
+</style></head><body>
+<h1>llama-swap Benchmark</h1>
+<div class="sub" id="hdr"></div>
+
+<div id="sdetails" style="margin-top:12px"></div>
+
+<div class="card filters" id="filters"></div>
+
+<div id="speedtop">
+<h2>Category winners &mdash; top 3</h2><div id="podium"></div>
+
+<h2>Charts</h2>
+<div class="grid charts" id="charts"></div>
+</div>
+
+<div id="evsec" hidden>
+<h2>Accuracy &amp; pass rates</h2>
+<div class="sub" id="evsub"></div>
+<div class="grid charts" id="evcharts" style="margin-top:12px"></div>
+</div>
+
+<h2>Full model comparison</h2>
+<div class="toolbar" id="toolbar"></div>
+<div id="tblwrap"><table id="tbl"></table></div>
+
+<div id="quantsec"><h2>Quantization analysis</h2>
+<div class="card tablewrap2"><table id="qtbl" class="qt"></table></div></div>
+
+<h2>Methodology</h2><div class="card" id="meth"></div>
+
+<footer>
+<h2>Project &amp; source code</h2>
+<div class="card">Source, issues and updates:
+ <a href="https://github.com/Maximo101/llama-swap-llm-benchmark" target="_blank" rel="noopener noreferrer">https://github.com/Maximo101/llama-swap-llm-benchmark</a></div>
+</footer>
+
+<script>
+const D = __DATA__, META = D.meta, ALL = D.models;
+const $ = id => document.getElementById(id);
+const isOK = m => m.status === 'ok' && m.avg_tps != null;
+const ALLOK = ALL.filter(isOK);
+const OVH = ALL.find(m=>m.ram_overhead_gb!=null)?.ram_overhead_gb;
+const IDLE = (() => { const v = ALL.map(m=>m.ram_idle_gb).filter(x=>x!=null).sort((a,b)=>a-b); return v.length ? v[Math.floor(v.length/2)] : null; })();
+const cur = META.currency;
+// ---- evaluations (only datasets that were actually run are in META.evals) ----
+const EVM = META.evals, EV = EVM ? EVM.datasets : [];
+const evPct = (m,e) => m['eval_'+e.key+'_pct'];
+const evN = (m,e) => m['eval_'+e.key+'_n'];
+const EVPAL = ['#58a6ff','#3fb950','#f0883e','#a371f7','#f778ba'];
+const accColor = p => p>=75?'#3fb950':p>=50?'#58a6ff':p>=25?'#d29922':'#f778ba';
+const EVKINDS = [['qa','Accuracy \u2014 knowledge &amp; reasoning (%)'],['code','Pass rate \u2014 coding, pass@1 (%)'],['math','Accuracy \u2014 math &amp; reasoning (%)'],['tool','Tool calling \u2014 function-call accuracy (%)']].filter(([k])=>EV.some(e=>e.kind===k));
+const MOE = EVM ? EVM.margin : null;                         // 95% margin of error per dataset and for the average
+const LC = META.longctx, LCL = LC ? LC.lengths : [];
+const PFL = META.prefill_lengths || [];
+const BUD = META.budget, BRULES = BUD ? Object.keys(ALL.find(m=>m.budget)?.budget || {}) : [];
+const retryTxt = m => m.eval_retry_n==null ? null : `${m.eval_retry_n} (${m.eval_retry_pct.toFixed(0)}%)`;
+const RETRY_WARN = 20;                                       // % of questions retried that points to a template/thinking problem
+
+// Chart.js cannot resolve CSS var(): every chart colour below is a literal hex value.
+function tpsColor(t){return t>100?'#a371f7':t>80?'#58a6ff':t>50?'#3fb950':t>30?'#d29922':'#f778ba';}
+function vramColor(p){return p>90?'#f85149':p>70?'#db6d28':'#3fb950';}
+const HLRED = '#ff4d4d';                                   // highlighted (clicked) model: red text everywhere
+const hlc = name => (state.base!=null && state.base===name) ? ' hl' : '';
+const isHlLabel = (chart, i) => state.base!=null && !!chart.data.labels && chart.data.labels[i]===state.base;
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = (v,d=1) => v==null ? '&ndash;' : Number(v).toFixed(d);
+const ctxFmt = v => v==null ? '&ndash;' : (v>=1024 ? Math.round(v/1024)+'k' : String(v));
+
+Chart.defaults.color = '#e6edf3';
+Chart.defaults.borderColor = '#30363d';
+Chart.defaults.maintainAspectRatio = false;
+
+const state = {filters:{quant:new Set(), arch:new Set(), size:new Set(), vram95:false, hideErr:false, noSpill:false, ctxOk:false, budOk:false},
+               sk:'avg_tps', sd:-1, base:null, rate:'peak'};
+
+/* ---------- filters ---------- */
+const BUCKETS = [['lt10','<10B',p=>p<10],['10-20','10\u201320B',p=>p>=10&&p<20],['20-40','20\u201340B',p=>p>=20&&p<40],['gt40','\u226540B',p=>p>=40]];
+const bucket = p => p==null ? 'unk' : BUCKETS.find(b=>b[2](p))[0];
+function pass(m){
+  const f = state.filters;
+  if (f.quant.size && !f.quant.has(m.quant)) return false;
+  if (f.arch.size && !f.arch.has(m.arch)) return false;
+  if (f.size.size && !f.size.has(bucket(m.params_b))) return false;
+  if (f.vram95 && m.vram_pct!=null && m.vram_pct>=95) return false;
+  if (f.noSpill && (m.ram_spill_gb||0) > 0) return false;
+  if (f.hideErr && m.status!=='ok') return false;
+  if (f.ctxOk && m.ctx_ok===false) return false;
+  if (f.budOk && m.budget_pass===false) return false;
+  return true;
+}
+function buildFilters(){
+  const quants = [...new Set(ALL.map(m=>m.quant))].sort();
+  const archs = [...new Set(ALL.map(m=>m.arch).filter(Boolean))].sort();
+  const sizes = BUCKETS.filter(b=>ALL.some(m=>m.params_b!=null && b[2](m.params_b))).map(b=>[b[0],b[1]]);
+  if (ALL.some(m=>m.params_b==null)) sizes.push(['unk','unknown']);
+  const grp = (label,g,items) => `<div class="fg"><span>${label}</span>${items.map(([v,t])=>`<button class="tog" data-g="${g}" data-v="${esc(v)}">${esc(t)}</button>`).join('')}</div>`;
+  $('filters').innerHTML =
+    grp('Quant','quant',quants.map(q=>[q,q])) +
+    (archs.length>1 ? grp('Type','arch',archs.map(a=>[a,a])) : '') +
+    grp('Size','size',sizes) +
+    grp('Show','x',[['vram95','Hide VRAM \u226595%'],['noSpill','VRAM-only (hide RAM spill)'],['hideErr','Hide failed']]
+      .concat(META.min_ctx && ALL.some(m=>m.ctx_ok===false) ? [['ctxOk','Hide ctx < '+ctxFmt(META.min_ctx)]] : [])
+      .concat(BUD ? [['budOk','Budget pass only ('+esc(BUD.name)+')']] : [])) +
+    `<div class="fg"><button class="tog" data-reset="1">Reset</button><span id="fcount"></span><span id="hlchip"></span></div>`;
+  $('filters').onclick = e => {
+    const b = e.target.closest('button'); if(!b) return;
+    if (b.dataset.clearhl){ state.base = null; return refreshHighlight(); }
+    if (b.dataset.reset){ state.base = null; Object.values(state.filters).forEach(v=>v instanceof Set?v.clear():0); state.filters.vram95=state.filters.hideErr=state.filters.noSpill=state.filters.ctxOk=state.filters.budOk=false;
+      document.querySelectorAll('#filters .tog').forEach(x=>x.classList.remove('on')); return render(); }
+    const g=b.dataset.g, v=b.dataset.v; if(!g) return;
+    if (g==='x') state.filters[v] = !state.filters[v];
+    else { const s=state.filters[g]; s.has(v)?s.delete(v):s.add(v); }
+    b.classList.toggle('on'); render();
+  };
+}
+
+/* ---------- charts ---------- */
+const charts = {};
+function mk(id, cfg){ if(charts[id]) charts[id].destroy(); charts[id] = new Chart($(id), cfg); }
+function drop(id){ if(charts[id]){ charts[id].destroy(); delete charts[id]; } }
+// Shows/hides a chart card and sizes it to fit every label.
+function box(key, items, h){
+  const b=$('b_'+key), e=$('e_'+key);
+  if(!items.length){ drop('c_'+key); b.style.display='none'; e.hidden=false; return false; }
+  b.style.display=''; e.hidden=true; b.style.height=h+'px'; return true;
+}
+const rowsH = n => Math.max(340, n*26+90);
+const valueLabels = {id:'valueLabels', afterDatasetsDraw(chart){
+  if (chart.data.datasets.length!==1) return;
+  const c = chart.ctx, horiz = chart.options.indexAxis === 'y';
+  c.save(); c.fillStyle = '#e6edf3'; c.font = '12px sans-serif'; c.textBaseline = 'middle';
+  c.textAlign = horiz ? 'left' : 'center';
+  chart.getDatasetMeta(0).data.forEach((bar,i)=>{
+    const v = chart.data.datasets[0].data[i]; if (v==null) return;
+    const hl = isHlLabel(chart,i); c.fillStyle = hl ? HLRED : '#e6edf3'; c.font = (hl?'700 ':'')+'12px sans-serif';
+    c.fillText(v.toFixed(v<10?2:1), horiz ? bar.x+6 : bar.x, horiz ? bar.y : bar.y-10);
+  }); c.restore();
+}};
+const yTicks = {autoSkip:false, font:ctx=>({size:11, weight:isHlLabel(ctx.chart,ctx.index)?'700':'400'}), color:ctx=>isHlLabel(ctx.chart,ctx.index)?HLRED:'#e6edf3'};
+const axTitle = t => ({display:!!t, text:t||'', color:'#e6edf3'});
+function hbar(key, items, valFn, xTitle){
+  if(!box(key, items, rowsH(items.length))) return;
+  const colors = items.map(m=>tpsColor(m.avg_tps));
+  mk('c_'+key, {type:'bar', plugins:[valueLabels],
+    data:{labels:items.map(m=>m.model), datasets:[{data:items.map(valFn), backgroundColor:colors, borderColor:colors, borderWidth:1}]},
+    options:{indexAxis:'y', plugins:{legend:{display:false}}, scales:{x:{grace:'12%', beginAtZero:true, title:axTitle(xTitle)}, y:{ticks:yTicks}}}});
+}
+const hlPoints = {id:'hlPoints', afterDatasetsDraw(chart){
+  if (state.base==null) return;
+  const ds = chart.data.datasets[0]; if (!ds) return;
+  const i = ds.data.findIndex(d=>d && d.name===state.base); if (i<0) return;
+  const el = chart.getDatasetMeta(0).data[i]; if (!el || el.skip) return;
+  const c = chart.ctx, rad = ((el.options && el.options.radius) || 8) + 5, ca = chart.chartArea;
+  c.save(); c.strokeStyle = HLRED; c.fillStyle = HLRED; c.lineWidth = 2.5; c.beginPath(); c.arc(el.x, el.y, rad, 0, Math.PI*2); c.stroke();
+  c.font = '700 12px sans-serif'; c.textBaseline = 'middle';
+  const right = el.x + rad + 6 + c.measureText(state.base).width < ca.right;
+  c.textAlign = right ? 'left' : 'right'; c.fillText(state.base, right ? el.x+rad+6 : el.x-rad-6, el.y); c.restore();
+}};
+const pt = (m,x,y) => ({x, y, name:m.model});
+const bestPf = m => { for (const l of [...PFL].reverse()) if (m['prefill_'+l+'_tps']!=null) return m['prefill_'+l+'_tps']; return m.prefill_tps; };
+
+function renderCharts(OKR){
+  hbar('tps', [...OKR].sort((a,b)=>b.avg_tps-a.avg_tps), m=>m.avg_tps, 'tokens/sec');
+
+  const vp = OKR.filter(m=>m.vram_gb!=null);
+  if (box('vram', vp, 420)){
+    const ps = vp.map(m=>m.params_b).filter(p=>p!=null), pmin=Math.min(...ps), pmax=Math.max(...ps);
+    const rad = p => p==null ? 8 : (pmax===pmin ? 15 : 5 + (p-pmin)/(pmax-pmin)*20);
+    mk('c_vram', {type:'bubble', plugins:[hlPoints],
+      data:{datasets:[{data:vp.map(m=>({x:m.vram_gb,y:m.avg_tps,r:rad(m.params_b),name:m.model,p:m.params_b})),
+        backgroundColor:vp.map(m=>tpsColor(m.avg_tps)+'b3'), borderColor:vp.map(m=>tpsColor(m.avg_tps))}]},
+      options:{plugins:{legend:{display:false}, tooltip:{callbacks:{label:c=>`${c.raw.name}: ${c.raw.y.toFixed(1)} tok/s, ${c.raw.x.toFixed(1)} GB, ${c.raw.p??'?'}B`}}},
+        scales:{x:{min:Math.floor(Math.min(...vp.map(m=>m.vram_gb))-1), max:Math.ceil(Math.max(...vp.map(m=>m.vram_gb))+1), title:axTitle('VRAM used (GB)')},
+                y:{min:0, max:Math.ceil(Math.max(...vp.map(m=>m.avg_tps))+20), title:axTitle('Avg tok/s')}}}});
+  }
+
+  hbar('eff', OKR.filter(m=>m.tps_per_watt!=null).sort((a,b)=>b.tps_per_watt-a.tps_per_watt), m=>m.tps_per_watt, 'tok/s per W');
+  hbar('jt', OKR.filter(m=>m.j_per_token!=null).sort((a,b)=>a.j_per_token-b.j_per_token), m=>m.j_per_token, 'joules per token');
+  hbar('ttft', OKR.filter(m=>m.ttft_ms!=null).sort((a,b)=>a.ttft_ms-b.ttft_ms), m=>m.ttft_ms, 'milliseconds');
+
+  const lp = OKR.filter(m=>m.ttft_ms!=null);
+  if (box('lat', lp, 420)){
+    mk('c_lat', {type:'scatter', plugins:[hlPoints],
+      data:{datasets:[{data:lp.map(m=>pt(m,m.ttft_ms,m.avg_tps)), pointRadius:7, pointHoverRadius:10,
+        backgroundColor:lp.map(m=>tpsColor(m.avg_tps)+'cc'), borderColor:lp.map(m=>tpsColor(m.avg_tps))}]},
+      options:{plugins:{legend:{display:false}, tooltip:{callbacks:{label:c=>`${c.raw.name}: TTFT ${c.raw.x.toFixed(0)} ms, ${c.raw.y.toFixed(1)} tok/s`}}},
+        scales:{x:{min:0, title:axTitle('TTFT (ms) \u2014 lower is more responsive')}, y:{min:0, title:axTitle('Avg tok/s \u2014 higher is more throughput')}}}});
+  }
+
+  const pg = OKR.filter(m=>m.prefill_tps!=null).sort((a,b)=>b.prefill_tps-a.prefill_tps);
+  if (box('pg', pg, Math.max(380, pg.length*44+100))){
+    mk('c_pg', {type:'bar',
+      data:{labels:pg.map(m=>m.model), datasets:[
+        {label:'Prefill (prompt processing)', data:pg.map(m=>m.prefill_tps), backgroundColor:'#58a6ff', borderColor:'#58a6ff', borderWidth:1},
+        {label:'Generation (avg)', data:pg.map(m=>m.avg_tps), backgroundColor:'#3fb950', borderColor:'#3fb950', borderWidth:1}]},
+      options:{indexAxis:'y', plugins:{legend:{display:true}}, scales:{x:{type:'logarithmic', min:1, title:axTitle('tokens/sec (log scale)')}, y:{ticks:yTicks}}}});
+  }
+
+  const PFCOL = ['#58a6ff','#3fb950','#d29922','#f0883e','#f85149'];
+  const pl = OKR.filter(m=>PFL.some(l=>m['prefill_'+l+'_tps']!=null)).sort((a,b)=>(bestPf(b)||0)-(bestPf(a)||0));
+  if (PFL.length && box('pctx', pl, Math.max(380, pl.length*(PFL.length*12+16)+100))){
+    const sets = [{label:'~'+Math.round((ALLOK.find(m=>m.prefill_tokens)?.prefill_tokens||1400)/100)/10+'k (short test)', k:'prefill_tps'}]
+      .concat(PFL.map(l=>({label:l, k:'prefill_'+l+'_tps'})));
+    mk('c_pctx', {type:'bar',
+      data:{labels:pl.map(m=>m.model), datasets:sets.map((d,i)=>({label:d.label, data:pl.map(m=>m[d.k]??null), backgroundColor:PFCOL[i%PFCOL.length], borderColor:PFCOL[i%PFCOL.length], borderWidth:1}))},
+      options:{indexAxis:'y', plugins:{legend:{display:true}, tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.parsed.x==null?'not run':c.parsed.x.toFixed(0)+' tok/s'}`}}},
+        scales:{x:{beginAtZero:true, title:axTitle('prompt tokens/sec (higher is better)')}, y:{ticks:yTicks}}}});
+  }
+
+  const pw = OKR.filter(m=>m.gpu_w!=null).sort((a,b)=>b.gpu_w-a.gpu_w);
+  if (box('pwr', pw, Math.max(380, pw.length*30+100))){
+    mk('c_pwr', {type:'bar',
+      data:{labels:pw.map(m=>m.model), datasets:[
+        {label:'Idle (baseline)', data:pw.map(m=>m.idle_gpu_w??0), backgroundColor:'#6e7681', borderColor:'#6e7681', borderWidth:1},
+        {label:'Active increase', data:pw.map(m=>Math.max(0,m.gpu_w-(m.idle_gpu_w??0))), backgroundColor:'#f0883e', borderColor:'#f0883e', borderWidth:1}]},
+      options:{indexAxis:'y', plugins:{legend:{display:true}, tooltip:{callbacks:{footer:c=>'Active total: '+c.reduce((s,x)=>s+x.parsed.x,0).toFixed(0)+' W'}}},
+        scales:{x:{stacked:true, title:axTitle('GPU watts')}, y:{stacked:true, ticks:yTicks}}}});
+  }
+
+  const mm = OKR.filter(m=>m.vram_gb!=null).sort((a,b)=>((b.vram_gb||0)+(b.ram_proc_gb||0))-((a.vram_gb||0)+(a.ram_proc_gb||0)));
+  if (box('mem', mm, Math.max(380, mm.length*30+100))){
+    mk('c_mem', {type:'bar',
+      data:{labels:mm.map(m=>m.model), datasets:[
+        {label:'VRAM used', data:mm.map(m=>m.vram_gb), backgroundColor:'#58a6ff', borderColor:'#58a6ff', borderWidth:1},
+        {label:'Inference-server RAM', data:mm.map(m=>m.ram_proc_gb??0), backgroundColor:'#f0883e', borderColor:'#f0883e', borderWidth:1}]},
+      options:{indexAxis:'y', plugins:{legend:{display:true}, tooltip:{callbacks:{footer:c=>'Total: '+c.reduce((s,x)=>s+x.parsed.x,0).toFixed(1)+' GB'}}},
+        scales:{x:{stacked:true, title:axTitle('GB')}, y:{stacked:true, ticks:yTicks}}}});
+  }
+
+  const qs = quantGroups(OKR);
+  if (box('quant', qs, 340)){
+    const colors = qs.map(x=>tpsColor(x.avg));
+    mk('c_quant', {type:'bar', plugins:[valueLabels],
+      data:{labels:qs.map(x=>x.q), datasets:[{data:qs.map(x=>x.avg), backgroundColor:colors, borderColor:colors, borderWidth:1}]},
+      options:{plugins:{legend:{display:false}}, scales:{x:{ticks:{autoSkip:false}}, y:{grace:'12%', beginAtZero:true}}}});
+  }
+}
+
+/* ---------- evaluations: accuracy (QA) and pass rate (code) ---------- */
+const evLabels = {id:'evLabels', afterDatasetsDraw(chart){
+  const c = chart.ctx; c.save(); c.fillStyle = '#e6edf3'; c.font = '11px sans-serif'; c.textBaseline = 'middle'; c.textAlign = 'left';
+  chart.data.datasets.forEach((d,di)=>chart.getDatasetMeta(di).data.forEach((bar,i)=>{
+    const v = d.data[i]; if (v==null) return; const hl = isHlLabel(chart,i); c.fillStyle = hl ? HLRED : '#e6edf3'; c.font = (hl?'700 ':'')+'11px sans-serif';
+    c.fillText(v.toFixed(1)+'%', bar.x+5, bar.y); }));
+  c.restore();
+}};
+const evMean = (m, ds) => { const v = ds.map(e=>evPct(m,e)).filter(x=>x!=null); return v.length ? v.reduce((s,x)=>s+x,0)/v.length : -1; };
+function renderEvalCharts(OKR){
+  if (!EV.length && !LCL.length) return;
+  EVKINDS.forEach(([kind])=>{
+    const key = 'ev'+kind, ds = EV.filter(e=>e.kind===kind);
+    const items = OKR.filter(m=>ds.some(e=>evPct(m,e)!=null)).sort((a,b)=>evMean(b,ds)-evMean(a,ds));
+    if (!box(key, items, Math.max(380, items.length*(ds.length*15+14)+100))) return;
+    mk('c_'+key, {type:'bar', plugins:[evLabels],
+      data:{labels:items.map(m=>m.model), datasets:ds.map(e=>{ const col = EVPAL[EV.indexOf(e)%EVPAL.length];
+        return {label:e.label, data:items.map(m=>evPct(m,e)), backgroundColor:col, borderColor:col, borderWidth:1}; })},
+      options:{indexAxis:'y', plugins:{legend:{display:true}, tooltip:{callbacks:{label:c=>{
+          const m = items[c.dataIndex], e = ds[c.datasetIndex], p = evPct(m,e), n = evN(m,e);
+          const na = m['eval_'+e.key+'_na']||0, dg = m['eval_'+e.key+'_degr']||0, sq = m['eval_'+e.key+'_sec'];
+          const fb = m['eval_'+e.key+'_fallback']||0, mo = MOE && MOE.per_dataset[e.key];
+          return p==null ? `${e.label}: not run` : `${e.label}: ${p.toFixed(1)}%${mo?` \u00b1${mo.moe.toFixed(0)}`:''} (${Math.round(p*n/100)}/${n} correct${na?`, ${na} N/A`:''}${fb?`, ${fb} retried`:''}${dg?`, ${dg} Fail: Degradation`:''}${sq!=null?`, ${sq.toFixed(1)} s/question`:''})`; }}}},
+        scales:{x:{min:0, max:112, ticks:{callback:v=>v<=100?v+'%':''}, title:axTitle(kind==='code'?'pass@1 (%)':'accuracy (%)')}, y:{ticks:yTicks}}}});
+  });
+  if (LCL.length){
+    const lp = OKR.filter(m=>LCL.some(l=>m['longctx_'+l+'_pct']!=null) || m.longctx_note).sort((a,b)=>(b.longctx_avg_pct??-1)-(a.longctx_avg_pct??-1));
+    if (box('evlong', lp, Math.max(380, lp.length*(LCL.length*15+14)+100))){
+      const LCOL = ['#a371f7','#f778ba','#58a6ff'];
+      mk('c_evlong', {type:'bar', plugins:[evLabels],
+        data:{labels:lp.map(m=>m.model), datasets:LCL.map((l,i)=>({label:l+' tokens', data:lp.map(m=>m['longctx_'+l+'_pct']??null), backgroundColor:LCOL[i%3], borderColor:LCOL[i%3], borderWidth:1}))},
+        options:{indexAxis:'y', plugins:{legend:{display:true}, tooltip:{callbacks:{label:c=>{ const m = lp[c.dataIndex];
+            return `${c.dataset.label}: ${c.parsed.x==null?'not run':c.parsed.x.toFixed(0)+'%'} \u00b7 KV ${m.kv_type||'?'}${m.longctx_kv_ok===false?' (below '+LC.kv_min+')':''}${m.longctx_note?' \u00b7 '+m.longctx_note:''}`; }}}},
+          scales:{x:{min:0, max:112, ticks:{callback:v=>v<=100?v+'%':''}, title:axTitle('keys retrieved (%)')}, y:{ticks:yTicks}}}});
+    }
+  }
+  const sp = OKR.filter(m=>m.eval_avg_pct!=null && m.avg_tps!=null);
+  if (box('evspeed', sp, 420)){
+    mk('c_evspeed', {type:'scatter', plugins:[hlPoints],
+      data:{datasets:[{data:sp.map(m=>pt(m,m.eval_avg_pct,m.avg_tps)), pointRadius:7, pointHoverRadius:10,
+        backgroundColor:sp.map(m=>tpsColor(m.avg_tps)+'cc'), borderColor:sp.map(m=>tpsColor(m.avg_tps))}]},
+      options:{plugins:{legend:{display:false}, tooltip:{callbacks:{label:c=>`${c.raw.name}: ${c.raw.x.toFixed(1)}% avg score, ${c.raw.y.toFixed(1)} tok/s`}}},
+        scales:{x:{min:0, max:100, title:axTitle('Average score over '+EV.map(e=>e.short).join(', ')+' (%)')}, y:{min:0, title:axTitle('Avg tok/s')}}}});
+  }
+}
+
+/* ---------- podium + radar ---------- */
+const maxOf = f => Math.max(1e-9, ...ALLOK.map(m=>f(m)||0));
+const MAXTPS = maxOf(m=>m.avg_tps), MAXEFF = maxOf(m=>m.tps_per_watt), MAXP = maxOf(m=>m.params_b);
+// All four axes are 0-1: speed, efficiency and params relative to the best model; VRAM economy = 1 - VRAM%.
+const radarVals = m => [m.avg_tps/MAXTPS, (m.tps_per_watt||0)/MAXEFF, (m.params_b||0)/MAXP, m.vram_pct==null?0:Math.max(0,1-m.vram_pct/100)];
+// Top 3 per category (a model can appear in several rows): ranked by `f` among eligible models that have it.
+const topBy = (arr, f, k=3) => arr.filter(m=>f(m)!=null).sort((a,b)=>f(b)-f(a)).slice(0,k);
+const PODIUM = [
+  {title:'OVERALL BALANCE',  name:'Balance score', f:m=>m.goldilocks},
+  {title:'CHAT DRIVER',      name:'Chat score',    f:m=>m.score_chat},
+  {title:'AGENTIC REASONER', name:'Agent score',   f:m=>m.score_agent, agent:true},
+  {title:'VRAM SWEET SPOT',  name:'Sweet-spot score', f:m=>m.score_sweet, sweet:true}
+];
+const RANKCLS = ['gold','silver','bronze'];
+function renderPodium(OKR){
+  for (let i=0;i<3*PODIUM.length;i++) drop('rad'+i);
+  const pool = OKR.filter(m=>m.eligible);
+  const radars = [];                                   // [{m, id}] drawn after the HTML exists
+  const rows = PODIUM.map(cat=>{
+    const cards = topBy(pool, cat.f).map((m,rank)=>{
+      const id = radars.length; radars.push(m);
+      return `
+    <div class="card ${RANKCLS[rank]}"><div class="rank">#${rank+1} ${cat.title}</div>
+    <div class="pname"><span class="mn${hlc(m.model)}" data-model="${esc(m.model)}" title="Click to highlight this model everywhere">${esc(m.model)}</span></div>
+    <div class="stat"><b style="color:${tpsColor(m.avg_tps)}">${fmt(m.avg_tps)}</b> tok/s &middot; ${m.params_b}B params &middot; ctx ${ctxFmt(m.ctx_size)}</div>
+    <div class="stat">VRAM <b>${fmt(m.vram_gb)} GB</b> (${fmt(m.vram_pct,0)}%) &middot; GPU <b>${fmt(m.gpu_w,0)} W</b> &middot; CPU <b>${fmt(m.cpu_w,0)} W</b>${m.ram_spill_gb>0?` &middot; <span class="err">RAM spill ${fmt(m.ram_spill_gb)} GB</span>`:''}</div>
+    ${(cat.agent||cat.sweet)&&m.eval_retry_n?`<div class="stat">Retries <b class="${m.eval_retry_pct>RETRY_WARN?'err':''}">${retryTxt(m)}</b>${m.eval_quality!=null?` &middot; eval after penalty <b>${fmt(m.eval_quality,0)}%</b>`:''}</div>`:''}
+    ${m.kv_type||m.max_ctx_vram?`<div class="stat">KV <b>${esc(m.kv_type||'?')}</b>${m.attn_type?` &middot; ${esc(m.attn_type)}`:''}${m.max_ctx_vram?` &middot; max ctx @${META.max_ctx_pct}% <b>${ctxFmt(m.max_ctx_vram)}</b>`:''}</div>`:''}
+    <div class="stat">${cat.name} <b>${fmt(cat.f(m),0)}</b>${cat.sweet&&m.vram_fit!=null?` (VRAM fit ${fmt(m.vram_fit*100,0)}%)`:''}${(cat.agent||cat.sweet)&&m.eval_avg_pct!=null?` (eval ${fmt(m.eval_avg_pct,0)}%${m.eval_avg_sec!=null?`, ${fmt(m.eval_avg_sec,0)} s/q`:''})`:''} &middot; <b>${fmt(m.j_per_token,2)}</b> J/token</div>
+    <div class="radarbox"><canvas id="rad${id}"></canvas></div></div>`;
+    });
+    return cards.length ? `<div class="grid podium" style="margin-bottom:16px">${cards.join('')}</div>` : '';
+  });
+  $('podium').innerHTML = radars.length ? rows.join('')
+    : '<div class="card sub">No eligible models for the current filters (need parsable params and a speed result).</div>';
+  radars.forEach((m,i)=>mk('rad'+i, {type:'radar',
+    data:{labels:['Speed','Efficiency','Reasoning (params)','VRAM economy'],
+      datasets:[{data:radarVals(m), borderColor:'#58a6ff', backgroundColor:'rgba(88,166,255,0.25)', pointBackgroundColor:'#58a6ff', borderWidth:2}]},
+    options:{plugins:{legend:{display:false}},
+      scales:{r:{min:0, max:1, ticks:{display:false, stepSize:0.25}, grid:{color:'#30363d'}, angleLines:{color:'#30363d'}, pointLabels:{color:'#e6edf3', font:{size:10}}}}}}));
+}
+
+/* ---------- quantization table ---------- */
+function quantGroups(OKR){
+  const g = {}; OKR.forEach(m=>(g[m.quant] = g[m.quant]||[]).push(m));
+  const mean = xs => xs.length ? xs.reduce((s,x)=>s+x,0)/xs.length : null;
+  return Object.entries(g).map(([q,ms])=>({q, n:ms.length, avg:ms.reduce((s,m)=>s+m.avg_tps,0)/ms.length,
+    ev:mean(ms.map(m=>m.eval_avg_pct).filter(x=>x!=null)), names:ms.map(m=>m.model)})).sort((a,b)=>b.avg-a.avg);
+}
+function renderQuant(OKR){
+  const qg = quantGroups(OKR), showEv = EV.length>0 && qg.some(x=>x.ev!=null);
+  $('qtbl').innerHTML = '<tr><th>Quant</th><th>Models</th><th>Avg TPS</th>' + (showEv?'<th>Eval avg %</th>':'') + '<th style="text-align:left">Members</th></tr>' +
+    qg.map(x=>`<tr><td>${esc(x.q)}</td><td>${x.n}</td><td style="color:${tpsColor(x.avg)}">${fmt(x.avg)}</td>${showEv?`<td style="color:${x.ev==null?'inherit':accColor(x.ev)}">${fmt(x.ev)}</td>`:''}<td style="text-align:left;white-space:normal">${x.names.map(n=>`<span class="mn${hlc(n)}" data-model="${esc(n)}">${esc(n)}</span>`).join(', ')}</td></tr>`).join('');
+}
+
+/* ---------- comparison table ---------- */
+const FROZEN = {model:260, params_b:64, quant:84, load_s:78, vram_gb:236};   // widths of the frozen columns
+const rateKey = () => state.rate==='off' ? 'off' : 'peak';
+const ALLCOLS = [
+ {k:'model',l:'Model'},
+ {k:'params_b',l:'Params',f:v=>v+'B',nodelta:1},
+ {k:'quant',l:'Quant',nodelta:1},
+ {k:'load_s',l:'Load s',dec:1,better:'low'},
+ {k:'vram_gb',l:'VRAM',better:'low'},
+ {k:'vram_fit',l:'VRAM fit %',dec:0,better:'high',get:m=>m.vram_fit==null?null:m.vram_fit*100},
+ {k:'ctx_size',l:'Ctx',f:ctxFmt,nodelta:1},
+ {k:'max_ctx_vram',l:'Max ctx @'+META.max_ctx_pct+'%',f:ctxFmt,better:'high'},
+ {k:'n_ctx_train',l:'Train ctx',f:ctxFmt,nodelta:1},
+ {k:'kv_type',l:'KV type',nodelta:1},
+ {k:'kv_kib_token',l:'KV KiB/tok',dec:0,better:'low'},
+ {k:'kv_gb_ctx',l:'KV GB @ctx',dec:2,better:'low'},
+ {k:'flash_attn',l:'FA',nodelta:1},
+ {k:'ubb',l:'-ub / -b',nodelta:1,get:m=>m.ubatch==null?null:`${m.ubatch} / ${m.batch??'?'}`},
+ {k:'parallel',l:'Slots',dec:0,nodelta:1},
+ {k:'mmproj',l:'mmproj',nodelta:1},
+ {k:'arch',l:'Type',nodelta:1},
+ {k:'attn_type',l:'Attention',nodelta:1},
+ {k:'experts',l:'Experts',nodelta:1,get:m=>m.expert_count?`${m.expert_used??'?'} of ${m.expert_count}`:null},
+ {k:'layers',l:'Full-attn layers',nodelta:1,get:m=>m.full_attn_layers==null?null:`${m.full_attn_layers} of ${m.n_layers??'?'}`},
+ {k:'gguf_gb',l:'GGUF GB',dec:2,better:'low'},
+ {k:'bpw',l:'BPW',dec:2,nodelta:1},
+ {k:'offload',l:'CPU offload',nodelta:1},
+ {k:'vram_hint',l:'VRAM tuning hint',nodelta:1,get:m=>vramHint(m)},
+ {k:'ram_delta_gb',l:'RAM vs idle GB',dec:1,better:'low'},
+ {k:'ram_used_gb',l:'System RAM',better:'low'},
+ {k:'ram_spill_gb',l:'RAM spill GB',dec:1,better:'low'},
+ {k:'ram_proc_gb',l:'Server RAM GB',dec:1,better:'low'},
+ {k:'gpu_w',l:'GPU W',dec:0,better:'low'},
+ {k:'idle_gpu_w',l:'Idle W',dec:0,better:'low'},
+ {k:'gpu_peak_w',l:'Peak W',dec:0,better:'low'},
+ {k:'cpu_w',l:'CPU W',dec:0,better:'low'},
+ {k:'gpu_util',l:'GPU %',dec:0},
+ {k:'gpu_temp',l:'Temp \u00b0C',dec:0,better:'low'},
+ {k:'ttft_ms',l:'TTFT ms',dec:0,better:'low'},
+ {k:'latency_s',l:'Latency s',dec:1,better:'low'},
+ {k:'energy_wh',l:'Energy Wh',dec:3,better:'low'},
+ {k:'j_per_token',l:'J/token',dec:2,better:'low'},
+ {k:'cost1m',l:cur+'/1M tok',dec:3,better:'low',cost:1,get:m=>m['cost_1m_'+rateKey()]},
+ {k:'cost1kq',l:cur+'/1k queries',dec:4,better:'low',cost:1,get:m=>m['cost_1kq_'+rateKey()]},
+ {k:'prefill_tps',l:'Prefill t/s',dec:0,better:'high'},
+ {k:'prefill_tokens',l:'Prefill tok',dec:0,nodelta:1},
+ ...PFL.map(l=>({k:'prefill_'+l+'_tps',l:'Prefill '+l+' t/s',dec:0,better:'high'})),
+ {k:'agent_ttft_s',l:'Agent TTFT s',dec:1,better:'low'},
+ {k:'agent_ttft_warm_s',l:'Next-turn TTFT s',dec:2,better:'low'},
+ {k:'cache_hit_pct',l:'Cache hit %',dec:0,better:'high'},
+ {k:'cache_speedup',l:'Cache \u00d7',dec:1,better:'high'},
+ {k:'tech_tps',l:'Tech TPS',tps:1,better:'high'},
+ {k:'logic_tps',l:'Logic TPS',tps:1,better:'high'},
+ {k:'avg_tps',l:'Avg TPS',tps:1,better:'high'},
+ ...EV.flatMap(e=>[{k:'eval_'+e.key+'_pct',l:e.short+' %',dec:1,better:'high',acc:1},
+                   {k:'eval_'+e.key+'_sec',l:e.short+' s/q',dec:1,better:'low'}]),
+ ...(EV.length>1?[{k:'eval_avg_pct',l:'Eval avg %',dec:1,better:'high',acc:1},{k:'eval_avg_sec',l:'Avg s/q',dec:1,better:'low'}]:[]),
+ {k:'eval_retry_pct',l:'Retries',better:'low',retry:1},
+ {k:'eval_quality',l:'Eval \u2212 retry penalty %',dec:1,better:'high',acc:1},
+ ...LCL.map(l=>({k:'longctx_'+l+'_pct',l:'Long-ctx '+l+' %',dec:0,better:'high',acc:1})),
+ ...BRULES.map(rk=>({k:'bud_'+rk,l:rk.replace(/_/g,' ').toLowerCase().replace(/^\w/,c=>c.toUpperCase()),nodelta:1,bud:rk,get:m=>m.budget&&m.budget[rk]?m.budget[rk].ok:null})),
+ ...(BUD?[{k:'budget_pass',l:'Budget ('+BUD.name+')',nodelta:1,bud:'*'}]:[]),
+ {k:'goldilocks',l:'Goldilocks',dec:0,better:'high'},
+ {k:'score_chat',l:'Chat score',dec:0,better:'high'},
+ {k:'score_agent',l:'Agent score',dec:0,better:'high'},
+ {k:'agent_quality',l:'Agent quality',dec:0,better:'high'},
+ {k:'score_sweet',l:'Sweet spot',dec:0,better:'high'}
+];
+// Where the model sits against the VRAM sweet spot, and what to try (offload = launched with --n-cpu-moe / -ngl / -ot flags).
+function vramHint(m){
+  const p = m.vram_pct, tot = m.vram_total_gb; if (p==null || m.vram_gb==null) return null;
+  const lo = META.vram_sweet_low, hi = META.vram_sweet_high, mx = META.vram_sweet_max;
+  const off = m.offload && m.offload!=='none';
+  if (p>mx) return off ? 'Too tight: raise --n-cpu-moe or cut ctx' : 'Too tight: cut ctx / KV cache, or offload experts (--n-cpu-moe)';
+  if (p>hi) return 'Near the limit: little headroom';
+  if (p<lo){ const free = Math.max(0, hi/100*tot - m.vram_gb).toFixed(1);
+    return off ? `Room to lower --n-cpu-moe (~${free} GB free up to ${hi}%)` : `Fits easily: room for more ctx or a bigger quant (~${free} GB)`; }
+  return 'OK: in the sweet spot';
+}
+const hintCls = h => h.startsWith('OK') ? 'hint-ok' : h.startsWith('Too') ? 'hint-tight' : 'hint-room';
+const val = (m,c) => c.get ? c.get(m) : m[c.k];
+// Columns with no data in this run (e.g. Load s / RAM delta on Strata) are hidden instead of shown empty.
+const COLS = ALLCOLS.filter(c => c.k==='model' || ALL.some(m => m.status==='ok' && val(m,c)!=null));
+const HIDDEN = ALLCOLS.filter(c => !COLS.includes(c)).map(c => c.l);
+const FZ = {}; let fzLeft = 0;
+COLS.forEach(c => { if (FROZEN[c.k]) { FZ[c.k] = {left:fzLeft, w:FROZEN[c.k]}; fzLeft += FROZEN[c.k]; } });
+const LASTFZ = [...COLS].reverse().find(c => FZ[c.k])?.k;
+const fzStyle = c => FZ[c.k] ? ` style="left:${FZ[c.k].left}px;width:${FZ[c.k].w}px;min-width:${FZ[c.k].w}px;max-width:${FZ[c.k].w}px"` : '';
+const fzClass = c => FZ[c.k] ? 'fz'+(c.k===LASTFZ?' last':'') : '';
+
+function deltaHtml(m, c, v, base){
+  if (!base || m.model===base.model || c.nodelta || v==null) return '';
+  const b = val(base,c); if (b==null || b===0) return '';
+  const pct = (v/b-1)*100; if (!isFinite(pct)) return '';
+  const small = Math.abs(pct) < 0.5;
+  const good = c.better ? ((c.better==='high') === (pct>0)) : null;
+  const cl = small || good==null ? 'dn' : (good ? 'good' : 'bad');
+  return `<small class="d ${cl}">${pct>0?'+':''}${pct.toFixed(0)}%</small>`;
+}
+function cell(m, c, base){
+  const v = val(m,c), st = fzStyle(c);
+  let cls = fzClass(c), inner;
+  const dl = deltaHtml(m,c,v,base);
+  if (c.k==='model'){
+    const star = base && base.model===m.model ? '\u2605 ' : '';
+    inner = `<div class="clip${hlc(m.model)}" title="${esc(v)}${m.error?' \u2014 '+esc(m.error):''}${m.score_note?' \u2014 Agent score: '+esc(m.score_note):''}">${star}${esc(v)}${m.status==='skipped'?` <span class="hint-room">SKIPPED: ${esc(m.error)}</span>`:m.status!=='ok'?` <span class="err">ERR: ${esc(m.error)}</span>`:''}${m.score_note&&m.score_note.startsWith('no eval')?` <span class="err" title="${esc(m.score_note)}">no eval score</span>`:''}</div>`;
+  } else if (c.k==='vram_gb' || c.k==='ram_used_gb'){
+    if (v==null) inner = '&ndash;';
+    else {
+      const raw = (c.k==='vram_gb' ? m.vram_pct : m.ram_pct) ?? 0, p = Math.min(raw,100), warn = raw >= 95;
+      if (warn) cls += ' warn';
+      inner = `<div class="clip">${v.toFixed(1)} GB<span class="bar"><i style="width:${p}%;background:${warn?'#f85149':vramColor(p)}"></i></span><span class="${warn?'err':''}">${warn?'\u26A0 ':''}${raw.toFixed(0)}%</span>${dl}</div>`;
+    }
+  } else if (c.k==='ram_spill_gb'){
+    inner = (v==null ? '&ndash;' : (v>0 ? `<span class="err">\u26A0 ${v.toFixed(1)}</span>` : '0')) + dl;
+  } else if (c.k==='ctx_size'){
+    const bad = m.ctx_ok===false; if (bad) cls += ' warn';
+    inner = v==null ? '&ndash;' : `<span class="${bad?'err':''}" title="${bad?'below MIN_CTX '+META.min_ctx:''}">${bad?'\u26A0 ':''}${ctxFmt(v)}</span>`;
+  } else if (c.k==='max_ctx_vram'){
+    const low = v!=null && m.ctx_size && v < m.ctx_size, under = v!=null && META.min_ctx && v < META.min_ctx;
+    inner = v==null ? '&ndash;' : `<span class="${under?'err':low?'hint-room':''}" title="context that fits with VRAM at ${META.max_ctx_pct}% (KV ${m.kv_type||'f16?'}${m.kv_approx?', approximate':''})">${ctxFmt(v)}${m.kv_approx?'*':''}</span>` + dl;
+  } else if (c.retry){
+    const t = retryTxt(m), warn = (m.eval_retry_pct||0) > RETRY_WARN;
+    inner = t==null ? '&ndash;' : `<span class="${warn?'err':''}" title="${warn?'many retries: check the chat template / --jinja / reasoning settings':''}">${warn?'\u26A0 ':''}${t}</span>`;
+  } else if (c.bud){
+    const ok = c.bud==='*' ? m.budget_pass : v, rule = c.bud==='*' ? null : (m.budget||{})[c.bud];
+    const tip = c.bud==='*' ? (m.budget_fails||'all rules pass') : (rule ? rule.text : '');
+    inner = ok==null ? '<span class="dn" title="not measured">?</span>' : `<span class="${ok?'good':'err'}" title="${esc(tip)}">${ok?'\u2713 pass':'\u2717 fail'}</span>`;
+  } else if (c.k==='kv_type'){
+    const below = LC && m.longctx_kv_ok===false;
+    inner = v==null ? '&ndash;' : `<span class="${below?'hint-room':''}" title="${below?'below LONGCTX_KV_MIN '+LC.kv_min:''}">${esc(v)}</span>`;
+  } else if (c.k==='vram_hint'){
+    inner = v==null ? '&ndash;' : `<span class="${hintCls(v)}">${esc(v)}</span>`;
+  } else if (['quant','arch','offload','flash_attn','mmproj','attn_type','ubb','experts','layers'].includes(c.k)) inner = esc(v ?? '\u2013');
+  else if (v==null) inner = '&ndash;';
+  else if (c.f) inner = c.f(v);
+  else {
+    const t = (c.cost ? cur : '') + Number(v).toFixed(c.dec ?? 1);
+    const colr = c.tps ? tpsColor(v) : (c.acc ? accColor(v) : null);
+    inner = (colr ? `<span style="color:${colr}">${t}</span>` : t) + dl;
+  }
+  return `<td class="${cls}"${st}>${inner}</td>`;
+}
+function renderTable(){
+  const wrap = $('tblwrap'), sx = wrap.scrollLeft, sy = wrap.scrollTop;
+  const base = state.base ? ALL.find(m=>m.model===state.base && m.status==='ok') : null;
+  const col = COLS.find(c=>c.k===state.sk) || COLS[0];
+  const rows = [...cur_rows].sort((a,b)=>{
+    const x=val(a,col), y=val(b,col);
+    if (x==null && y==null) return 0; if (x==null) return 1; if (y==null) return -1;
+    return (typeof x==='string' ? x.localeCompare(y) : x-y) * state.sd;
+  });
+  $('tbl').innerHTML = '<thead><tr>' + COLS.map(c=>{
+      return `<th class="${fzClass(c)}" data-k="${c.k}"${fzStyle(c)}>${c.l}${state.sk===c.k?(state.sd<0?' \u25BC':' \u25B2'):''}</th>`;
+    }).join('') + '</tr></thead><tbody>' +
+    rows.map(m=>`<tr data-m="${encodeURIComponent(m.model)}"${base&&base.model===m.model?' class="sel"':''}>${COLS.map(c=>cell(m,c,base)).join('')}</tr>`).join('') + '</tbody>';
+  wrap.scrollLeft = sx; wrap.scrollTop = sy;
+  renderToolbar(base);
+}
+function renderToolbar(base){
+  const rate = (META.has_cost && META.rate_peak!==META.rate_off)
+    ? `<span class="fg"><span>Electricity rate</span><button class="tog ${state.rate==='peak'?'on':''}" data-rate="peak">Peak ${cur}${META.rate_peak}/kWh</button><button class="tog ${state.rate==='off'?'on':''}" data-rate="off">Off-peak ${cur}${META.rate_off}/kWh</button></span>`
+    : (META.has_cost ? `<span class="sub">Electricity ${cur}${META.rate_peak}/kWh</span>` : '');
+  const bl = base
+    ? `<span><span class="good">\u2605 Baseline:</span> <b>${esc(base.model)}</b> &mdash; other rows show change vs this model (green = better, red = worse). <button class="tog" data-clear="1">Clear baseline</button> <span class="sub">(shown in red everywhere)</span></span>`
+    : '<span class="sub">Click a column header to sort (click again to reverse). Click a model name anywhere (table row, winner cards, chart labels or dots) to highlight it in red everywhere and use it as the 100% baseline; click it again, or press Reset, to clear.</span>';
+  const hid = HIDDEN.length ? `<span class="sub">Hidden (no data this run): ${HIDDEN.join(', ')}</span>` : '';
+  $('toolbar').innerHTML = bl + rate + hid;
+}
+function bindTable(){
+  $('tblwrap').onclick = e => {
+    const th = e.target.closest('th');
+    if (th){ const k = th.dataset.k; if (state.sk===k) state.sd = -state.sd; else { state.sk=k; state.sd=1; } return renderTable(); }
+    const tr = e.target.closest('tr[data-m]');
+    if (tr) toggleModel(decodeURIComponent(tr.dataset.m));
+  };
+  $('toolbar').onclick = e => {
+    const b = e.target.closest('button'); if(!b) return;
+    if (b.dataset.clear){ state.base = null; return refreshHighlight(); }
+    if (b.dataset.rate) state.rate = b.dataset.rate;
+    renderTable();
+  };
+}
+
+/* ---------- click a model name anywhere: red text everywhere + table baseline ---------- */
+function updateChip(){
+  const c = $('hlchip'); if (!c) return;
+  c.innerHTML = state.base ? `<span class="hl">\u2605 ${esc(state.base)}</span> <button class="tog" data-clearhl="1">Clear highlight</button>` : '';
+}
+function refreshHighlight(){
+  document.querySelectorAll('.mn[data-model]').forEach(el=>el.classList.toggle('hl', state.base!=null && el.dataset.model===state.base));
+  Object.values(charts).forEach(c=>c.update('none'));           // tick labels / value labels / ringed dots read state.base
+  updateChip(); renderTable();
+}
+function toggleModel(name){
+  if (!ALL.find(m=>m.model===name && m.status==='ok')) return;
+  state.base = state.base===name ? null : name; refreshHighlight();
+}
+// Chart click: a row of a horizontal bar chart (label or bar) or a dot of a scatter / bubble chart.
+function modelAtChart(chart, ev){
+  const t = chart.config.type, r = chart.canvas.getBoundingClientRect(), x = ev.clientX-r.left, y = ev.clientY-r.top, ca = chart.chartArea;
+  if (t==='bar' && chart.options.indexAxis==='y'){
+    if (!ca || y<ca.top || y>ca.bottom || x>ca.right) return null;
+    const i = Math.round(chart.scales.y.getValueForPixel(y)); return chart.data.labels[i] ?? null;
+  }
+  if (t==='scatter' || t==='bubble'){
+    const els = chart.getElementsAtEventForMode(ev, 'nearest', {intersect:true}, true); if (!els.length) return null;
+    return chart.data.datasets[els[0].datasetIndex].data[els[0].index].name ?? null;
+  }
+  return null;
+}
+document.addEventListener('click', e => {
+  const t = e.target.closest('.mn[data-model]'); if (t) return toggleModel(t.dataset.model);
+  const cv = e.target.closest('canvas'); const ch = cv && Chart.getChart(cv);
+  if (ch){ const name = modelAtChart(ch, e); if (name) toggleModel(name); }
+});
+
+/* ---------- page ---------- */
+let cur_rows = [];
+function render(){
+  cur_rows = ALL.filter(pass);
+  const OKR = cur_rows.filter(isOK);
+  if ($('fcount')) $('fcount').textContent = `Showing ${cur_rows.length} of ${ALL.length} models`;
+  renderPodium(OKR); renderCharts(OKR); renderEvalCharts(cur_rows.filter(m=>m.status==='ok')); renderQuant(OKR); renderTable(); updateChip();
+}
+
+$('hdr').innerHTML = `${META.count} models` + (META.tests.length ? ` &middot; <b style="color:#e6edf3">Tests:</b> ${META.tests.map(esc).join(', ')}${META.evals?` (profile ${esc(META.evals.profile)})`:''}` : '') +
+  ` &middot; ${esc(META.generated)} &middot; ${esc(META.backend)}<br>` +
+  (META.partial ? '<b style="color:#d29922">Speed test only &mdash; the evaluations had not finished when this dashboard was saved. It is replaced automatically when they complete.</b><br>' : '') +
+  (!META.has_speed ? 'Evaluations only &mdash; speed and hardware telemetry were not measured in this run.' : `<b style="color:#e6edf3">Host:</b> ${META.hardware ? esc(META.hardware) : 'VRAM limit '+META.vram_limit+' GB'} &middot; ` +
+  `<b style="color:#e6edf3">Power:</b> GPU via ${esc(META.gpu_source||'nvidia-smi')} (${META.poll_ms} ms), CPU via ${esc(META.cpu_source)}` +
+  (IDLE!=null ? ` &middot; <b style="color:#e6edf3">Idle RAM baseline:</b> ${IDLE.toFixed(1)} GB` : ''));
+const CH = [['tps','Avg generation speed (tok/s)'],['vram','VRAM vs speed (bubble = params)'],['eff','Power efficiency (tok/s per W, GPU + CPU)'],
+  ['jt','Energy per token (J, lower is better)'],['ttft','TTFT leaderboard (ms, lower is better)'],['lat','Latency vs throughput (top-left is best)'],
+  ['pg','Prefill vs generation speed (tok/s, log scale)'],['pwr','Active vs idle GPU power (W)'],['mem','Memory footprint: VRAM vs inference-server RAM (GB)'],['quant','Avg TPS by quantization']]
+  .concat(PFL.length ? [['pctx','Prefill speed by prompt length (tok/s) \u2014 offloaded MoEs slow down most']] : []);
+const chartCard = ([id,t])=>`<div class="card"><h3>${t}</h3><div class="chartbox" id="b_${id}"><canvas id="c_${id}"></canvas></div><p class="sub" id="e_${id}" hidden>No data for this chart (telemetry unavailable, or filtered out).</p></div>`;
+$('charts').innerHTML = CH.map(chartCard).join('');
+if (EV.length || LCL.length){
+  $('evsec').hidden = false;
+  const mo = MOE ? ` &middot; margin of error (95%): ${EV.map(e=>MOE.per_dataset[e.key]?`${esc(e.short)} &plusmn;${MOE.per_dataset[e.key].moe.toFixed(0)}`:'').filter(Boolean).join(', ')}, average &plusmn;${MOE.average.moe.toFixed(0)} points` : '';
+  $('evsub').innerHTML = (EV.length ? `${EV.map(e=>`<b>${esc(e.label)}</b> (${e.rows??'?'}${e.available?' of '+e.available:''} rows)`).join(' &middot; ')} &mdash; Test profile <b>${esc(EVM.profile)}</b>${mo}. Only the tests and models that were actually run are shown.` : 'Long-context retrieval only.')
+    + (MOE && MOE.rough ? `<div class="card" style="margin-top:8px;border-color:#d29922"><b style="color:#d29922">\u26A0 Rough guide only.</b> The <code>${esc(EVM.profile)}</code> profile asks so few questions that gaps smaller than the margin above are noise. Use it to drop clear losers, then re-run the finalists with <code>EVAL_PROFILE=standard</code> (&plusmn;10) or <code>thorough</code> (&plusmn;7) before choosing.</div>` : '')
+    + (ALL.some(m=>(m.eval_retry_pct||0)>RETRY_WARN) ? `<div class="sub" style="margin-top:6px">\u26A0 = more than ${RETRY_WARN}% of a model's questions needed the No-Thinking retry. That usually points to a chat-template, <code>--jinja</code> / reasoning-format or sampling problem rather than the model itself; check it before judging the scores.</div>` : '');
+  $('evcharts').innerHTML = [...EVKINDS.map(([k,t])=>['ev'+k,t]), ...(LCL.length?[['evlong',`Long-context retrieval (${LC.keys} keys per prompt, KV &ge; ${esc(LC.kv_min)})`]]:[]), ['evspeed','Quality vs speed (top-right is best)']].map(chartCard).join('');
+}
+if (META.strata_details && META.strata_details.length)
+  $('sdetails').innerHTML = '<details class="card"><summary><b>Strata details</b> <span class="sub">(read from its API; click to expand)</span></summary>' +
+    META.strata_details.map(([p,rows])=>`<h3>${esc(p)}</h3><table class="qt">${rows.map(([k,v])=>`<tr><td style="text-align:left">${esc(k)}</td><td style="text-align:left">${esc(v)}</td></tr>`).join('')}</table>`).join('') + '</details>';
+if (!META.has_speed){      // evals-only run: no speed / hardware data to show
+  $('speedtop').hidden = true; $('quantsec').hidden = true;
+  document.querySelector('#filters').hidden = true;
+}
+buildFilters(); bindTable(); render();
+
+$('meth').innerHTML = `<ul>
+ ${!META.has_speed?'':`<li><b>Backend:</b> ${esc(META.backend)} (OpenAI-compatible <code>/v1/chat/completions</code>), non-streaming. The prompt cache is disabled for all speed tests.</li>
+ <li><b>Per model:</b> ${META.backend==='Strata'?'single always-loaded model (no unload, load time or VRAM delta); idle power sampled with the model resident':'all models unloaded &rarr; idle baseline sampled &rarr; cold load (Load s)'} &rarr; Technical, Logic${META.prefill_words?` and prefill (~${META.prefill_words}-word, unique prompt)`:''} tests, median of ${META.runs} run(s).</li>
+ <li><b>Prompts:</b> Technical &mdash; &ldquo;${esc(META.prompts[0])}&rdquo;; Logic &mdash; &ldquo;${esc(META.prompts[1])}&rdquo;.</li>
+ <li><b>Speed:</b> <code>timings.predicted_per_second</code>, falling back to completion_tokens / wall time. <b>TTFT</b> is approximated by <code>timings.prompt_ms</code>; <b>Prefill t/s</b> is <code>timings.prompt_per_second</code> on the long prompt (<b>Prefill tok</b> = its size).</li>
+ <li><b>Ctx</b> is the context size the model was loaded with (read from llama-server <code>/props</code>). VRAM and prefill speed depend on it, so compare models with similar Ctx.</li>
+ ${META.cache_test?'<li><b>Cache hit %</b> / <b>Cache &times;:</b> a long prompt is sent cold, then again with a short follow-up appended (a multi-turn proxy). Hit % = share of the second prompt reused from the KV cache (<code>cache_n</code>); &times; = how much faster its prompt processing was than the cold one.</li>':''}
+ <li><b>GPU:</b> one persistent <code>${esc(META.gpu_source||'nvidia-smi')}</code> sampler, windowed to each request. Power = mean; peak W, temp and VRAM = maximum. <b>Idle W</b> is sampled with no model loaded. <b>CPU:</b> ${esc(META.cpu_source)}.</li>
+ <li><b>RAM:</b> <b>RAM vs idle</b> is the increase in system RAM over a baseline sampled with all models unloaded (llama-swap only). <b>System RAM</b> is the absolute figure (MemTotal &minus; MemAvailable, peak during the tests); it can differ a little from other dashboards that use another formula or sample at another moment. <b>Server RAM</b> is the peak resident memory of the inference-server process, which always includes some overhead (CUDA context, pinned buffers, mapped pages). <b>CPU offload</b> is read from the server's launch command (<code>-ngl</code> below 99, <code>--n-cpu-moe</code>, <code>--cpu-moe</code>, <code>--no-kv-offload</code>, <code>-ot ...CPU</code>). <b>RAM spill</b> is 0 for models launched fully on the GPU; for models with CPU offload it is Server RAM minus the typical overhead${OVH!=null?` (${OVH.toFixed(1)} GB, the median Server RAM of this run's fully-GPU models)`:''}. When launch flags can't be read (e.g. Strata) it is Server RAM if at least ${META.spill_threshold_gb} GB, otherwise 0. It is an estimate.</li>
+ <li><b>Energy:</b> (mean GPU W + mean CPU W) &times; request time; Energy Wh covers one Technical plus one Logic request. <b>J/token</b> = energy &divide; generated tokens. <b>Efficiency</b> = avg TPS &divide; (GPU W + CPU W).</li>
+ ${META.has_cost?`<li><b>Cost:</b> measured GPU + CPU energy only (not the rest of the system) &times; your electricity rate. ${cur}/1k queries = average of the Technical and Logic requests above, so it scales with the max_tokens setting.</li>`:''}
+ <li><b>Goldilocks:</b> ${META.goldilocks_mode==='log'?'ln(params&nbsp;B)':'params&nbsp;B'} &times; avg TPS, VRAM &le; ${META.max_vram_pct}% of the GPU. Params come from the GGUF header when it is readable (else the filename) and are <i>total</i> (not active) parameters. <b>Radar:</b> Speed, Efficiency and Reasoning (params) are relative to the best model in this run; VRAM economy = 100% &minus; VRAM%.</li>
+ <li><b>Podium:</b> the top 3 in each category, among eligible models: <b>Overall balance</b> (ranked by Goldilocks), <b>Chat driver</b> (Chat score), <b>Agentic reasoner</b> (Agent score) and <b>VRAM sweet spot</b> (Sweet-spot score). The same model can appear in more than one row.</li>
+ <li><b>VRAM sweet spot:</b> <code>Agent score &times; VRAM fit</code>. <b>VRAM fit</b> is 100% when the model uses ${META.vram_sweet_low}&ndash;${META.vram_sweet_high}% of the GPU, is ${Math.round(META.underuse_floor*100)}&ndash;100% below that (once a model fits, quality and speed decide, not how full the GPU is; the tuning hint still says when a bigger quant or lower <code>--n-cpu-moe</code> would fit), drops to 50% at ${META.vram_sweet_max}% and to 0 at 100% (no headroom for context or other apps). <b>VRAM tuning hint</b> in the table says which way to move. Set the band with <code>VRAM_SWEET_LOW / HIGH / MAX</code> in .env.</li>
+ <li><b>Highlight:</b> click a model name anywhere (table row, winner cards, quantization table, chart labels, bars or dots). It turns red everywhere and becomes the table baseline; click it again or press Reset / Clear to remove it.</li>
+ <li><b>Chat score:</b> <code>avg TPS &times; (100 &minus; VRAM%)</code>. Rewards a fast model that also leaves GPU memory free (for context or other apps).</li>
+ <li><b>Agent score (0&ndash;100, quality first):</b> <b>1. Quality credit.</b> ${META.evals?`The model's eval average${LCL.length&&META.agent_longctx_weight>0?`, blended ${Math.round(META.agent_longctx_weight*100)}% with long-context retrieval when every model has it`:''}, compared with the best of the run. Anything within the noise margin of the best (default one standard error) counts as a tie at 100; below that the credit falls steeply (quadratic, 0 at ${META.agent_acc_span}&nbsp;points under the tie zone). Then the <b>retry penalty</b>: &times; (1 &minus; ${EVM.fallback_penalty}% &times; share of questions retried), applied after the tie zone so it also separates tied models. A model whose evals produced no score (every request failed) gets <b>no</b> Agent score, rather than a proxy on a different scale.`:`No evaluations ran, so a <b>proxy</b> stands in: dense-equivalent size (a MoE counts as &radic;(total &times; active)) on a log scale, times a mild penalty below ~4.5 bits per weight, relative to the best model of the run. It is a rough guide: run evals to rank for real.`} <b>2. Speed factor</b> (0&ndash;1): prompt processing 40% (agent-prompt TTFT, <code>1 &divide; (1 + TTFT &divide; ${META.agent_ttft_ref}s)</code>, if measured; else the longest prefill test, <code>ln(t/s) &divide; ln(${META.agent_prefill_ref})</code>), seconds per eval question 35% (<code>1 &divide; (1 + s/q &divide; ${META.agent_sec_ref})</code>), generation speed 25% (<code>ln(avg TPS) &divide; ln(${META.agent_tps_ref})</code>); missing parts are left out. It can remove at most ${Math.round(META.agent_speed_weight*100)}% of the credit: <code>score = credit &times; (1 &minus; ${META.agent_speed_weight} + ${META.agent_speed_weight} &times; speed)</code>. Speed ranks models of similar quality but never lifts a clearly weaker one. VRAM is not part of the Agent score (see the sweet spot). Tune with <code>AGENT_*</code> in .env.</li>
+ <li><b>Limits:</b> max_tokens ${META.max_tokens.join(' / ')}; timeouts ${META.timeouts.join('s / ')}s.</li>
+ <li><b>What was loaded:</b> <b>KV type</b>, <b>FA</b>, <b>-ub / -b</b>, <b>Slots</b> (<code>--parallel</code>), <b>mmproj</b> and CPU offload are read from the llama-server command line (<code>/proc</code>, else llama-swap's <code>/running</code>); KV defaults to f16 when no <code>-ctk/-ctv</code> is given. <b>GGUF GB</b>, <b>BPW</b> (file bits &divide; parameters), <b>Type</b>, <b>Experts</b>, <b>Attention</b> (GQA / MLA / SWA / hybrid SSM) and <b>Full-attn layers</b> come from the GGUF header, so a MoE without "A3B" in its name is still reported as MoE. <b>KV KiB/tok</b> = KV cache per token of context over the full-attention layers at that KV type (sliding-window layers are a fixed cost). <b>Max ctx @${META.max_ctx_pct}%</b> = loaded ctx + (${META.max_ctx_pct}% of VRAM &minus; measured VRAM) &divide; KV per token, capped at the training context; * = approximate (layout or KV type assumed).</li>
+ ${META.min_ctx?`<li><b>Minimum context:</b> ${ctxFmt(META.min_ctx)} tokens (<code>MIN_CTX</code> / budget profile). Models loaded with less are ${META.min_ctx_action==='refuse'?'not benchmarked (SKIPPED)':'marked &#9888; in the Ctx column and kept off the podium'}: VRAM and speed at a smaller context flatter them.</li>`:''}
+ ${PFL.length||META.agent_prompt_tokens?`<li><b>Deployed-context speed:</b> ${PFL.length?`prefill at ${PFL.join(', ')} prompt tokens (one cold, unique prompt each; lengths above the loaded context are skipped) &mdash; offloaded MoEs that look fine at 1.4k often slow down sharply here. `:''}${META.agent_prompt_tokens?`<b>Agent TTFT</b>: time to first token for a ~${Math.round(META.agent_prompt_tokens/1000)}k-token agent-style request (system prompt with tool catalogue + history); <b>Next-turn TTFT</b> = the following turn with the prefix cached.`:''}</li>`:''}
+ ${BUD?`<li><b>Budget profile <code>${esc(BUD.name)}</code>:</b> ${Object.entries(BUD.rules).map(([k,v])=>`<code>${k}=${v}</code>`).join(', ')}. One pass/fail column per rule (hover for the numbers; ? = not measured, never a fail). VRAM rule: model VRAM (increase over idle) + reserve &le; GPU total &times; MAX_VRAM_PCT. ${META.budget_pass_only?'Models that fail a rule are kept off the podium.':''}</li>`:''}`}
+ ${EVM?`<li><b>Evaluations</b> (run after all speed tests, one model at a time): ${EV.map(e=>esc(e.label)+' ('+(e.rows??'?')+' rows)').join(', ')}. Profile <code>${esc(EVM.profile)}</code>; rows are sampled with seed ${EVM.seed}, so every model gets the same questions. Temperature ${EVM.temperature}, max_tokens ${EVM.max_tokens_qa} (QA) / ${EVM.max_tokens_code} (code)${EVM.max_tokens_qa==='dynamic'||EVM.max_tokens_code==='dynamic'?' (dynamic = model context minus prompt)':''}. Reasoning blocks are stripped before grading. ${EVM.retry_nothink?`A reply that is cut off or times out is retried once with thinking disabled (No Thinking). `:''}${EVM.stream?`Replies are streamed: a reply that falls into a repetition loop is stopped early (<b>Fail: Degradation</b>), and thinking is capped at ${EVM.think_budget?EVM.think_budget.toLocaleString()+' tokens':'no limit'} per question (<b>Fail: Think cap</b>)${EVM.salvage?'; a stopped reply whose visible answer is already complete is graded as it is':''}. `:''}A reply that is still cut off with no usable answer counts as wrong, but is tracked separately as N/A (shown in the chart tooltips and the CSV). <b>s/q</b> = average seconds per question: total time for the dataset divided by the questions asked, so it includes retries and timeouts. Compare it between models that scored about the same.</li>
+ ${EV.some(e=>e.kind==='qa')?'<li><b>QA grading:</b> the model is told to end with <code>Answer: X</code>; the last <i>Answer:</i> / <i>the answer is</i> / <code>\\boxed{}</code> letter (else a final line that is just a letter) is compared with the dataset\'s answer. API failures count as wrong; a model that returned nothing at all gets no score.</li>':''}
+ ${EV.some(e=>e.kind==='math')?'<li><b>Math grading:</b> the model is told to end with <code>Answer: &lt;answer&gt;</code>; the last <i>Answer:</i> line (else the last <code>\\boxed{}</code>; for GSM8K also the last number of a finished reply) is normalised (units, <code>\\dfrac</code>, thousands separators, <code>x=</code> prefixes) and compared with the reference: equal strings, or numerically equal to 1e-6 (fractions and decimals). Purely symbolic equivalents count as wrong, so scores are a slight lower bound.</li>':''}
+ ${EV.some(e=>e.kind==='code')?`<li><b>Code grading (pass@1):</b> the last python block of the reply is executed in a <code>${esc(EVM.code_sandbox)}</code> sandbox, ${EVM.code_timeout}s per run, no network where available. <b>HumanEval:</b> the task's own <code>check()</code>. <b>MBPP:</b> the <code>test_list</code> asserts (also shown in the prompt, the standard MBPP protocol). <b>LCB:</b> public tests plus up to ${EVM.lcb_max_tests||'all'} tests per problem (stdin/stdout or starter-code function).</li>`:''}
+ <li><b>Read the scores with care:</b> with ${Math.min(...EV.map(e=>e.rows||Infinity))} questions the 95% margin of error is about &plusmn;${Math.round(98/Math.sqrt(Math.min(...EV.map(e=>e.rows||Infinity))))} points per dataset${MOE?` (&plusmn;${MOE.average.moe.toFixed(0)} on the average)`:''}, so small gaps between models are noise.${MOE&&MOE.rough?' This profile is a rough guide only: re-run the finalists with <code>standard</code> or <code>thorough</code>.':' Use the <code>standard</code> or <code>full</code> profile for finer comparisons.'}</li>
+ <li><b>Retries:</b> questions that needed the No-Thinking retry (cut off, repetition loop, thinking cap or timeout). Above ${RETRY_WARN}% (&#9888;) this usually means a chat-template, <code>--jinja</code> / reasoning-format or sampling problem, not a weak model. The Agent score loses ${EVM.fallback_penalty}% &times; the retried share; <b>Eval &minus; retry penalty</b> shows the same penalty in points.</li>
+ ${EV.some(e=>e.kind==='tool')?'<li><b>Tool calling</b> (built in, BFCL-style): OpenAI <code>tools</code> requests in four categories &mdash; simple, multiple (pick the right tool), parallel (two calls in one reply) and irrelevance (must <i>not</i> call). Graded on the function name and arguments (case-insensitive, numbers numerically, unknown arguments fail). Only native <code>tool_calls</code> count unless <code>EVAL_TOOLCALL_STRICT=false</code>; calls written as text usually mean llama-server is not running with <code>--jinja</code> or the template has no tool support.</li>':''}`:''}
+ ${LC?`<li><b>Long-context retrieval:</b> at ${LCL.join(' and ')} tokens, ${LC.trials} prompt(s) per length, each hiding ${LC.keys} vault codes plus ${LC.keys} decoys at spread-out depths; score = share of asked codes returned. Asked with thinking off, temperature 0. The benchmark cannot change the server's KV type: it reads it, and results with KV below <code>LONGCTX_KV_MIN=${esc(LC.kv_min)}</code> are ${LC.kv_action==='skip'?'skipped':'flagged (amber KV type)'}. A length longer than the loaded context is not run.</li>`:''}
+</ul>`;
+</script></body></html>
