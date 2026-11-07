@@ -1,9 +1,19 @@
-venv/
-SS/
+# Secrets
 .env
+
+# Run outputs: eval_details_*.jsonl hold model replies and reference answers. With GPQA enabled these must not be
+# published (the GPQA authors ask that examples are not revealed online). Aggregate results can be shared on purpose.
 results/
+benchmark_dashboard.html
+SS/
+venv/
+# Downloaded dataset cache (third-party data under its own licences; never redistribute it from this repo)
 tests/
+
+# Python
 __pycache__/
 *.pyc
 .pytest_cache/
-benchmark_dashboard.html
+
+.REVIEW.md
+.sh
