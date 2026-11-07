@@ -4,7 +4,11 @@ An automated, real-load benchmark for LLMs served by [llama-swap](https://github
 
 For every model on your server it measures generation speed (Technical + Logic prompts), prefill speed, load time, Time To First Token (TTFT), prompt-cache efficiency and context size, while tracking GPU power, VRAM, temperature and CPU power. From those it derives energy per token, efficiency and (optionally) electricity cost, then builds a self-contained interactive dashboard. Following the speed tests, it runs dataset-based evaluations that grade knowledge, math and coding ability, optionally with several questions in flight at once.
 
-<img width="1591" height="648" alt="d1" src="https://github.com/user-attachments/assets/71a7cf23-fca5-42f5-b89d-afb3708fd2f4" />
+<img width="1337" height="864" alt="d1" src="https://github.com/user-attachments/assets/7cd334dc-d9c7-41fd-84f9-82c06125027c" />
+
+<img width="1273" height="828" alt="s1" src="https://github.com/user-attachments/assets/6e4bc882-24b3-4f53-ac0e-9e369e3f7635" />
+
+<img width="1337" height="856" alt="m1" src="https://github.com/user-attachments/assets/17ea4e3a-bdf8-4830-9ff1-1e79c8da15eb" />
 
 ## 📦 Features
 
@@ -24,7 +28,11 @@ For every model on your server it measures generation speed (Technical + Logic p
 * **Interactive dashboard:** Filters, sortable and baseline-comparable table, charts (including Accuracy & Pass Rate graphs for knowledge, math and coding) and a radar per podium model.
 * **Rich outputs:** Per-run CSV, appended history CSV, **structured JSON (`results.json`, NEW in v2.0)**, optional Markdown report, per-question eval JSONL logs, a run log, and the HTML dashboard.
 
-<img width="1591" height="712" alt="d77" src="https://github.com/user-attachments/assets/541c5569-7074-4c7c-91ed-28400c5a0b4d" />
+<img width="1410" height="769" alt="ss2" src="https://github.com/user-attachments/assets/f3790d98-cba0-4f8e-a990-e2dd9ed06c4d" />
+
+<img width="1410" height="769" alt="ss1" src="https://github.com/user-attachments/assets/d8247de4-6966-47d8-8aaf-fea03f130cee" />
+
+<img width="1735" height="444" alt="dd5" src="https://github.com/user-attachments/assets/a0156de2-2569-408f-81aa-56ae17912a34" />
 
 ## 🛠️ Prerequisites
 
@@ -320,4 +328,36 @@ The default budget is a judgement call: it keeps a run's duration predictable, b
 * **A dataset fails to load:** Run `python benchmark.py --download-datasets` with internet access once; later runs read from the local `tests/` cache. Setting `HF_TOKEN` in `.env` avoids anonymous rate limits.
 
 ## Dashboard Example
+
+<img width="1423" height="901" alt="d3" src="https://github.com/user-attachments/assets/ffa2a8b5-be96-4f86-8772-83ea3a3e0e6b" />
+
+<img width="1423" height="829" alt="d4" src="https://github.com/user-attachments/assets/2461467f-5eeb-4b2f-a736-24517382d892" />
+
+<img width="1423" height="829" alt="d5" src="https://github.com/user-attachments/assets/fd744301-9bc5-4d1c-b879-1f114400f15c" />
+
+<img width="1728" height="768" alt="d6" src="https://github.com/user-attachments/assets/370e02b3-2847-419d-8b3e-e7f237bf9d21" />
+
+<img width="1735" height="507" alt="d7" src="https://github.com/user-attachments/assets/3de1fb15-7c94-4553-85ac-da50e3c00784" />
+
+<img width="1337" height="784" alt="m3" src="https://github.com/user-attachments/assets/ef9d120b-a624-42fc-8b8d-d2aeb9d35e13" />
+
+<img width="1337" height="756" alt="m4" src="https://github.com/user-attachments/assets/36ced3d9-6cf8-4996-8041-adbb06a1bb1b" />
+
+<img width="1337" height="772" alt="m5" src="https://github.com/user-attachments/assets/1ca0ddcb-e13d-4c29-983c-f22885f6e1dc" />
+
+
+<img width="1424" height="783" alt="s2" src="https://github.com/user-attachments/assets/32724f33-a04a-4be4-8267-02352270dd73" />
+
+<img width="1424" height="783" alt="s3" src="https://github.com/user-attachments/assets/ec82207e-3cb0-4751-acee-3bced3560ab6" />
+
+<img width="1424" height="783" alt="s4" src="https://github.com/user-attachments/assets/4ec1c74d-4896-4a3d-bdf2-20d361c522e2" />
+
+<img width="1424" height="783" alt="s5" src="https://github.com/user-attachments/assets/da11daf3-0377-4c84-9365-ab513e39055a" />
+
+<img width="1568" height="516" alt="s6" src="https://github.com/user-attachments/assets/183a5493-a059-4984-ab77-265ea08c67ab" />
+
+<img width="1571" height="749" alt="s7" src="https://github.com/user-attachments/assets/35b75f0b-97f0-4bcb-9703-7b63da477cfa" />
+
+
+
 
