@@ -358,6 +358,53 @@ The default budget is a judgement call: it keeps a run's duration predictable, b
 
 <img width="1571" height="749" alt="s7" src="https://github.com/user-attachments/assets/35b75f0b-97f0-4bcb-9703-7b63da477cfa" />
 
+## 🙏 Credits, datasets and licences
 
+This tool does not include or redistribute any benchmark dataset. Each one is downloaded from Hugging Face at run time (or with `--download-datasets`) into the local `tests/` cache, and is used under the licence and terms set by its authors. All credit for the questions, problems, test cases and reference answers belongs to them. If you publish results produced with these datasets, please cite the original papers below.
 
+The licence of this repository covers its own code only. It does not re-license any dataset, and the dataset licences do not change the licence of this code.
 
+### Evaluation datasets
+
+| Eval | Original authors and paper | Original source | Copy this tool downloads | Licence |
+| --- | --- | --- | --- | --- |
+| **GPQA Diamond** | Rein, Hou, Stickland, Petty, Pang, Dirani, Michael, Bowman. *GPQA: A Graduate-Level Google-Proof Q&A Benchmark* (COLM 2024). [arXiv:2311.12022](https://arxiv.org/abs/2311.12022) | [idavidrein/gpqa](https://github.com/idavidrein/gpqa) · [Idavidrein/gpqa](https://huggingface.co/datasets/Idavidrein/gpqa) (gated) | [fingertap/GPQA-Diamond](https://huggingface.co/datasets/fingertap/GPQA-Diamond) (community copy of the 198-question Diamond subset) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), plus the authors' request below |
+| **MMLU-Pro** | Wang et al. (TIGER-Lab). *MMLU-Pro: A More Robust and Challenging Multi-Task Language Understanding Benchmark* (NeurIPS 2024 Datasets and Benchmarks). [arXiv:2406.01574](https://arxiv.org/abs/2406.01574) | [TIGER-AI-Lab/MMLU-Pro](https://github.com/TIGER-AI-Lab/MMLU-Pro) | [TIGER-Lab/MMLU-Pro](https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro) | MIT. Built from MMLU (Hendrycks et al., [arXiv:2009.03300](https://arxiv.org/abs/2009.03300), MIT), TheoremQA (MIT), SciBench (MIT) and STEM websites |
+| **HumanEval** | Chen et al. (OpenAI). *Evaluating Large Language Models Trained on Code*, 2021. [arXiv:2107.03374](https://arxiv.org/abs/2107.03374) | [openai/human-eval](https://github.com/openai/human-eval) | [openai/openai_humaneval](https://huggingface.co/datasets/openai/openai_humaneval) | MIT |
+| **MBPP** | Austin et al. (Google Research). *Program Synthesis with Large Language Models*, 2021. [arXiv:2108.07732](https://arxiv.org/abs/2108.07732) | [google-research/mbpp](https://github.com/google-research/google-research/tree/master/mbpp) | [google-research-datasets/mbpp](https://huggingface.co/datasets/google-research-datasets/mbpp) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
+| **LiveCodeBench** | Jain et al. *LiveCodeBench: Holistic and Contamination Free Evaluation of Large Language Models for Code*, 2024. [arXiv:2403.07974](https://arxiv.org/abs/2403.07974) · [livecodebench.github.io](https://livecodebench.github.io/) | [LiveCodeBench/LiveCodeBench](https://github.com/LiveCodeBench/LiveCodeBench) · [livecodebench/code_generation_lite](https://huggingface.co/datasets/livecodebench/code_generation_lite) | [bzantium/livecodebench](https://huggingface.co/datasets/bzantium/livecodebench) (a copy in plain JSONL for current versions of the `datasets` library) | Marked "cc" on the dataset card, without a specific Creative Commons licence. The problems come from LeetCode, AtCoder and Codeforces, whose own terms apply to the problem statements |
+| **GSM8K** | Cobbe et al. (OpenAI). *Training Verifiers to Solve Math Word Problems*, 2021. [arXiv:2110.14168](https://arxiv.org/abs/2110.14168) | [openai/grade-school-math](https://github.com/openai/grade-school-math) | [openai/gsm8k](https://huggingface.co/datasets/openai/gsm8k) (`main`) | MIT |
+| **MATH-500** | The 500 test problems held out by Lightman et al. (OpenAI), *Let's Verify Step by Step*, 2023 ([arXiv:2305.20050](https://arxiv.org/abs/2305.20050)), from the MATH dataset by Hendrycks et al., *Measuring Mathematical Problem Solving With the MATH Dataset* (NeurIPS 2021, [arXiv:2103.03874](https://arxiv.org/abs/2103.03874)) | [openai/prm800k](https://github.com/openai/prm800k) (`math_splits`) · [hendrycks/math](https://github.com/hendrycks/math) | [HuggingFaceH4/MATH-500](https://huggingface.co/datasets/HuggingFaceH4/MATH-500) | MATH is MIT. The Hugging Face card states no licence of its own; the terms of MATH and openai/prm800k apply |
+
+#### GPQA: please honour the authors' request
+
+The GPQA authors ask users **not to reveal examples from the dataset in plain text or images online**, to reduce the risk of the questions leaking into model training data. The official Hugging Face copy is gated behind that agreement. The copy this tool downloads is not gated, but the request still applies. Please accept the terms on [Idavidrein/gpqa](https://huggingface.co/datasets/Idavidrein/gpqa) if you enable `EVAL_GPQA`, and in practice:
+
+* **Do not publish `eval_details_*.jsonl` from a run with GPQA enabled.** Each line holds the model's full reply (which often restates the question) and the reference answer.
+* **Do not commit the `tests/` dataset cache or the `results/` folder.** The included `.gitignore` excludes both, so `git add .` will not pick them up.
+* Aggregate scores (percentages, charts, the dashboard and `results.json`) contain no questions and are fine to share.
+
+### Methods this tool adapts (no data copied)
+
+| Test | Credit | Licence of the original |
+| --- | --- | --- |
+| **Tool calling** (`EVAL_TOOLCALL`) | Categories (simple, multiple, parallel, irrelevance) and the AST-style argument matching follow the [Berkeley Function Calling Leaderboard (BFCL)](https://gorilla.cs.berkeley.edu/leaderboard.html) by the Gorilla team at UC Berkeley ([ShishirPatil/gorilla](https://github.com/ShishirPatil/gorilla)). The 32 test cases in `llmbench/evals/toolcall_cases.py` were written for this tool; no BFCL data is used, and the scores are not comparable with the BFCL leaderboard | Apache 2.0 |
+| **Long-context retrieval** (`EVAL_LONGCTX`) | The needle-in-a-haystack test by Greg Kamradt ([gkamradt/LLMTest_NeedleInAHaystack](https://github.com/gkamradt/LLMTest_NeedleInAHaystack)), and the multi-key variant from *RULER: What's the Real Context Size of Your Long-Context Language Models?* by Hsieh et al. (NVIDIA, COLM 2024, [arXiv:2404.06654](https://arxiv.org/abs/2404.06654), [NVIDIA/RULER](https://github.com/NVIDIA/RULER)). The haystack, keys and decoys are generated by this tool at run time | See each repository |
+| **Margin of error** | The standard 95% binomial interval (worst case, ±98/√n percentage points) | n/a |
+
+### Software
+
+| Project | Used for | Licence |
+| --- | --- | --- |
+| [llama-swap](https://github.com/mostlygeek/llama-swap) by mostlygeek | The model-swapping proxy this tool benchmarks through | MIT |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) (ggml-org) | llama-server, its `/props` and `timings` fields, and the [GGUF file format](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md) read by `llmbench/gguf.py` (own implementation, no code copied) | MIT |
+| [Chart.js](https://www.chartjs.org/) | Dashboard charts, loaded from cdnjs when the dashboard is opened (not bundled) | MIT |
+| [Hugging Face `datasets`](https://github.com/huggingface/datasets) / `huggingface_hub` | Downloading and caching the evaluation datasets | Apache 2.0 |
+| [Requests](https://github.com/psf/requests) | HTTP client | Apache 2.0 |
+| [aiohttp](https://github.com/aio-libs/aiohttp) | Concurrent evaluation requests | Apache 2.0 |
+| [python-dotenv](https://github.com/theskumar/python-dotenv) | `.env` loading | BSD 3-Clause |
+| [nvidia-ml-py](https://pypi.org/project/nvidia-ml-py/) (NVIDIA) | NVML GPU telemetry (`pynvml`) | BSD 3-Clause |
+
+Dependencies are installed by you from PyPI and are not redistributed here. Each project's licence applies to it.
+
+If you are an author of one of these works and would like the credit worded differently, or a dataset removed, please open an issue.
