@@ -41,7 +41,7 @@ def run_cli(monkeypatch, tmp_path, server, argv, datasets=ALL_DATASETS, fake=Non
     monkeypatch.setattr(dash_mod, "SCRIPT_DIR", tmp_path)
     monkeypatch.setattr(sys, "argv", ["benchmark.py"] + argv)
     from llmbench.cli import main
-    mock_server.STATE.update(in_flight=0, max_in_flight=0, calls=0, requests=[], flaky_503_left=0)
+    mock_server.STATE.update(in_flight=0, max_in_flight=0, calls=0, requests=[], flaky_503_left=0, native=[])
     t0 = time.time()
     try:
         main()
@@ -103,11 +103,18 @@ def test_full_run_sequential(monkeypatch, tmp_path, server):
 
 def test_concurrent_evals_same_answers_and_faster(monkeypatch, tmp_path, server):
     ds = ["gpqa", "mmlu_pro", "gsm8k", "math"]
-    code1, t1, d1 = run_cli(monkeypatch, tmp_path / "seq", server, ["--evals-only"], datasets=ds, EVAL_CONCURRENCY="1") \
-        if (tmp_path / "seq").mkdir() is None else None
-    seq_max = mock_server.STATE["max_in_flight"]
-    (tmp_path / "par").mkdir()
-    code2, t2, d2 = run_cli(monkeypatch, tmp_path / "par", server, ["--evals-only"], datasets=ds, EVAL_CONCURRENCY="4")
+    old = dict(mock_server.CTX)
+    mock_server.CTX.update(slots=4, n_ctx=131072)          # 4 slots, a 128k shared KV pool: room for 4 requests
+    try:
+        code1, t1, d1 = run_cli(monkeypatch, tmp_path / "seq", server, ["--evals-only"], datasets=ds,
+                                EVAL_CONCURRENCY="1") if (tmp_path / "seq").mkdir() is None else None
+        seq_max = mock_server.STATE["max_in_flight"]
+        (tmp_path / "par").mkdir()
+        code2, t2, d2 = run_cli(monkeypatch, tmp_path / "par", server, ["--evals-only"], datasets=ds,
+                                EVAL_CONCURRENCY="4")
+    finally:
+        mock_server.CTX.clear()
+        mock_server.CTX.update(old)
     assert code1 == code2 == 0
     assert seq_max == 1 and mock_server.STATE["max_in_flight"] >= 3           # real parallelism on the wire
     for m1, m2 in zip(d1["models"], d2["models"]):                            # identical verdicts either way
@@ -123,8 +130,14 @@ def test_concurrent_evals_same_answers_and_faster(monkeypatch, tmp_path, server)
 
 
 def test_thread_transport_matches_aiohttp(monkeypatch, tmp_path, server):
-    code, secs, doc = run_cli(monkeypatch, tmp_path, server, ["--evals-only"], datasets=["gsm8k", "gpqa"],
-                              EVAL_CONCURRENCY="3", EVAL_HTTP_BACKEND="threads")
+    old = dict(mock_server.CTX)
+    mock_server.CTX.update(slots=4, n_ctx=131072)
+    try:
+        code, secs, doc = run_cli(monkeypatch, tmp_path, server, ["--evals-only"], datasets=["gsm8k", "gpqa"],
+                                  EVAL_CONCURRENCY="3", EVAL_HTTP_BACKEND="threads")
+    finally:
+        mock_server.CTX.clear()
+        mock_server.CTX.update(old)
     assert code == 0 and ev(doc["models"][0], "gsm8k")["pct"] == pytest.approx(83.33, abs=0.01)
     assert doc["evaluation"]["http_backend"] == "threads" and mock_server.STATE["max_in_flight"] >= 2
 
@@ -277,7 +290,7 @@ def test_v22_full_run(monkeypatch, tmp_path, server):
                                   EVAL_TOOLCALL="true", EVAL_LONGCTX="true", LONGCTX_LENGTHS="32768,65536",
                                   LONGCTX_TRIALS="1", PREFILL_CTX_TESTS="8192,32768,65536", AGENT_PROMPT_TOKENS="4000",
                                   GGUF_SEARCH_DIRS=str(models), BUDGET_PROFILE="server", MIN_CTX="65536",
-                                  BUDGET_SERVER_MAX_RETRY_PCT="off")
+                                  BUDGET_SERVER_MAX_RETRY_PCT="off", EVAL_SKIP_INELIGIBLE="false")
     finally:
         mock_server.CTX["n_ctx"] = old_ctx
     assert code == 0
@@ -287,7 +300,8 @@ def test_v22_full_run(monkeypatch, tmp_path, server):
     assert b["gguf"]["expert_count"] == 64 and a["gguf"]["bpw"] and a["gguf"]["kv_kib_token"] == pytest.approx(2.0)
     assert a["gguf"]["kv_approx"] is True                    # no launch flags readable here: f16 assumed and marked
     # --- deployed context: prefill by length (64k does not fit the 40k context), agent-prompt TTFT
-    assert a["context"]["prefill_8k_tps"] == pytest.approx(300.0) and a["context"]["prefill_32k_tps"]
+    # 8k is measured by the speed phase; 32k comes from the long-context test's first (cold) prompt (v2.1)
+    assert a["context"]["prefill_8k_tps"] == pytest.approx(300.0) and a["context"]["prefill_32k_tps"] == 280.0
     assert a["context"]["prefill_64k_tps"] is None
     assert a["context"]["agent_ttft_s"] > 0 and a["context"]["agent_prompt_tokens"] > 3000
     assert a["context"]["ctx_ok"] is False and a["scores"]["eligible"] is False      # 40k < MIN_CTX 64k: flagged

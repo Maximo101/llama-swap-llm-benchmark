@@ -1,32 +1,37 @@
 """Evaluation phase: ask every model every sampled question, grade the replies, aggregate per dataset.
 
+RESULTS ARE RECORDS (v2.1)
+  Every question produces one record (the line written to eval_details_*.jsonl). A dataset's score is ALWAYS
+  aggregated from its records (aggregate()), whether they were asked just now, in an earlier funnel stage, or come from
+  the result cache. That is what lets the funnel add questions stage by stage and a rerun skip questions already
+  answered, with exactly the same arithmetic as a single uninterrupted run.
+
 CONCURRENCY MODEL (EVAL_CONCURRENCY = N)
-  * One asyncio event loop for the whole phase. `N` worker coroutines per dataset pull questions from a shared
-    iterator, so at most N requests are in flight and memory stays flat however many questions there are.
-  * The HTTP request is awaited on the event loop (aiohttp), grading runs in a bounded thread pool: the regex work
-    is instant, and sandboxed code execution blocks for seconds - it must never stall the loop that is driving
-    the other N-1 requests. Code runs are further bounded by EVAL_SANDBOX_WORKERS.
-  * N = 1 reproduces the old sequential behaviour exactly (same order, same counters, same output).
-  * To get a speed-up the SERVER must serve requests in parallel: llama-server needs `--parallel N` (its context
-    is split between the slots, which shrinks the per-question token budget the runner derives from n_ctx), and
-    llama-swap must be allowed to route concurrent requests to the same model.
+  * One asyncio event loop for the whole phase. Up to N worker coroutines per dataset pull questions from a shared
+    iterator. N is capped PER MODEL (inflight_cap): never more than the server's slots (/props total_slots), and -
+    when the slots share one KV pool (llama-server --kv-unified, the default when -np is left at auto) - never more
+    requests than fit the pool at their worst case (prompt + max_tokens). A pool that overflows makes requests fail.
+  * PIPELINED GRADING (v2.1): a worker hands the finished reply to a grading task and immediately asks the next
+    question, so sandboxed code execution (seconds per program) overlaps with generation instead of adding to it.
+    Grading tasks are bounded (backpressure), and the sandbox is unchanged: one isolated container per program.
+  * N = 1 asks questions strictly one at a time; only grading overlaps.
 
 STREAMING, LOOP ABORT AND THE THINKING CAP (EVAL_STREAM, default on)
   Replies are read as a stream (streaming.py), so a runaway reply no longer has to run into the 10-minute timeout:
     * repetition loop        -> stopped within seconds, flagged "Fail: Degradation"
-    * thinking budget used   -> stopped, flagged "Fail: Think cap"      (EVAL_THINK_BUDGET tokens of thinking)
+    * thinking budget used   -> stopped, flagged "Fail: Think cap"   (EVAL_THINK_BUDGET, or EVAL_THINK_BUDGET_<DATASET>)
     * timeout                -> stopped, with whatever had been written
   A stopped reply is handled in this order:  1) if its VISIBLE answer already contains a gradable answer, grade that
-  (partial-answer salvage, EVAL_SALVAGE);  2) otherwise ask once more with thinking disabled (the existing No
-  Thinking retry);  3) if that fails too the question counts as wrong and keeps its flag. Every stopped attempt is
-  printed as it happens and kept, with the tail of what the model wrote, in eval_details_*.jsonl ("attempts").
+  (partial-answer salvage, EVAL_SALVAGE);  2) at the thinking cap with EVAL_BUDGET_FORCING=true, close the thinking
+  block and ask for the answer, keeping the reasoning already done ("budget forcing", Muennighoff et al. 2025);
+  3) otherwise ask once more with thinking disabled (the No Thinking retry);  4) if that fails too the question counts
+  as wrong and keeps its flag. Every attempt is kept in eval_details_*.jsonl ("attempts").
 
-WHAT THE s/q FIGURE MEANS NOW
-  `sec` is the MEAN PER-QUESTION LATENCY (request + retries + grading), not dataset-wall-time / questions. The
-  Agent score divides by it ("how long does one question take?"); if it were wall/n, running 8 requests at once
-  would make every model look 8x faster and the score would no longer be comparable with earlier runs. The real
-  elapsed time is reported separately as `wall`. Latency measured under load is somewhat higher than unloaded
-  latency - keep EVAL_CONCURRENCY=1 for runs you want to compare with older results.
+WHAT THE s/q FIGURE MEANS
+  `sec` is the MEAN PER-QUESTION LATENCY (request + retries + grading), never dataset-wall-time / questions. Measured
+  under concurrency it includes queueing behind the other requests, so v2.1 also derives `sec1`, the single-stream
+  estimate (tokens / speed-test tok/s + prompt / prefill tok/s + grading). The Agent score uses `sec1` whenever any
+  model ran with more than one request in flight (EVAL_SQ_BASIS=auto), so batching never changes a ranking.
 """
 from __future__ import annotations
 
@@ -38,15 +43,17 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from ..client import get_ctx
-from ..common import BenchError, BenchTimeout, fmt_hms, stamp_line
-from ..config import EVAL_SPECS, FALLBACK_TOKENS
+from ..client import get_ctx, get_props, post_chat, props_ctx, upstream_url
+from ..common import BenchError, BenchTimeout, add_time, avg, fmt_hms, stamp_line
+from ..config import EVAL_SPECS, FALLBACK_TOKENS, funnel_stages, stage_rows, think_budget
 from .answers import extract_choice, strip_think
+from .cache import ResultCache, model_fingerprint, question_key
+from .funnel import gate
 from .grading import grade_item
 from .longctx import run_longctx
 from .mathcheck import extract_math_answer
 from .sandbox import sandbox_workers
-from .streaming import FAIL_DEGRADATION, FAIL_THINK_CAP, StreamGuard, clamp_to_budget
+from .streaming import ANSWER_RESERVE, FAIL_DEGRADATION, FAIL_THINK_CAP, StreamGuard, clamp_to_budget
 from .toolcall import encode_reply
 from .transport import open_transport
 
@@ -117,6 +124,15 @@ def has_complete_answer(kind, item, text):
     return bool(_FENCED.search(body))
 
 
+def _inline_reasoning(text):
+    """Reasoning written inline: everything after the last opening <think> tag that was never closed."""
+    m = list(re.finditer(r"<think(?:ing)?>", text or "", re.I))
+    if not m:
+        return ""
+    tail = text[m[-1].end():]
+    return "" if re.search(r"</think(?:ing)?>", tail, re.I) else tail
+
+
 @dataclass
 class Reply:
     """One answer from the server, however it was read."""
@@ -128,60 +144,124 @@ class Reply:
     loop: object = None             # streaming.LoopInfo when abort == "loop"
     tail: str = ""                  # last ~600 characters of what the model wrote (kept only for stopped replies)
     think_tokens: int = 0
+    reasoning: str = ""             # reasoning the server split out (reasoning_content)
+    prompt_tokens: int | None = None
 
 
 _FB_LABEL = {"length": "cut off", "timeout": "timeout", "loop": "repetition loop", "budget": "thinking cap"}
 
 
-@dataclass
+# --------------------------------------------------------------------------- #
+# Aggregation: records -> the per-dataset row fields
+# --------------------------------------------------------------------------- #
+
+def aggregate(recs, rows=None, conc=1, wall=0.0):
+    """The dataset's result from its question records (same arithmetic as v2.0.0's running tally):
+    pct = correct / n, but None when every request failed (no misleading 0 %); API errors count as wrong."""
+    n = len(recs)
+    s = lambda f: sum(1 for x in recs if x.get(f))
+    err = s("api_error")
+    tok = sum(x.get("tokens") or 0 for x in recs)
+    think = sum(x.get("think_tokens") or 0 for x in recs)
+    ptok = [x["prompt_tokens"] for x in recs if x.get("prompt_tokens")]
+    return {"pct": (100.0 * s("correct") / n) if n - err > 0 else None, "n": n, "err": err, "na": s("na"),
+            "fallback": s("thinking_fallback_used"),
+            "sec": round(sum(x.get("seconds") or 0 for x in recs) / n, 1) if n else None,
+            "trunc": (100.0 * s("trunc") / n) if n else None, "degr": s("degraded"), "cap": s("capped"),
+            "salv": s("salvaged"), "forced": s("forced"), "tok": round(tok / n) if n and tok else None,
+            "wall": round(wall, 1), "conc": conc, "rows": rows if rows is not None else n,
+            "think": think, "answer": max(0, tok - think), "ptok": round(avg(ptok)) if ptok else None,
+            "grade_s": round(sum(x.get("grade_s") or 0 for x in recs) / n, 3) if n else None,
+            "cached": s("cached")}
+
+
+# --------------------------------------------------------------------------- #
+# What one model's evaluation needs
+# --------------------------------------------------------------------------- #
+
+class ModelEval:
+    """Per model and stage: transport, grading pool, context, slots, cache fingerprint, chat-template facts."""
+
+    def __init__(self, phase, r, ctx, props, fp):
+        self.cfg, self.transport, self.pool = phase.cfg, phase.transport, phase.pool
+        self.model, self.r, self.sink, self.cache = r["model"], r, phase.sink, phase.cache
+        self.ctx, self.props, self.fp = ctx, props or {}, fp
+        self.slots = self.props.get("total_slots") or r.get("parallel")
+        self.kv_unified = r.get("kv_unified")
+        self.think_tags = "<think>" in (self.props.get("chat_template") or "")
+        self.upstream = upstream_url(phase.cfg, r["model"])
+
+
+def per_request_tokens(cfg, key, item, ctx):
+    """Worst-case KV tokens one request can occupy: prompt + max_tokens (after the thinking-budget clamp)."""
+    kind = EVAL_SPECS[key]["kind"]
+    prompt = item.get("prompt") or ""
+    mt = clamp_to_budget(dynamic_max_tokens(cfg, kind, ctx, prompt), think_budget(cfg, key))
+    return len(prompt) // 3 + 64 + mt
+
+
+def inflight_cap(cfg, me, key, items):
+    """-> (requests in flight for this model and dataset, why it is lower than EVAL_CONCURRENCY or '')."""
+    want = max(1, min(cfg.eval_concurrency, len(items) or 1))
+    if want <= 1:
+        return 1, ""
+    why = []
+    if me.slots and me.slots < want:
+        want = int(me.slots)
+        why.append(f"{me.slots} server slot(s)")
+    if me.ctx and me.kv_unified is not False and want > 1:
+        per = max(per_request_tokens(cfg, key, it, me.ctx) for it in items[:64])
+        fit = max(1, me.ctx // per)
+        if fit < want:
+            want = fit
+            why.append(f"KV pool {me.ctx:,} tokens / up to {per:,} per request"
+                       + ("" if me.kv_unified else " (assumed shared: -kvu unknown)"))
+    return want, "; ".join(why)
+
+
+# --------------------------------------------------------------------------- #
+# One dataset for one model (one stage)
+# --------------------------------------------------------------------------- #
+
 class _Tally:
-    n: int = 0              # questions finished (the score's denominator)
-    correct: int = 0
-    errors: int = 0         # API failures: counted as wrong
-    trunc: int = 0          # replies cut off by the token limit
-    na: int = 0             # cut off AND no usable answer: counted as wrong, tracked separately
-    fallback: int = 0       # questions that needed the No Thinking retry
-    fb_why: dict = None     # why: {"length": n, "timeout": n, "loop": n, "budget": n}
-    degr: int = 0           # questions where ANY attempt fell into a repetition loop ("Fail: Degradation")
-    degr_final: int = 0     # ... and the question still ended as a Degradation failure
-    cap: int = 0            # questions where ANY attempt exceeded the thinking budget ("Fail: Think cap")
-    cap_final: int = 0
-    salv: int = 0           # questions graded from the partial answer of a stopped reply
-    tok_sum: int = 0        # tokens generated (all attempts)
-    consec: int = 0         # consecutive API failures, in completion order
-    lat_sum: float = 0.0    # sum of per-question latencies
-    last_reason: str = ""
+    """Running counters for the live line and the per-stage report (the stored result comes from aggregate())."""
 
-    def __post_init__(self):
+    def __init__(self):
+        self.n = self.correct = self.errors = self.na = self.fallback = self.degr = self.degr_final = 0
+        self.cap = self.cap_final = self.salv = self.forced = self.consec = self.cached = self.trunc = 0
         self.fb_why = {}
+        self.last_reason = ""
 
-
-# --------------------------------------------------------------------------- #
-# One dataset for one model
-# --------------------------------------------------------------------------- #
 
 class DatasetRun:
-    def __init__(self, cfg, transport, pool, model, key, items, sink, model_ctx):
-        self.cfg, self.transport, self.pool = cfg, transport, pool
-        self.model, self.key, self.items, self.sink, self.model_ctx = model, key, items, sink, model_ctx
+    def __init__(self, me, key, items, stage="", inflight=1):
+        self.me, self.cfg = me, me.cfg
+        self.model, self.key, self.items, self.stage, self.inflight = me.model, key, items, stage, inflight
         self.spec = EVAL_SPECS[key]
+        self.budget = think_budget(self.cfg, key)
+        cfg = self.cfg
         self.timeout = max(cfg.eval_timeout, cfg.timeout_load)
         extra_kw = (cfg.eval_extra_body or {}).get("chat_template_kwargs")
         already_off = isinstance(extra_kw, dict) and extra_kw.get("enable_thinking") is False
         self.can_retry = cfg.eval_retry_on_length and not already_off     # nothing to switch off if the user did it
         # Tool calls are read non-streamed: streamed tool_call deltas differ between servers, and the replies are short.
         self.stream = cfg.eval_stream and self.spec["kind"] != "tool"
+        self.can_force = cfg.eval_budget_forcing and self.stream and me.think_tags and cfg.backend != "strata"
         self.tally = _Tally()
+        self.records = []
         self.live = sys.stdout.isatty()           # live counter only on a terminal; logs/cron just get the final line
         self._workers: list[asyncio.Task] = []
+        self._pending: set = set()
+        # backpressure: at most this many replies may wait for (or be in) grading; generation pauses beyond it
+        self._grade_slots = asyncio.Semaphore(max(1, inflight) + max(2, 2 * sandbox_workers(cfg)))
         self._aborted = False
         self._t0 = self._last_log = time.time()
 
     # -- one question ------------------------------------------------------
     def _payload(self, item):
         cfg = self.cfg
-        max_tokens = clamp_to_budget(dynamic_max_tokens(cfg, self.spec["kind"], self.model_ctx, item["prompt"]),
-                                     cfg.eval_think_budget)      # server-side backstop for the thinking budget
+        max_tokens = clamp_to_budget(dynamic_max_tokens(cfg, self.spec["kind"], self.me.ctx, item["prompt"]),
+                                     self.budget)      # server-side backstop for the thinking budget
         p = {"model": self.model, "messages": item.get("messages") or [{"role": "user", "content": item["prompt"]}],
              "max_tokens": max_tokens, "temperature": cfg.eval_temperature}
         if item.get("tools"):
@@ -199,7 +279,7 @@ class DatasetRun:
         t0 = time.time()
         if not self.stream:
             try:
-                data = await self.transport.chat(payload, self.timeout)
+                data = await self.me.transport.chat(payload, self.timeout)
             except BenchTimeout:
                 return Reply(abort="timeout", seconds=time.time() - t0)
             ch = (data.get("choices") or [{}])[0]
@@ -208,22 +288,24 @@ class DatasetRun:
             text = msg.get("content") or ""
             if "tools" in payload:                      # the grader needs the structured calls, not just the text
                 text = encode_reply(text, msg.get("tool_calls"))
-            return Reply(text=text, finish=ch.get("finish_reason"),
-                         tokens=int(usage.get("completion_tokens") or 0), seconds=time.time() - t0)
-        guard = StreamGuard(self.cfg.eval_think_budget, self.cfg.eval_loop_abort)
+            return Reply(text=text, finish=ch.get("finish_reason"), tokens=int(usage.get("completion_tokens") or 0),
+                         seconds=time.time() - t0, reasoning=msg.get("reasoning_content") or "",
+                         prompt_tokens=usage.get("prompt_tokens"))
+        guard = StreamGuard(self.budget, self.cfg.eval_loop_abort)
         try:
-            res = await self.transport.stream(payload, self.timeout, guard)
+            res = await self.me.transport.stream(payload, self.timeout, guard)
         except asyncio.CancelledError:
             guard.cancel()                      # lets a worker thread stop reading
             raise
         return Reply(text=res.text, finish=res.finish, tokens=res.tokens, seconds=res.seconds, abort=res.abort,
-                     loop=res.loop, tail=res.tail if res.abort else "", think_tokens=res.think_tokens)
+                     loop=res.loop, tail=res.tail if res.abort else "", think_tokens=res.think_tokens,
+                     reasoning=res.reasoning, prompt_tokens=res.prompt_tokens)
 
     def _why(self, r):
         if r.abort == "loop":
             return f"repetition loop ({r.loop.detail})" if r.loop else "repetition loop"
         if r.abort == "budget":
-            return f"{r.think_tokens:,} thinking tokens, budget {self.cfg.eval_think_budget:,}"
+            return f"{r.think_tokens:,} thinking tokens, budget {self.budget:,}"
         return f"no result after {self.timeout:.0f}s"
 
     async def _attempt(self, payload, mode, attempts):
@@ -233,42 +315,87 @@ class DatasetRun:
         except BenchError as e:
             attempts.append({"mode": mode, "end": "error", "detail": str(e)})
             raise
-        a = {"mode": mode, "end": r.abort or r.finish or "stop", "tokens": r.tokens, "seconds": round(r.seconds, 1)}
+        a = {"mode": mode, "end": r.abort or r.finish or "stop", "tokens": r.tokens, "think": r.think_tokens,
+             "seconds": round(r.seconds, 1)}
         if r.abort:
             a["detail"], a["tail"] = self._why(r), r.tail
         attempts.append(a)
         return r
 
+    async def _force(self, payload, reply, attempts):
+        """Budget forcing: keep the reasoning written so far, close the thinking block and let the model answer.
+        Uses llama-server's /apply-template + /completion. None when not possible (falls back to the No Thinking
+        retry). Only for chat templates that use <think> tags."""
+        reasoning = reply.reasoning or _inline_reasoning(reply.text)
+        if not reasoning.strip():
+            return None
+        t0 = time.time()
+        try:
+            body = {"messages": payload["messages"]}
+            if payload.get("chat_template_kwargs"):
+                body["chat_template_kwargs"] = payload["chat_template_kwargs"]
+            tpl = await self.me.transport.post_json(f"{self.me.upstream}/apply-template", body, 60)
+            prompt = (tpl or {}).get("prompt")
+            if not prompt:
+                raise BenchError("apply-template returned no prompt")
+            opened = prompt.rstrip().endswith("<think>")
+            prompt += ("" if opened else "<think>\n") + reasoning.rstrip() + "\n</think>\n\n"
+            data = await self.me.transport.post_json(
+                f"{self.me.upstream}/completion",
+                {"prompt": prompt, "n_predict": ANSWER_RESERVE, "temperature": self.cfg.eval_temperature,
+                 "stream": False, "cache_prompt": True}, self.timeout)
+        except BenchError as e:
+            attempts.append({"mode": "forced", "end": "error", "detail": str(e)})
+            return None
+        content = (data or {}).get("content") or ""
+        limit = data.get("stopped_limit") or data.get("stop_type") == "limit"
+        tokens = int(data.get("tokens_predicted") or len(content) // 4)
+        attempts.append({"mode": "forced", "end": "length" if limit else "stop", "tokens": tokens, "think": 0,
+                         "seconds": round(time.time() - t0, 1)})
+        if not content.strip():
+            return None
+        return Reply(text=f"<think>{reasoning}</think>\n{content}", finish="length" if limit else "stop",
+                     tokens=tokens, seconds=time.time() - t0, prompt_tokens=reply.prompt_tokens)
+
     def _salvageable(self, kind, item, r):
         return self.cfg.eval_salvage and has_complete_answer(kind, item, r.text)
 
     async def _run_attempts(self, item, payload, attempts):
-        """Attempt 1 (thinking as configured), then at most one more: partial-answer salvage OR the No Thinking retry.
-        -> (reply, err, used_fallback, why, salvaged); `reply` is the one to grade."""
+        """Attempt 1 (thinking as configured), then at most one more: partial-answer salvage, budget forcing, OR the
+        No Thinking retry. -> dict(reply, err, fallback, why, salvaged, forced); `reply` is the one to grade."""
         kind = self.spec["kind"]
-        err, reply, used_fallback, why, salvaged = None, None, False, "", False
+        out = {"reply": None, "err": None, "fallback": False, "why": "", "salvaged": False, "forced": False}
         try:
             reply = await self._attempt(payload, "think", attempts)
         except BenchError as e:
-            return None, e, False, "", False
+            out["err"] = e
+            return out
+        out["reply"] = reply
         if reply.abort and self._salvageable(kind, item, reply):
-            return reply, None, False, "", True                            # the visible answer is already there
+            out["salvaged"] = True                                          # the visible answer is already there
+            return out
+        if reply.abort == "budget" and self.can_force:
+            forced = await self._force(payload, reply, attempts)
+            if forced is not None:
+                out.update(reply=forced, forced=True)
+                return out
         if self.can_retry and (reply.abort or reply.finish == "length"):
-            used_fallback, why = True, reply.abort or "length"             # attempt 2 (the only retry): No Thinking
+            out.update(fallback=True, why=reply.abort or "length")          # the only retry: No Thinking
             try:
                 second = await self._attempt(no_thinking(payload), "no-think", attempts)
             except BenchError as e:
                 if reply.abort:         # attempt 1 was stopped and attempt 2 failed too: report the newer error.
-                    err = e             # (If attempt 1 was just cut off, keep its reply and grade that.)
+                    out["err"] = e      # (If attempt 1 was just cut off, keep its reply and grade that.)
             else:
-                reply = second
-                salvaged = bool(reply.abort) and self._salvageable(kind, item, reply)
-        return reply, err, used_fallback, why, salvaged
+                out["reply"] = second
+                out["salvaged"] = bool(second.abort) and self._salvageable(kind, item, second)
+        return out
 
     async def _verdict(self, item, reply, salvaged):
-        """Grade the chosen reply -> dict(ok, pred, reason, na, trunc, flag, finish)."""
+        """Grade the chosen reply -> dict(ok, pred, reason, na, trunc, flag, finish, grade_s)."""
         kind, cfg = self.spec["kind"], self.cfg
-        v = {"ok": False, "pred": None, "reason": "", "na": False, "trunc": False, "flag": "", "finish": reply.finish}
+        v = {"ok": False, "pred": None, "reason": "", "na": False, "trunc": False, "flag": "", "finish": reply.finish,
+             "grade_s": 0.0}
         if reply.abort:
             v["finish"] = f"abort:{reply.abort}"
             if not salvaged:                                               # stopped, nothing gradable, no retry left
@@ -280,83 +407,95 @@ class DatasetRun:
             if _no_usable_answer(kind, item, reply.text):
                 v["na"], v["reason"] = True, "no answer: cut off by the token limit (N/A)"
                 return v
+        t0 = time.time()
         try:
             # grading off the event loop: sandboxed code can block for seconds. A stopped reply is graded as
             # "length": the last-number fallback of GSM8K must never see an unfinished text.
             v["ok"], v["pred"], v["reason"] = await asyncio.get_running_loop().run_in_executor(
-                self.pool, grade_item, cfg, self.key, item, reply.text, "length" if reply.abort else reply.finish)
+                self.me.pool, grade_item, cfg, self.key, item, reply.text, "length" if reply.abort else reply.finish)
         except Exception as e:              # a grader/sandbox problem must never abort the whole benchmark
             v["reason"] = f"grader error: {e.__class__.__name__}: {e}"
+        v["grade_s"] = time.time() - t0
         return v
 
     @staticmethod
-    def _notes(item, attempts, salvaged):
+    def _notes(item, attempts, salvaged, forced):
         """One terminal line per attempt that was stopped, with what became of the question."""
         notes = []
         for i, a in enumerate(attempts):
             if a["end"] not in ("loop", "budget"):
                 continue
-            outcome = ("retried with thinking disabled" if i < len(attempts) - 1
-                       else "graded from the partial answer" if salvaged else "counted as wrong")
+            nxt = attempts[i + 1]["mode"] if i < len(attempts) - 1 else None
+            outcome = ("answer forced after closing the thinking" if forced and nxt == "forced"
+                       else "retried with thinking disabled" if nxt else
+                       "graded from the partial answer" if salvaged else "counted as wrong")
             notes.append(f"[{FAIL_DEGRADATION if a['end'] == 'loop' else FAIL_THINK_CAP}] {item['id']}: {a['detail']}"
                          f" after ~{a['tokens']:,} tokens ({a['seconds']:.0f}s) -> {outcome}")
         return notes
 
-    async def _evaluate(self, item):
-        payload = self._payload(item)
-        t1 = time.time()
-        attempts = []
-        reply, err, used_fallback, why, salvaged = await self._run_attempts(item, payload, attempts)
-        if err is None and reply.abort == "timeout" and not salvaged:
-            err = BenchTimeout(f"timeout after {self.timeout:.0f}s")       # same accounting as before: an API failure
-        if err is not None:
-            v = {"ok": False, "pred": None, "reason": f"api error: {err}", "na": False, "trunc": False, "flag": "",
-                 "finish": None}
-        else:
-            v = await self._verdict(item, reply, salvaged)
-        seconds = time.time() - t1
-        text = reply.text if reply is not None else ""
-        tokens = sum(a.get("tokens") or 0 for a in attempts)
-        rec = {"model": self.model, "dataset": self.key, "id": item["id"], "correct": bool(v["ok"]), "na": v["na"],
-               "thinking_fallback_used": used_fallback, "max_tokens": payload["max_tokens"], "answer": v["pred"],
-               "gold": item.get("gold"), "reason": v["reason"], "finish": v["finish"], "flag": v["flag"],
-               "salvaged": salvaged, "tokens": tokens, "seconds": round(seconds, 2), "attempts": attempts,
-               "response": text[:4000]}
-        return rec, {"err": err, "fallback": used_fallback, "fb_why": why, "trunc": v["trunc"], "na": v["na"],
-                     "ok": v["ok"], "seconds": seconds, "degraded": any(a["end"] == "loop" for a in attempts),
-                     "capped": any(a["end"] == "budget" for a in attempts), "salvaged": salvaged, "flag": v["flag"],
-                     "tokens": tokens, "notes": self._notes(item, attempts, salvaged)}
+    async def _finish(self, item, payload, gen, attempts, qkey, t_gen):
+        """Grade (off the event loop), build the record, cache it, account it. Runs as its own task (pipelined)."""
+        try:
+            reply, err = gen["reply"], gen["err"]
+            if err is None and reply is not None and reply.abort == "timeout" and not gen["salvaged"]:
+                err = BenchTimeout(f"timeout after {self.timeout:.0f}s")   # same accounting as before: an API failure
+            if err is not None:
+                v = {"ok": False, "pred": None, "reason": f"api error: {err}", "na": False, "trunc": False, "flag": "",
+                     "finish": None, "grade_s": 0.0}
+            else:
+                v = await self._verdict(item, reply, gen["salvaged"])
+            text = reply.text if reply is not None else ""
+            rec = {"model": self.model, "dataset": self.key, "id": item["id"], "correct": bool(v["ok"]), "na": v["na"],
+                   "thinking_fallback_used": gen["fallback"], "fallback_why": gen["why"],
+                   "max_tokens": payload["max_tokens"], "answer": v["pred"], "gold": item.get("gold"),
+                   "reason": v["reason"], "finish": v["finish"], "flag": v["flag"], "salvaged": gen["salvaged"],
+                   "forced": gen["forced"], "api_error": err is not None, "trunc": v["trunc"],
+                   "degraded": any(a["end"] == "loop" for a in attempts),
+                   "capped": any(a["end"] == "budget" for a in attempts),
+                   "tokens": sum(a.get("tokens") or 0 for a in attempts),
+                   "think_tokens": sum(a.get("think") or 0 for a in attempts),
+                   "prompt_tokens": reply.prompt_tokens if reply is not None else None,
+                   "seconds": round(t_gen + v["grade_s"], 2), "grade_s": round(v["grade_s"], 3),
+                   "stage": self.stage, "concurrency": self.inflight, "cached": False,
+                   "attempts": attempts, "response": text[:4000]}
+            if self.me.cache is not None and qkey:
+                self.me.cache.store(self.model, self.me.fp, qkey, rec)
+            self._account(rec, self._notes(item, attempts, gen["salvaged"], gen["forced"]))
+        finally:
+            self._grade_slots.release()
 
     # -- bookkeeping (runs on the event loop between awaits, so it needs no lock) --------------
     def _say(self, msg):
         """A line between the live counter updates (a terminal) or just a line (a log file)."""
         print(("\r" if self.live else "") + "    " + msg + (" " * 12 if self.live else ""), flush=True)
 
-    def _account(self, rec, f):
+    def _account(self, rec, notes=()):
         t = self.tally
-        t.fallback += f["fallback"]
-        if f["fallback"]:
-            t.fb_why[f["fb_why"]] = t.fb_why.get(f["fb_why"], 0) + 1
-        t.degr += f["degraded"]
-        t.cap += f["capped"]
-        t.salv += f["salvaged"]
-        t.degr_final += f["flag"] == FAIL_DEGRADATION
-        t.cap_final += f["flag"] == FAIL_THINK_CAP
-        t.tok_sum += f["tokens"]
-        for note in f["notes"]:
+        t.fallback += bool(rec.get("thinking_fallback_used"))
+        if rec.get("thinking_fallback_used"):
+            why = rec.get("fallback_why") or "length"
+            t.fb_why[why] = t.fb_why.get(why, 0) + 1
+        t.degr += bool(rec.get("degraded"))
+        t.cap += bool(rec.get("capped"))
+        t.salv += bool(rec.get("salvaged"))
+        t.forced += bool(rec.get("forced"))
+        t.degr_final += rec.get("flag") == FAIL_DEGRADATION
+        t.cap_final += rec.get("flag") == FAIL_THINK_CAP
+        t.cached += bool(rec.get("cached"))
+        for note in notes:
             self._say(note)
-        if f["err"] is not None:
+        if rec.get("api_error"):
             t.errors += 1
             t.consec += 1
-            t.last_reason = rec["reason"]
+            t.last_reason = rec.get("reason", "")
         else:
             t.consec = 0
-            t.trunc += f["trunc"]
+            t.trunc += bool(rec.get("trunc"))
         t.n += 1
-        t.na += f["na"]
-        t.correct += bool(f["ok"])
-        t.lat_sum += f["seconds"]
-        self.sink(rec)
+        t.na += bool(rec.get("na"))
+        t.correct += bool(rec.get("correct"))
+        self.records.append(rec)
+        self.me.sink(rec)
         if self.live:
             print(f"\r    {self.spec['short']:<10} {t.n}/{len(self.items)}  {100 * t.correct / t.n:5.1f}%"
                   + (f"  ({t.na} N/A)" if t.na else "") + (f"  ({t.degr} loop)" if t.degr else ""), end="", flush=True)
@@ -382,46 +521,61 @@ class DatasetRun:
               + (f"  ({t.na} N/A)" if t.na else "") + (f"  ({t.degr} loop)" if t.degr else ""), flush=True)
 
     async def _worker(self, it):
+        cfg, me = self.cfg, self.me
         while not self._aborted:
             item = next(it, None)                 # shared iterator: safe, the loop is single-threaded
             if item is None:
                 return
-            rec, flags = await self._evaluate(item)
-            self._account(rec, flags)
+            payload = self._payload(item)
+            qkey = None
+            if me.cache is not None and me.fp:
+                qkey = question_key(cfg, self.key, item, payload, self.budget)
+                hit = me.cache.lookup(self.model, me.fp, qkey)
+                if hit is not None:
+                    hit.update(cached=True, stage=self.stage)
+                    self._account(hit)
+                    continue
+            await self._grade_slots.acquire()     # wait here if grading has fallen behind
+            t0 = time.time()
+            attempts = []
+            try:
+                gen = await self._run_attempts(item, payload, attempts)
+            except BaseException:
+                self._grade_slots.release()
+                raise
+            task = asyncio.ensure_future(self._finish(item, payload, gen, attempts, qkey, time.time() - t0))
+            self._pending.add(task)
+            task.add_done_callback(self._pending.discard)
 
     async def run(self):
-        cfg, t = self.cfg, self.tally
+        """-> (records of this stage, wall seconds)."""
         t0 = self._t0 = self._last_log = time.time()
         if not self.live:
             self._log_progress(force=True)
         it = iter(self.items)
-        n_workers = max(1, min(cfg.eval_concurrency, len(self.items)))
-        self._workers = [asyncio.ensure_future(self._worker(it)) for _ in range(n_workers)]
+        self._workers = [asyncio.ensure_future(self._worker(it)) for _ in range(max(1, self.inflight))]
         try:
             outcomes = await asyncio.gather(*self._workers, return_exceptions=True)
+            pending = await asyncio.gather(*list(self._pending), return_exceptions=True)
         except BaseException:                    # Ctrl-C / outer cancellation: stop every worker, then re-raise
-            for w in self._workers:
+            for w in self._workers + list(self._pending):
                 w.cancel()
-            await asyncio.gather(*self._workers, return_exceptions=True)
+            await asyncio.gather(*self._workers, *list(self._pending), return_exceptions=True)
             raise
-        for o in outcomes:                        # a worker crashed (not a cancel from the abort logic)
+        for o in list(outcomes) + list(pending):  # a worker / grading task crashed (not a cancel from the abort logic)
             if isinstance(o, BaseException) and not isinstance(o, asyncio.CancelledError):
                 raise o
         wall = time.time() - t0
         self._report(wall)
-        n = t.n
-        return {"pct": (100.0 * t.correct / n) if n - t.errors > 0 else None, "n": n, "err": t.errors, "na": t.na,
-                "fallback": t.fallback, "sec": round(t.lat_sum / n, 1) if n else None,
-                "trunc": (100.0 * t.trunc / n) if n else None,
-                "degr": t.degr, "cap": t.cap, "salv": t.salv, "tok": round(t.tok_sum / n) if n and t.tok_sum else None,
-                "wall": round(wall, 1), "conc": n_workers}
+        return self.records, wall
 
     def _report(self, wall):
         cfg, t, short = self.cfg, self.tally, self.spec["short"]
         n = t.n
         print(("\r" if self.live else "") + f"    {short:<10} {t.correct}/{n} = {100 * t.correct / n if n else 0:.1f}%"
               + (f"  [{t.na} N/A]" if t.na else "") + f"  ({fmt_hms(wall)})"
-              + (f"  x{cfg.eval_concurrency} parallel" if cfg.eval_concurrency > 1 else "")
+              + (f"  x{self.inflight} parallel" if self.inflight > 1 else "")
+              + (f"  [{t.cached} from cache]" if t.cached else "")
               + (" " * 12 if self.live else ""))
         if self._aborted:
             print(f"    [warn] stopped after {cfg.eval_max_consec_errors} consecutive API errors (last: {t.last_reason})")
@@ -433,8 +587,8 @@ class DatasetRun:
         self._report_warnings()
 
     def _report_stopped(self):
-        """Retries, repetition loops, the thinking cap and salvaged answers."""
-        cfg, t = self.cfg, self.tally
+        """Retries, repetition loops, the thinking cap, forced answers and salvaged answers."""
+        t = self.tally
         if t.fallback:
             why = ", ".join(f"{v} {_FB_LABEL.get(k, k)}" for k, v in sorted(t.fb_why.items(), key=lambda kv: -kv[1]))
             print(f"    [info] {t.fallback} question(s) were retried with No Thinking ({why})")
@@ -443,7 +597,9 @@ class DatasetRun:
                   f"({t.degr - t.degr_final} recovered by the retry or the partial answer, {t.degr_final} counted as wrong)")
         if t.cap:
             print(f"    [info] {FAIL_THINK_CAP}: {t.cap} question(s) used more than the thinking budget of "
-                  f"{cfg.eval_think_budget:,} tokens ({t.cap - t.cap_final} recovered, {t.cap_final} counted as wrong)")
+                  f"{self.budget:,} tokens ({t.cap - t.cap_final} recovered, {t.cap_final} counted as wrong)")
+        if t.forced:
+            print(f"    [info] {t.forced} question(s) were answered by budget forcing (thinking closed at the cap)")
         if t.salv:
             print(f"    [info] {t.salv} question(s) were graded from the partial answer of a stopped reply")
 
@@ -463,77 +619,252 @@ class DatasetRun:
             print(f"    [warn] {100 * t.trunc / n:.0f}% of replies were cut off at the token limit"
                   + (" even with thinking disabled" if self.can_retry else "")
                   + ". The model's context size (-c) is probably too small for this dataset"
-                  + (" (with --parallel N the context is divided between the slots)." if cfg.eval_concurrency > 1 else "."))
+                  + (" (without --kv-unified, --parallel N divides it between the slots)." if self.inflight > 1 else "."))
 
 
 # --------------------------------------------------------------------------- #
 # The whole evaluation phase
 # --------------------------------------------------------------------------- #
 
-async def _run_all(cfg, session, results, data, stamp, path):
-    todo = [r for r in results if r["status"] == "ok"]
-    calls = sum(len(v) for v in data.values()) * len(todo)
-    conc = cfg.eval_concurrency
-    transport = await open_transport(cfg, conc)
-    pool = ThreadPoolExecutor(max_workers=max(sandbox_workers(cfg), 2), thread_name_prefix="eval-grade")
-    if cfg.eval_longctx and cfg.longctx_lengths:
-        print(f"\nLong-context retrieval: {', '.join(f'{n // 1024}k' for n in cfg.longctx_lengths)} tokens, "
-              f"{cfg.longctx_trials} prompt(s) x {cfg.longctx_keys} keys per length, KV at least {cfg.longctx_kv_min} "
-              f"({'flagged' if cfg.longctx_kv_action == 'flag' else 'skipped'} below)")
-    print(f"\nEvaluations: {len(todo)} model(s) x {len(data)} dataset(s) = {calls} requests "
-          f"(max_tokens {tokens_label(cfg.eval_max_tokens_qa)} QA / {tokens_label(cfg.eval_max_tokens_code)} code, "
-          f"temperature {cfg.eval_temperature:g}"
-          + (", No Thinking retry" if cfg.eval_retry_on_length else ", no retry")
-          + f"; HTTP {transport.name}, concurrency {conc})")
-    if cfg.eval_stream:
-        print("  streaming: thinking budget " + (f"{cfg.eval_think_budget:,} tokens" if cfg.eval_think_budget else "unlimited")
-              + f", loop abort {'on' if cfg.eval_loop_abort else 'off'}, partial-answer salvage "
-              + ("on" if cfg.eval_salvage else "off"))
-    else:
-        print("  [info] EVAL_STREAM=false: replies are not streamed, so loop abort, salvage and the live thinking "
-              "budget are off (max_tokens still limits each reply)")
-    if conc > 1:
-        print("  [info] concurrency > 1: s/q is the mean per-question latency under load (see runner.py); "
-              "keep EVAL_CONCURRENCY=1 for runs you want to compare with older results. "
-              "llama-server needs --parallel >= EVAL_CONCURRENCY for this to speed anything up.")
-    try:
-        with open(path, "a", encoding="utf-8") as fh:
-            def sink(rec):
-                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                fh.flush()
-            mid = -(-len(todo) // 2)            # halfway point by model count; odd counts round up (5 models -> 3)
-            for i, r in enumerate(todo, 1):
-                print(f"[eval {i}/{len(todo)}] {r['model']}")
-                ctx = r.get("ctx_size")                  # known from the speed test; evals-only runs look it up here
-                if not ctx:
-                    try:
-                        ctx = await asyncio.to_thread(get_ctx, cfg, session, r["model"])
-                    except Exception:
-                        ctx = None
-                if not ctx:
-                    print(f"    [warn] context size unknown: using max_tokens {FALLBACK_TOKENS} for every question")
-                if cfg.eval_longctx and cfg.longctx_lengths:
-                    try:
-                        await asyncio.to_thread(run_longctx, cfg, session, r, ctx, sink)
-                    except Exception as e:             # optional check: never abort the evals for it
-                        print(f"    [warn] long-context check failed: {e.__class__.__name__}: {e}")
-                for key in cfg.eval_datasets:
-                    if key not in data:
-                        continue
-                    res = await DatasetRun(cfg, transport, pool, r["model"], key, data[key], sink, ctx).run()
-                    for field, v in res.items():
-                        r[f"eval_{key}_{field}"] = v
-                if i == mid:
-                    stamp_line(f"Evals halfway ({i}/{len(todo)} models done)")
-    finally:
-        await transport.close()
-        pool.shutdown(wait=False, cancel_futures=True)
+def skip_reason(cfg, r):
+    """EVAL_SKIP_INELIGIBLE: why this model's evals are pointless (it is already kept off the podium by a rule the
+    speed phase measured), or None. auto = rules that keep a model off the podium; true = every failed budget rule."""
+    if cfg.eval_skip_ineligible == "false" or r["status"] != "ok":
+        return None
+    why = []
+    if r.get("ctx_ok") is False:
+        why.append(f"ctx {r.get('ctx_size') or 0:,} below MIN_CTX {cfg.min_ctx or 0:,}")
+    if r.get("budget_pass") is False and (cfg.eval_skip_ineligible == "true" or cfg.budget_podium_pass_only):
+        why.append(f"budget {r.get('budget_profile')}: {r.get('budget_fails')}")
+    vp = r.get("vram_pct")
+    if vp is not None and vp > cfg.goldilocks_max_vram_pct:
+        why.append(f"VRAM {vp:.0f}% above GOLDILOCKS_MAX_VRAM_PCT {cfg.goldilocks_max_vram_pct:g}%")
+    return "; ".join(why) or None
 
 
-def run_evals(cfg, session, results, data, stamp):
-    """Evaluation phase: runs AFTER all speed tests, one model at a time (each model loads once).
-    Fills r['eval_<dataset>_pct|n|err|na|fallback|sec|trunc|degr|cap|salv|tok|wall|conc'] and appends one JSON line per question to
-    eval_details_<stamp>.jsonl. Returns that path."""
+def _stage_ids(cfg, data, stages):
+    """{dataset: [set of question ids for each stage]} - nested prefixes of the seeded question order."""
+    from .datasets import sample_indices
+    out = {}
+    for key, items in data.items():
+        n, cand = (cfg.eval_pools or {}).get(key, (None, None))
+        by_row = {it.get("_row"): it["id"] for it in items}
+        sets = []
+        for _, rows in stages:
+            if n is None or None in by_row:
+                sets.append({it["id"] for it in items})          # no row numbers (e.g. older callers): everything
+            else:
+                sets.append({by_row[i] for i in sample_indices(n, rows, cfg.eval_seed, key, cand) if i in by_row})
+        out[key] = sets
+    return out
+
+
+class EvalPhase:
+    def __init__(self, cfg, session, results, data, stamp, path, hardware=""):
+        self.cfg, self.session, self.results, self.data = cfg, session, results, data
+        self.stamp, self.path, self.hardware = stamp, path, hardware
+        self.keys = [k for k in cfg.eval_datasets if k in data]
+        self.stages = funnel_stages(cfg) if cfg.eval_profile == "funnel" else [(cfg.eval_profile, stage_rows(cfg))]
+        self.store: dict = {}                    # model -> dataset -> {question id: record}
+        self.funnel_report: list = []
+        self.cache = ResultCache(cfg.eval_result_cache_dir) if cfg.eval_result_cache else None
+        self.transport = self.pool = self.sink = None
+        self._fp_warned = False
+
+    def _header(self, todo, skipped):
+        cfg = self.cfg
+        calls = sum(len(v) for v in self.data.values()) * len(todo)
+        if cfg.eval_longctx and cfg.longctx_lengths:
+            print(f"\nLong-context retrieval: {', '.join(f'{n // 1024}k' for n in cfg.longctx_lengths)} tokens, "
+                  f"{cfg.longctx_trials} question(s) x {cfg.longctx_keys} keys per length on one shared document, "
+                  f"KV at least {cfg.longctx_kv_min} ({'flagged' if cfg.longctx_kv_action == 'flag' else 'skipped'} below)")
+        print(f"\nEvaluations: {len(todo)} model(s) x {len(self.data)} dataset(s)"
+              + (f" = up to {calls} requests" if len(self.stages) == 1 else "")
+              + f" (max_tokens {tokens_label(cfg.eval_max_tokens_qa)} QA / {tokens_label(cfg.eval_max_tokens_code)} "
+              f"code, temperature {cfg.eval_temperature:g}"
+              + (", No Thinking retry" if cfg.eval_retry_on_length else ", no retry")
+              + (", budget forcing" if cfg.eval_budget_forcing else "")
+              + f"; HTTP {self.transport.name}, concurrency {cfg.eval_concurrency})")
+        if len(self.stages) > 1:
+            print("  funnel: " + " -> ".join(f"{n} ({r if r is not None else 'all'} rows)" for n, r in self.stages)
+                  + f"; at each gate keep every model whose upper bound reaches the lower bound of model "
+                  f"#{cfg.eval_leaders} ({100 * cfg.eval_funnel_conf:.0f}% one-sided), never fewer than {cfg.eval_leaders}")
+        if skipped:
+            print(f"  skipped (EVAL_SKIP_INELIGIBLE={cfg.eval_skip_ineligible}): {len(skipped)} model(s) that cannot be "
+                  "deployed under the active rules")
+            for r in skipped:
+                print(f"    - {r['model']}: {r['eval_skipped']}")
+        if self.cache is not None:
+            print(f"  result cache: {cfg.eval_result_cache_dir} (answers already obtained with identical settings are "
+                  "reused; EVAL_RESULT_CACHE=false to ask everything again)")
+        if cfg.eval_stream:
+            budgets = {k: v for k, v in (cfg.eval_think_budgets or {}).items() if k in self.keys}
+            print("  streaming: thinking budget " + (f"{cfg.eval_think_budget:,} tokens" if cfg.eval_think_budget
+                                                     else "unlimited")
+                  + (" (" + ", ".join(f"{EVAL_SPECS[k]['short']} {v or 'unlimited'}" for k, v in budgets.items()) + ")"
+                     if budgets else "")
+                  + f", loop abort {'on' if cfg.eval_loop_abort else 'off'}, partial-answer salvage "
+                  + ("on" if cfg.eval_salvage else "off"))
+        else:
+            print("  [info] EVAL_STREAM=false: replies are not streamed, so loop abort, salvage, budget forcing and the "
+                  "live thinking budget are off (max_tokens still limits each reply)")
+        if cfg.eval_concurrency > 1:
+            print("  [info] concurrency > 1: needs llama-server slots (-np) and, to keep the full context per request, "
+                  "--kv-unified. In-flight requests are capped per model to what the slots and KV pool can hold; the "
+                  "Agent score then uses the single-stream s/q estimate, so batching cannot change a ranking.")
+
+    async def _prepare(self, r):
+        """Load the model with a tiny request (timed as eval_load, so it is never part of the first question's
+        latency - v2.0.0 counted the model load in the first question's s/q), then read /props."""
+        cfg, model = self.cfg, r["model"]
+        t0 = time.time()
+        try:
+            await asyncio.to_thread(post_chat, cfg, self.session,
+                                    {"model": model, "max_tokens": 1, "stream": False,
+                                     "messages": [{"role": "user", "content": "hi"}]}, cfg.timeout_load)
+        except BenchError as e:
+            print(f"    [warn] warm-up request failed ({e}); the questions will tell")
+        add_time(r, "eval_load", time.time() - t0)
+        props = await asyncio.to_thread(get_props, cfg, self.session, model)
+        ctx = r.get("ctx_size") or props_ctx(props)
+        if not ctx:
+            try:
+                ctx = await asyncio.to_thread(get_ctx, cfg, self.session, model, props)
+            except Exception:
+                ctx = None
+        if not ctx:
+            print(f"    [warn] context size unknown: using max_tokens {FALLBACK_TOKENS} for every question")
+        if props.get("total_slots") and not r.get("parallel"):
+            r["parallel"] = props["total_slots"]
+        fp = None
+        if self.cache is not None:
+            fp, strong = model_fingerprint(r, props, self.hardware or cfg.hw_gpu)
+            if not strong and not self._fp_warned:
+                self._fp_warned = True
+                print("    [info] result cache: model file not readable from here, so cached answers are matched on "
+                      "the server's report (path, ctx, build, template) rather than the file's own hash")
+        return ModelEval(self, r, ctx, props, fp)
+
+    async def _model_stage(self, r, si, stage_ids):
+        cfg, model = self.cfg, r["model"]
+        sname = self.stages[si][0]
+        me = await self._prepare(r)
+        if si == 0 and cfg.eval_longctx and cfg.longctx_lengths:
+            try:
+                await asyncio.to_thread(run_longctx, cfg, self.session, r, me.ctx, self.sink)
+            except Exception as e:             # optional check: never abort the evals for it
+                print(f"    [warn] long-context check failed: {e.__class__.__name__}: {e}")
+        done_model = self.store.setdefault(model, {})
+        for key in self.keys:
+            want = [it for it in self.data[key] if it["id"] in stage_ids[key][si]]
+            done = done_model.setdefault(key, {})
+            ask = [it for it in want if it["id"] not in done]
+            inflight, why = inflight_cap(cfg, me, key, ask)
+            if why and cfg.eval_concurrency > 1:
+                print(f"    {EVAL_SPECS[key]['short']:<10} in flight: {inflight} (capped: {why})")
+            r["eval_inflight"] = max(r.get("eval_inflight") or 1, inflight)
+            if ask:
+                recs, wall = await DatasetRun(me, key, ask, sname, inflight).run()
+                for rec in recs:
+                    done[rec["id"]] = rec
+                add_time(r, f"eval:{key}", wall)
+            res = aggregate([done[i] for i in sorted(done)], rows=len(want), conc=inflight,
+                            wall=(r.get("timing") or {}).get(f"eval:{key}", 0.0))
+            for field, v in res.items():
+                r[f"eval_{key}_{field}"] = v
+
+    def _stage1_avg(self, r, stage_ids):
+        """Every model's score on the FIRST stage's questions only: the like-for-like comparison in a funnel run."""
+        pcts = []
+        for key in self.keys:
+            recs = [x for i, x in (self.store.get(r["model"], {}).get(key) or {}).items() if i in stage_ids[key][0]]
+            agg = aggregate(recs) if recs else None
+            if not agg or agg["pct"] is None:
+                return None
+            pcts.append(agg["pct"])
+        return avg(pcts)
+
+    def _gate(self, alive, si):
+        from ..scoring import finalize
+        cfg = self.cfg
+        finalize(self.results, cfg)                 # long-context averages etc. for the gate's score
+        lc_n = cfg.longctx_trials * cfg.longctx_keys * max(1, len(cfg.longctx_lengths))
+        keep, report, bar = gate(alive, self.keys, cfg.eval_leaders, cfg.eval_funnel_conf, cfg.agent_longctx_weight,
+                                 lc_n)
+        sname = self.stages[si][0]
+        print(f"\nFunnel gate after {sname}: {len(keep)} of {len(alive)} model(s) go on to {self.stages[si + 1][0]}"
+              + (f" (leaders' bar {bar:.1f})" if bar is not None else ""))
+        for r in sorted(alive, key=lambda r: -(report.get(r["model"], {}).get("score") or -1)):
+            rep = report.get(r["model"], {})
+            sc = f"{rep['score']:5.1f} +/-{rep['se']:.1f}" if rep.get("score") is not None else "  -  "
+            print(f"    {'keep' if r['model'] in keep else 'drop'}  {sc}  {r['model']}"
+                  + (f"  ({rep['why']})" if rep.get("why") else ""))
+            self.funnel_report.append({"stage": sname, "model": r["model"], **{k: v for k, v in rep.items()}})
+            if r["model"] not in keep:
+                r["eval_stage"] = sname
+                r["eval_screened"] = f"screened out at {sname}: {rep.get('why') or 'not among the leaders'}"
+        return [r for r in alive if r["model"] in keep]
+
+    async def run(self):
+        cfg = self.cfg
+        todo = [r for r in self.results if r["status"] == "ok"]
+        if any(r.get("avg_tps") is not None for r in todo):
+            from ..scoring import finalize
+            finalize(self.results, cfg)             # budget checks / eligibility from the speed phase
+        skipped = []
+        for r in todo:
+            why = skip_reason(cfg, r)
+            if why:
+                r["eval_skipped"] = why
+                skipped.append(r)
+        todo = [r for r in todo if not r.get("eval_skipped")]
+        self.transport = await open_transport(cfg, cfg.eval_concurrency)
+        self.pool = ThreadPoolExecutor(max_workers=max(sandbox_workers(cfg), 2), thread_name_prefix="eval-grade")
+        self._header(todo, skipped)
+        stage_ids = _stage_ids(cfg, self.data, self.stages)
+        try:
+            with open(self.path, "a", encoding="utf-8") as fh:
+                def sink(rec):
+                    fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+                    fh.flush()
+                self.sink = sink
+                alive = todo
+                for si, (sname, srows) in enumerate(self.stages):
+                    last = si == len(self.stages) - 1
+                    if len(self.stages) > 1:
+                        print(f"\n=== Funnel stage {si + 1}/{len(self.stages)}: {sname} "
+                              f"({srows if srows is not None else 'all'} rows per dataset), {len(alive)} model(s) ===")
+                        stamp_line(f"Funnel stage {sname} started")
+                    mid = -(-len(alive) // 2)
+                    for i, r in enumerate(alive, 1):
+                        print(f"[eval {i}/{len(alive)}] {r['model']}" + (f"  [{sname}]" if len(self.stages) > 1 else ""))
+                        await self._model_stage(r, si, stage_ids)
+                        if i == mid and len(self.stages) == 1:
+                            stamp_line(f"Evals halfway ({i}/{len(alive)} models done)")
+                    if last:
+                        if len(self.stages) > 1:
+                            for r in alive:
+                                r["eval_stage"] = sname
+                    elif alive:
+                        alive = self._gate(alive, si)
+                if len(self.stages) > 1:
+                    for r in todo:
+                        r["eval_stage1_avg_pct"] = self._stage1_avg(r, stage_ids)
+                for r in todo:
+                    r["eval_cached_n"] = sum(r.get(f"eval_{k}_cached") or 0 for k in self.keys)
+                cached = sum(r["eval_cached_n"] for r in todo)
+                if cached:
+                    print(f"\nResult cache: {cached} answer(s) reused instead of asked again")
+        finally:
+            await self.transport.close()
+            self.pool.shutdown(wait=False, cancel_futures=True)
+
+
+def run_evals(cfg, session, results, data, stamp, hardware=""):
+    """Evaluation phase: runs AFTER all speed tests, one model at a time (each model loads once per stage).
+    Fills r['eval_<dataset>_<field>'] (aggregate()) and appends one JSON line per question to
+    eval_details_<stamp>.jsonl. Returns (that path, the funnel report list)."""
     path = cfg.output_dir / f"eval_details_{stamp}.jsonl"
-    asyncio.run(_run_all(cfg, session, results, data, stamp, path))
-    return path
+    phase = EvalPhase(cfg, session, results, data, stamp, path, hardware)
+    asyncio.run(phase.run())
+    return path, phase.funnel_report

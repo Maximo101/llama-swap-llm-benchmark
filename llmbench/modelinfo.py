@@ -64,6 +64,12 @@ def _apply_launch(r, info):
     r["ubatch"] = info["ubatch"] or 512
     r["batch"] = info["batch"] or 2048
     r["parallel"] = info["parallel"]
+    # Shared KV pool across slots? Explicit flag wins; with -np left at auto, current llama.cpp enables it by default
+    # (older builds did not), so an unset flag stays None = unknown, and the eval runner then assumes a shared pool.
+    r["kv_unified"] = info.get("kv_unified")
+    if r["kv_unified"] is None and info.get("parallel") not in (None, -1):
+        r["kv_unified"] = False         # explicit -np N without -kvu: every slot owns ctx / N
+    r["_launch_argv"] = info.get("argv")
     r["mmproj"] = os.path.basename(info["mmproj"]) if info["mmproj"] else None
     r["jinja"] = info["jinja"]
     r["override_tensor"] = info["ot"]
@@ -121,6 +127,7 @@ def collect(cfg, session, host, model, r, strata, warned):
             print(f"  [warn] model file not readable from here ({path}): GGUF size, BPW and architecture are blank. "
                   "Run as root (reads it through /proc/<pid>/root) or set GGUF_PATH_MAP=/container/path=/host/path")
         return
+    r["_gguf_path"] = real                      # for the result-cache fingerprint (never exported)
     try:
         if real not in _CACHE:
             _CACHE[real] = inspect(real)

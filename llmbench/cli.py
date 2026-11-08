@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 from .client import (ctx_from_details, detect_backend, list_models, probe_strata, strata_details,
                      strata_discover)
-from .common import fmt_hr_m_s, stamp_line
+from .common import add_time, fmt_hr_m_s, stamp_line
 from .config import EVAL_SPECS, load_config
 from .diagnostics import check, demo_results
 from .evals.datasets import download_datasets, prepare_eval_data
@@ -175,6 +175,7 @@ def _speed_phase(cfg, session, models, st, info):
             st.results.append(r)
             if i < len(models):
                 time.sleep(cfg.cooldown)
+                add_time(r, "cooldown", cfg.cooldown)
     except KeyboardInterrupt:
         interrupted = True
         print("\nInterrupted: writing partial results.")
@@ -188,12 +189,25 @@ def _speed_phase(cfg, session, models, st, info):
     return interrupted
 
 
-def _eval_phase(cfg, session, st, eval_data, stamp):
+def _eval_phase(cfg, session, st, eval_data, stamp, info):
+    t0 = time.time()
     try:
-        st.details_path = run_evals(cfg, session, st.results, eval_data, stamp)
+        st.details_path, info["funnel"] = run_evals(cfg, session, st.results, eval_data, stamp, st.hardware)
     except KeyboardInterrupt:
         st.interrupted = True
-        print("\nInterrupted: writing partial results.")
+        print("\nInterrupted: writing partial results (answers so far are in the result cache; rerun to resume).")
+    finally:
+        info.setdefault("phases", {})["eval_s"] = round(time.time() - t0, 1)
+
+
+def _defer_prefill(cfg, eval_data):
+    """Prefill lengths that the long-context test measures anyway (its first, cold prompt of that length): the speed
+    phase skips them instead of sending a second, separate 64k / 128k prompt."""
+    if _has_evals(cfg, eval_data) and cfg.eval_longctx:
+        cfg.defer_prefill = tuple(n for n in cfg.prefill_ctx_tests if n in cfg.longctx_lengths)
+        if cfg.defer_prefill:
+            print("Prefill at " + ", ".join(f"{n // 1024}k" for n in cfg.defer_prefill)
+                  + " is taken from the long-context test's first prompt (no separate request)")
 
 
 def _early_dashboard(cfg, st, stamp):
@@ -275,6 +289,11 @@ def _run(args, cfg, stamp, info):
         session, models = detect_backend(cfg)
         st.hardware = "" if evals_only else detect_hardware(cfg)
         eval_data = _load_eval_data(cfg)
+        try:                                     # one line: what --estimate predicts for this run (never fatal)
+            from .estimate import estimate
+            estimate(cfg, brief=True)
+        except Exception:
+            pass
         if evals_only:
             # API-client mode: no GPU / RAPL / RAM sampling, nothing local is read.
             st.cpu_source = "not measured (evals-only run)"
@@ -282,13 +301,16 @@ def _run(args, cfg, stamp, info):
                 sys.exit(f"[error] Nothing to do: enable at least one dataset ({_DATASET_ENVS}) or EVAL_LONGCTX in .env.")
             st.results.extend(blank(m) for m in models)
             print(f"Evals-only run: {len(models)} model(s); speed and hardware telemetry are skipped.")
-            _eval_phase(cfg, session, st, eval_data, stamp)
+            _eval_phase(cfg, session, st, eval_data, stamp, info)
         else:
+            _defer_prefill(cfg, eval_data)
+            t0 = time.time()
             st.interrupted = _speed_phase(cfg, session, models, st, info)
+            info.setdefault("phases", {})["speed_s"] = round(time.time() - t0, 1)
             # Evaluations run AFTER the speed tests, once telemetry is stopped so they cannot disturb it.
             if _has_evals(cfg, eval_data) and not st.interrupted and any(r["status"] == "ok" for r in st.results):
                 _early_dashboard(cfg, st, stamp)
-                _eval_phase(cfg, session, st, eval_data, stamp)
+                _eval_phase(cfg, session, st, eval_data, stamp, info)
 
     if not st.results:
         sys.exit("No results to write.")
@@ -315,13 +337,23 @@ def _parser():
                     help="print the models the server offers (GET /v1/models) and exit")
     ap.add_argument("--download-datasets", action="store_true",
                     help="download and cache the eval datasets marked true in .env into ./tests, then exit")
+    ap.add_argument("--estimate", action="store_true",
+                    help="predict how long a run with the current .env would take (from earlier runs' JSON in "
+                         "OUTPUT_DIR where available, else typical speeds), then exit; nothing is benchmarked")
+    ap.add_argument("--batch-probe", action="store_true",
+                    help="measure what answering several eval questions at once gains on this GPU: the same "
+                         "questions at BATCH_PROBE_LEVELS requests in flight, per selected model; then exit")
     return ap
 
 
 def _utility_command(args, cfg):
-    """--check / --probe-strata / --list-models / --download-datasets: run it and report True if one was requested."""
+    """--check / --probe-strata / --list-models / --download-datasets / --estimate / --batch-probe: run it and report
+    True if one was requested."""
+    from .batchprobe import batch_probe
+    from .estimate import estimate
     for flag, fn in ((args.check, check), (args.probe_strata, probe_strata),
-                     (args.list_models, list_models), (args.download_datasets, download_datasets)):
+                     (args.list_models, list_models), (args.download_datasets, download_datasets),
+                     (args.estimate, estimate), (args.batch_probe, batch_probe)):
         if flag:
             fn(cfg)
             return True

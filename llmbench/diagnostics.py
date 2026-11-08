@@ -58,6 +58,16 @@ def demo_results(cfg):
             r[f"eval_{key}_sec"] = round(rng.uniform(8, 60) * (150 / tps) * (3 if key == "gpqa" else 1), 1)
             r[f"eval_{key}_fallback"] = rng.choice([0, 0, 1, 2, 25])
         r["eval_toolcall_pct"], r["eval_toolcall_n"] = 60 + 40 * q * rng.uniform(0.8, 1.0), 32
+        # v2.1: where the time went (seconds per phase) and eval tokens, so the timing section has something to show
+        think = rng.choice([0.0, 0.6, 0.8])
+        r["timing"] = {"settle": 5.0, "load": r["load_s"], "speed": 900 / tps * 3, "prefill_ctx": 80000 / (tps * 9),
+                       "agent_ttft": r["agent_ttft_s"] + 1, "cooldown": 5.0, "eval_load": r["load_s"],
+                       "longctx": 2 * 65536 / (tps * 6)}
+        for key in ("gpqa", "mmlu_pro", "humaneval", "mbpp", "livecodebench", "gsm8k", "math"):
+            r["timing"][f"eval:{key}"] = r[f"eval_{key}_sec"] * 50
+            tok = int(r[f"eval_{key}_sec"] * tps)
+            r[f"eval_{key}_tok"], r[f"eval_{key}_think"] = tok, int(tok * think * 50)
+            r[f"eval_{key}_answer"], r[f"eval_{key}_rows"] = int(tok * (1 - think) * 50), 50
         out.append(r)
     cfg.eval_info = {"gpqa": {"rows": 50, "available": 198}, "mmlu_pro": {"rows": 50, "available": 12032},
                      "humaneval": {"rows": 50, "available": 164}, "mbpp": {"rows": 50, "available": 500},

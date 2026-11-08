@@ -128,6 +128,24 @@ class AiohttpTransport:
         raise BenchError(last)
 
 
+    async def post_json(self, url, body, timeout):
+        """POST any JSON body to `url` (llama-server native endpoints such as /apply-template and /completion)."""
+        aiohttp = self._aiohttp
+        try:
+            async with self.session.post(url, json=body, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                status, text = resp.status, await resp.text()
+        except asyncio.TimeoutError:
+            raise BenchTimeout(f"timeout after {timeout:.0f}s")
+        except aiohttp.ClientError as e:
+            raise BenchError(f"connection error: {e}")
+        err = http_error(self.cfg, status, text)
+        if err:
+            raise err
+        try:
+            return json.loads(text)
+        except ValueError:
+            raise BenchError("response was not valid JSON")
+
     async def _pump(self, resp, guard, deadline):
         """Read events until the stream ends (None) or must be stopped ("loop" / "budget" / "timeout")."""
         while True:
@@ -208,6 +226,23 @@ class ThreadTransport:
     async def chat(self, payload, timeout):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._pool, lambda: post_chat(self.cfg, self._session(), payload, timeout))
+
+    async def post_json(self, url, body, timeout):
+        def call():
+            try:
+                resp = self._session().post(url, json=body, timeout=timeout)
+            except requests.Timeout:
+                raise BenchTimeout(f"timeout after {timeout:.0f}s")
+            except requests.RequestException as e:
+                raise BenchError(f"connection error: {e}")
+            err = http_error(self.cfg, resp.status_code, resp.text)
+            if err:
+                raise err
+            try:
+                return resp.json()
+            except ValueError:
+                raise BenchError("response was not valid JSON")
+        return await asyncio.get_running_loop().run_in_executor(self._pool, call)
 
     async def stream(self, payload, timeout, guard):
         loop = asyncio.get_running_loop()

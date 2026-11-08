@@ -39,11 +39,18 @@ def parse_quant(name):
 # Row schema
 # --------------------------------------------------------------------------- #
 
-EVAL_FIELDS = [f"eval_{k}_{s}" for k in EVAL_SPECS for s in ("pct", "n", "err", "na", "fallback", "sec", "trunc", "degr")] \
-    + ["eval_avg_pct", "eval_avg_sec", "eval_retry_n", "eval_retry_pct", "eval_quality", "agent_quality"]
+EVAL_FIELDS = [f"eval_{k}_{s}" for k in EVAL_SPECS
+               for s in ("pct", "n", "err", "na", "fallback", "sec", "trunc", "degr", "rows", "sec1")] \
+    + ["eval_avg_pct", "eval_avg_sec", "eval_retry_n", "eval_retry_pct", "eval_quality", "agent_quality",
+       # v2.1: completeness (B1), skipped/screened models, funnel stage, concurrency actually used, s/q basis
+       "eval_incomplete", "eval_skipped", "eval_screened", "eval_stage", "eval_stage1_avg_pct", "eval_inflight",
+       "eval_sec_basis"]
+# v2.1: where the time went (seconds) and what was generated (eval tokens, all attempts)
+TIMING_FIELDS = ["time_total_s", "time_speed_s", "time_load_s", "time_eval_s", "time_longctx_s",
+                 "eval_tok_think", "eval_tok_answer", "eval_cached_n"]
 # v2.2: what the server actually loaded (launch flags + GGUF header) and the deployed-context tests
 LAUNCH_FIELDS = ["kv_type", "flash_attn", "ngl", "n_cpu_moe", "ubatch", "batch", "parallel", "mmproj", "jinja",
-                 "override_tensor"]
+                 "override_tensor", "kv_unified"]
 GGUF_FIELDS = ["gguf_gb", "mmproj_gb", "bpw", "gguf_arch", "attn_type", "n_layers", "full_attn_layers", "swa_layers",
                "n_ctx_train", "expert_count", "expert_used", "kv_kib_token", "kv_swa_gb", "kv_approx", "kv_gb_ctx",
                "max_ctx_vram", "tok_per_word"]
@@ -58,7 +65,7 @@ FIELDS = ["timestamp", "model", "status", "error", "params_b", "active_b", "arch
           "ram_total_gb", "ram_used_gb", "ram_pct", "ram_idle_gb", "ram_delta_gb", "ram_proc_gb", "ram_spill_gb", "ram_overhead_gb",
           "energy_wh", "j_per_token", "cost_1m_peak", "cost_1m_off", "cost_1kq_peak", "cost_1kq_off",
           "tps_per_watt", "goldilocks", "score_chat", "score_agent", "vram_fit", "score_sweet", "eligible"] + EVAL_FIELDS \
-    + LAUNCH_FIELDS + GGUF_FIELDS + CTX_FIELDS + BUDGET_FIELDS
+    + LAUNCH_FIELDS + GGUF_FIELDS + CTX_FIELDS + BUDGET_FIELDS + TIMING_FIELDS
 
 
 def blank(name):
@@ -79,11 +86,48 @@ def _fill_identity(r):
     r["arch"] = r["arch"] or ("MoE" if r["active_b"] else "Dense")
 
 
-def _fill_eval_averages(r, cfg):
+COMPLETE_SHARE = 0.9        # a dataset counts as complete when >= 90% of its planned questions got a real answer
+
+
+def run_datasets(results):
+    """{dataset: planned rows} for the datasets this run evaluated. Rows come from eval_<k>_rows (set by the runner);
+    rows written by older versions / the demo have no such column, so the largest n seen is used instead."""
+    ok = [r for r in results if r["status"] == "ok"]
+    out = {}
+    for k in EVAL_SPECS:
+        rows = [r.get(f"eval_{k}_rows") for r in ok if r.get(f"eval_{k}_rows")]
+        ns = [r.get(f"eval_{k}_n") for r in ok if r.get(f"eval_{k}_n")]
+        if rows or ns:
+            out[k] = max(rows) if rows else max(ns)
+    return out
+
+
+def eval_gaps(r, planned):
+    """Datasets of the run this model has no trustworthy score for: [(dataset, reason)]. A model is only ranked on
+    the FULL dataset set of the run - averaging over whatever happened to work would let a model whose hardest
+    dataset failed (e.g. every GPQA request hit a template error) outrank a stronger model (v2.0.0 bug B1)."""
+    gaps = []
+    for k, run_rows in planned.items():
+        rows = r.get(f"eval_{k}_rows") or (run_rows if r.get(f"eval_{k}_n") else None)
+        n, err = r.get(f"eval_{k}_n") or 0, r.get(f"eval_{k}_err") or 0
+        if not rows:
+            gaps.append((k, "not run"))
+        elif r.get(f"eval_{k}_pct") is None or n - err < COMPLETE_SHARE * rows:
+            gaps.append((k, f"{max(0, n - err)}/{rows} answered"))
+    return gaps
+
+
+def _fill_eval_averages(r, cfg, planned=None):
     pcts = [r.get(f"eval_{k}_pct") for k in EVAL_SPECS if r.get(f"eval_{k}_pct") is not None]
-    r["eval_avg_pct"] = avg(pcts) if pcts else None
+    gaps = eval_gaps(r, planned) if planned else []
+    any_eval = any(r.get(f"eval_{k}_n") for k in EVAL_SPECS)
+    r["eval_incomplete"] = (", ".join(f"{EVAL_SPECS[k]['short']} {why}" for k, why in gaps)
+                            if any_eval and gaps else None)
+    r["eval_avg_pct"] = avg(pcts) if pcts and not r["eval_incomplete"] else None
     secs = [r.get(f"eval_{k}_sec") for k in EVAL_SPECS if r.get(f"eval_{k}_sec") is not None]
     r["eval_avg_sec"] = avg(secs) if secs else None          # mean seconds per question over the datasets run
+    for k in EVAL_SPECS:                                      # single-stream s/q estimate (see _apply_sq_basis)
+        r[f"eval_{k}_sec1"] = single_stream_sec(r, k) if r.get(f"eval_{k}_sec") is not None else None
     # Retries (No-Thinking fallbacks after a cut-off / loop / thinking cap / timeout). Many retries usually mean a chat
     # template or thinking problem, not a weak model; they cost time and are penalised: eval_quality = average minus
     # AGENT_FALLBACK_PENALTY x share of questions retried.
@@ -96,6 +140,58 @@ def _fill_eval_averages(r, cfg):
         r["eval_quality"] = max(0.0, r["eval_avg_pct"] - cfg.agent_fallback_penalty * share)
     lc = [r.get(f"longctx_{v}_pct") for v in LONGCTX_SLOTS.values() if r.get(f"longctx_{v}_pct") is not None]
     r["longctx_avg_pct"] = avg(lc) if lc else None
+
+
+def single_stream_sec(r, k):
+    """Seconds one question of dataset k would take with ONE request in flight: mean tokens generated (all attempts)
+    / the speed test's single-stream tok/s + mean prompt tokens / its prefill tok/s + mean grading time.
+    None without a speed test (evals-only runs) or without token counts."""
+    tok, tps = r.get(f"eval_{k}_tok"), r.get("avg_tps")
+    if not tok or not tps:
+        return None
+    ptok, pre = r.get(f"eval_{k}_ptok"), r.get("prefill_tps")
+    return round(tok / tps + (ptok / pre if ptok and pre else 0.0) + (r.get(f"eval_{k}_grade_s") or 0.0), 1)
+
+
+def _apply_sq_basis(results, cfg):
+    """Which s/q the Agent score uses. Measured latency includes queueing behind the other requests when several are
+    in flight, and the in-flight cap differs per model (it depends on the KV pool), so with any concurrency the
+    single-stream estimate is used for EVERY model (EVAL_SQ_BASIS=auto). With concurrency 1 everywhere the measured
+    latency is used, exactly as in v2.0.0, so such runs rank identically to older ones."""
+    ev = [r for r in results if r["status"] == "ok" and r.get("eval_avg_sec") is not None]
+    if not ev:
+        return None
+    basis = cfg.eval_sq_basis
+    if basis == "auto":
+        basis = "single" if any((r.get("eval_inflight") or 1) > 1 for r in ev) else "measured"
+    if basis == "single":
+        complete = all(r.get(f"eval_{k}_sec1") is not None for r in ev for k in EVAL_SPECS
+                       if r.get(f"eval_{k}_sec") is not None)
+        if not complete:
+            basis = "measured"            # no speed test (evals-only): nothing to estimate from
+    for r in ev:
+        r["eval_sec_basis"] = basis
+        if basis == "single":
+            r["eval_avg_sec"] = avg([r[f"eval_{k}_sec1"] for k in EVAL_SPECS if r.get(f"eval_{k}_sec1") is not None])
+    return basis
+
+
+_SPEED_PHASES = ("settle", "load", "speed", "prefill_ctx", "agent_ttft", "cooldown")
+
+
+def _fill_timing(r):
+    """CSV-friendly totals from r["timing"] (seconds per phase) and the eval token counts."""
+    t = r.get("timing") or {}
+    if t:
+        r["time_speed_s"] = round(sum(t.get(p, 0.0) for p in _SPEED_PHASES), 1)
+        r["time_load_s"] = round(t.get("load", 0.0) + t.get("eval_load", 0.0), 1)
+        r["time_eval_s"] = round(sum(v for p, v in t.items() if p.startswith("eval:")), 1)
+        r["time_longctx_s"] = round(t.get("longctx", 0.0), 1)
+        r["time_total_s"] = round(sum(t.values()), 1)
+    think = [r.get(f"eval_{k}_think") for k in EVAL_SPECS if r.get(f"eval_{k}_think") is not None]
+    if think:
+        r["eval_tok_think"] = sum(think)
+        r["eval_tok_answer"] = sum(r.get(f"eval_{k}_answer") or 0 for k in EVAL_SPECS)
 
 
 def _fill_memory(r, cfg, overhead):
@@ -149,7 +245,7 @@ def agent_tolerance(best, cfg):
     model's score over all the questions it answered (a 1-question gap is ~1.4 points with the 'basic' profile)."""
     if cfg.agent_acc_tol is not None:
         return cfg.agent_acc_tol
-    n = sum(best.get(f"eval_{k}_n") or 0 for k in EVAL_SPECS)
+    n = sum(best.get(f"eval_{k}_n") or 0 for k in EVAL_SPECS if best.get(f"eval_{k}_pct") is not None)
     if not n:
         return 4.0
     p = min(0.95, max(0.05, best["_q"] / 100))
@@ -218,7 +314,9 @@ def _fill_agent_scores(results, cfg):
     has_evals = any(r.get("eval_avg_pct") is not None for r in ok)
     w = cfg.agent_speed_weight
     if has_evals:
-        pool = [r for r in ok if r.get("eval_quality") is not None]
+        # Funnel: models screened out at an earlier stage answered fewer questions and are not ranked against the
+        # finalists (their stage score stays visible, with its larger margin of error).
+        pool = [r for r in ok if r.get("eval_quality") is not None and not r.get("eval_screened")]
         lc_all = cfg.agent_longctx_weight > 0 and pool and all(r.get("longctx_avg_pct") is not None for r in pool)
         for r in pool:
             r["_q"] = r["eval_avg_pct"]
@@ -227,7 +325,18 @@ def _fill_agent_scores(results, cfg):
         for r in ok:
             if r.get("eval_quality") is None:
                 errs = sum(r.get(f"eval_{k}_err") or 0 for k in EVAL_SPECS)
-                r["score_note"] = f"no eval score ({errs} request errors)" if errs else "no eval score"
+                if r.get("eval_skipped"):
+                    r["score_note"] = f"evals skipped: {r['eval_skipped']}"
+                elif r.get("eval_screened"):
+                    r["score_note"] = f"not ranked: {r['eval_screened']}"
+                elif r.get("eval_incomplete"):
+                    r["score_note"] = (f"not ranked: incomplete evals ({r['eval_incomplete']}"
+                                       + (f"; {errs} request errors)" if errs else ")"))
+                else:
+                    r["score_note"] = f"no eval score ({errs} request errors)" if errs else "no eval score"
+        for r in ok:
+            if r.get("eval_screened") and r.get("eval_quality") is not None:
+                r["score_note"] = f"not ranked: {r['eval_screened']}"
         if not pool:
             return
         ranked = [r for r in pool if r["eligible"]] or pool       # the bar is the best model that can actually be used
@@ -239,7 +348,10 @@ def _fill_agent_scores(results, cfg):
             keep = 1 - cfg.agent_fallback_penalty / 100 * (r.get("eval_retry_pct") or 0) / 100
             r["agent_quality"] = 100 * max(0.0, 1 - gap / cfg.agent_acc_span) ** 2 * max(0.0, keep)
     else:
-        pool = [r for r in ok if proxy_quality(r) is not None]
+        for r in ok:
+            if r.get("eval_skipped"):
+                r["score_note"] = f"evals skipped: {r['eval_skipped']}"
+        pool = [r for r in ok if proxy_quality(r) is not None and not r.get("eval_skipped")]
         if not pool:
             return
         top = max(proxy_quality(r) for r in pool) or 1
@@ -337,6 +449,8 @@ def _fill_budget(results, cfg):
             continue
         if r.get("ctx_ok") is False:          # MIN_CTX_ACTION=flag: measured, but not at the deployed context
             r["eligible"] = False
+        if r.get("eval_screened") or r.get("eval_incomplete"):     # not ranked: never on the podium
+            r["eligible"] = False
         if not cfg.budget:
             continue
         checks = budget_checks(r, cfg)
@@ -354,6 +468,7 @@ def finalize(results, cfg):
     ov = [r["ram_proc_gb"] for r in results if r["status"] == "ok" and r["offload"] == "none"
           and r["ram_proc_gb"] is not None]
     overhead = cfg.ram_overhead_gb if cfg.ram_overhead_gb is not None else median(ov)
+    planned = run_datasets(results)
     for r in results:
         _fill_identity(r)
         if r["status"] != "ok":
@@ -361,13 +476,15 @@ def finalize(results, cfg):
         for k in ("score_agent", "agent_quality", "score_sweet", "score_note"):     # finalize() can run twice
             r[k] = None
         r["avg_tps"] = avg([x for x in (r["tech_tps"], r["logic_tps"]) if x is not None])
-        _fill_eval_averages(r, cfg)
+        _fill_eval_averages(r, cfg, planned)
         _fill_memory(r, cfg, overhead)
         if r.get("kv_kib_token") and r.get("ctx_size"):
             r["kv_gb_ctx"] = r["kv_kib_token"] * r["ctx_size"] / 1024 ** 2 + (r.get("kv_swa_gb") or 0)
         r["max_ctx_vram"] = max_ctx_at(r, cfg.max_ctx_vram_pct)
         _fill_efficiency_and_cost(r, cfg)
         _fill_scores(r, cfg)
+        _fill_timing(r)
+    _apply_sq_basis(results, cfg)            # before the Agent score, which uses eval_avg_sec
     _fill_budget(results, cfg)               # before the Agent score: the bar is the best ELIGIBLE model
     _fill_agent_scores(results, cfg)
     _fill_sweet(results, cfg)

@@ -187,6 +187,7 @@ class StreamResult:
     think_tokens: int           # estimated tokens spent thinking
     seconds: float
     timings: dict | None = None
+    prompt_tokens: int | None = None    # from the final usage event (None when the server did not report it)
 
     @property
     def tail(self):
@@ -289,7 +290,9 @@ class StreamGuard:
     def result(self, abort=None, seconds=0.0):
         """Freeze into a StreamResult. `abort` overrides (the transport passes "timeout")."""
         abort = self.abort or abort
+        usage = self.usage if isinstance(self.usage, dict) else {}
         return StreamResult(text="".join(self._content), reasoning="".join(self._reasoning),
                             finish=None if abort else self.finish, abort=abort, loop=self.loop,
                             tokens=self.tokens, think_tokens=self.think_tokens, seconds=seconds,
-                            timings=self.timings if isinstance(self.timings, dict) else None)
+                            timings=self.timings if isinstance(self.timings, dict) else None,
+                            prompt_tokens=usage.get("prompt_tokens"))

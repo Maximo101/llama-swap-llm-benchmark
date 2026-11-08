@@ -6,7 +6,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from ..config import EVAL_SPECS, LONGCTX_SLOTS, PREFILL_SLOTS, SCRIPT_DIR
+from ..config import EVAL_SPECS, LONGCTX_SLOTS, PREFILL_SLOTS, SCRIPT_DIR, funnel_stages
 from ..evals.runner import tokens_label
 from .margin import margin_of_error
 
@@ -32,6 +32,7 @@ def render_dashboard(results, cfg, path, cpu_source="none", hardware="", partial
         if any(r.get(f"eval_{k}_n") or r.get(f"eval_{k}_na") for r in results):
             info = (cfg.eval_info or {}).get(k, {})
             evs.append({"key": k, "label": s["label"], "short": s["short"], "kind": s["kind"], "repo": s["repo"],
+                        "desc": s.get("desc", ""),
                         "rows": info.get("rows"), "available": info.get("available")})
     meta["tests"] = (["Speed test"] if meta["has_speed"] else []) + [e["short"] for e in evs]
     meta["evals"] = {"profile": cfg.eval_profile, "seed": cfg.eval_seed, "datasets": evs,
@@ -44,6 +45,12 @@ def render_dashboard(results, cfg, path, cpu_source="none", hardware="", partial
     if meta["evals"] is not None:
         meta["evals"]["margin"] = margin_of_error(cfg, results)
         meta["evals"]["fallback_penalty"] = cfg.agent_fallback_penalty
+        meta["evals"]["funnel"] = ({"stages": [list(x) for x in funnel_stages(cfg)], "leaders": cfg.eval_leaders,
+                                    "confidence": cfg.eval_funnel_conf} if cfg.eval_profile == "funnel" else None)
+        meta["evals"]["sq_basis"] = next((r.get("eval_sec_basis") for r in results if r.get("eval_sec_basis")), None)
+        meta["evals"]["cache"] = bool(cfg.eval_result_cache)
+        meta["evals"]["budget_forcing"] = cfg.eval_budget_forcing
+        meta["evals"]["think_budgets"] = {EVAL_SPECS[k]["short"]: v for k, v in (cfg.eval_think_budgets or {}).items()}
     if cfg.eval_longctx and any(r.get("longctx_avg_pct") is not None or r.get("longctx_note") for r in results):
         meta["longctx"] = {"lengths": [LONGCTX_SLOTS[n] for n in cfg.longctx_lengths], "trials": cfg.longctx_trials,
                            "keys": cfg.longctx_keys, "kv_min": cfg.longctx_kv_min, "kv_action": cfg.longctx_kv_action}

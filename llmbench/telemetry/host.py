@@ -81,13 +81,13 @@ _FA_VALUES = ("on", "off", "auto", "1", "0", "true", "false", "enabled", "disabl
 
 def parse_launch_args(argv) -> dict:
     """Read the llama-server launch flags that decide what lives in system RAM instead of VRAM, and how big the KV
-    cache is: -ngl, --n-cpu-moe / --cpu-moe, -ot, -nkvo, -c, -ctk / -ctv, -fa, -ub / -b, --mmproj, -np, -m, --jinja."""
+    cache is: -ngl, --n-cpu-moe / --cpu-moe, -ot, -nkvo, -c, -ctk / -ctv, -fa, -ub / -b, --mmproj, -np, -m, --jinja, -kvu / -no-kvu. `argv` keeps the normalised tokens (for the result-cache fingerprint; never exported)."""
     toks = []
     for a in argv:
         toks.extend(a.split("=", 1) if a.startswith("--") and "=" in a else [a])
     info = {"ngl": None, "n_cpu_moe": None, "cpu_moe": False, "no_kv_offload": False, "ot_cpu": False, "ctx": None,
             "ctk": None, "ctv": None, "fa": None, "ubatch": None, "batch": None, "mmproj": None, "parallel": None,
-            "model_path": None, "jinja": False, "ot": None, "swa_full": False}
+            "model_path": None, "jinja": False, "ot": None, "swa_full": False, "kv_unified": None, "argv": toks}
     for i, a in enumerate(toks):
         nxt = toks[i + 1] if i + 1 < len(toks) else ""
         try:
@@ -129,6 +129,10 @@ def parse_launch_args(argv) -> dict:
                 info["jinja"] = True
             elif a == "--swa-full":
                 info["swa_full"] = True
+            elif a in ("-kvu", "--kv-unified"):
+                info["kv_unified"] = True
+            elif a in ("-no-kvu", "--no-kv-unified"):
+                info["kv_unified"] = False
         except ValueError:
             pass
     return info

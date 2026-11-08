@@ -213,9 +213,12 @@ def resolve_sandbox(cfg, run_selftest=True):
         elif want == "docker":
             sys.exit(f"[eval] EVAL_CODE_SANDBOX=docker but {why}.")
         else:
-            print(f"  [warn] Docker unavailable ({why}); generated code will run in a plain subprocess "
-                  "(timeout + rlimits" + (", no network" if _can_unshare() else "") + "), which is NOT a security "
-                  "boundary. Set EVAL_CODE_SANDBOX=docker once Docker works, or only benchmark models you trust.")
+            # v2.1: 'auto' no longer falls back silently. A long unattended run would otherwise execute untrusted,
+            # model-written code as your user with only a warning in the log.
+            sys.exit(f"[eval] Docker is unavailable ({why}), so model-written code cannot be isolated.\n"
+                     "        Fix Docker, or set EVAL_CODE_SANDBOX=subprocess to accept running generated code as your "
+                     "user\n        (timeout + rlimits" + (", no network" if _can_unshare() else "") + "; NOT a "
+                     "security boundary), or disable the code datasets (HumanEval, MBPP, LiveCodeBench).")
     cfg.eval_sandbox_resolved = choice
     if choice == "docker":
         cleanup_orphans()
@@ -227,11 +230,6 @@ def resolve_sandbox(cfg, run_selftest=True):
     if run_selftest:
         results = selftest(cfg)
         bad = [d for d, passed in results if not passed]
-        if bad and choice == "docker" and want == "auto":
-            print("  [warn] Docker sandbox self-test failed (" + "; ".join(bad) + "); falling back to subprocess")
-            cfg.eval_sandbox_resolved = choice = "subprocess"
-            results = selftest(cfg)
-            bad = [d for d, passed in results if not passed]
         if bad and choice == "docker":
             sys.exit("[eval] Docker sandbox self-test failed: " + "; ".join(bad))
         if bad:

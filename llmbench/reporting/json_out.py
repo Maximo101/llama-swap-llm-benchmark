@@ -41,7 +41,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..common import SCHEMA_VERSION, __version__
-from ..config import EVAL_SPECS
+from ..config import EVAL_SPECS, funnel_stages
 from .margin import margin_of_error
 
 _SECRETS = {"api_key", "strata_api_key", "ha_token"}
@@ -60,7 +60,7 @@ _GROUPS = {
     "scores": ["goldilocks", "score_chat", "score_agent", "agent_quality", "vram_fit", "score_sweet", "eligible",
                "score_note"],
     "launch": ["kv_type", "flash_attn", "ngl", "n_cpu_moe", "ubatch", "batch", "parallel", "mmproj", "jinja",
-               "override_tensor"],
+               "override_tensor", "kv_unified"],
     "gguf": ["gguf_gb", "mmproj_gb", "bpw", "gguf_arch", "attn_type", "n_layers", "full_attn_layers", "swa_layers",
              "n_ctx_train", "expert_count", "expert_used", "kv_kib_token", "kv_swa_gb", "kv_approx", "kv_gb_ctx",
              "max_ctx_vram", "tok_per_word"],
@@ -71,7 +71,13 @@ _GROUPS = {
     "budget": ["budget_profile", "budget_pass", "budget_fails", "budget"],
 }
 _TOP = {"model", "status", "error", "timestamp"}
-_EVAL_SUFFIXES = ("pct", "n", "err", "na", "fallback", "sec", "trunc", "degr", "cap", "salv", "tok", "wall", "conc")
+_EVAL_SUFFIXES = ("pct", "n", "err", "na", "fallback", "sec", "trunc", "degr", "cap", "salv", "tok", "wall", "conc",
+                  # v2.1
+                  "rows", "sec1", "forced", "think", "answer", "ptok", "grade_s", "cached")
+_EVAL_RUN_KEYS = ("eval_avg_pct", "eval_avg_sec", "eval_retry_n", "eval_retry_pct", "eval_quality", "eval_incomplete",
+                  "eval_skipped", "eval_screened", "eval_stage", "eval_stage1_avg_pct", "eval_inflight",
+                  "eval_sec_basis", "eval_cached_n", "eval_tok_think", "eval_tok_answer")
+_TIMING_KEYS = ("time_total_s", "time_speed_s", "time_load_s", "time_eval_s", "time_longctx_s")
 
 
 def _clean(v):
@@ -88,7 +94,7 @@ def _clean(v):
 
 
 def _model_entry(r):
-    used = set(_TOP)
+    used = set(_TOP) | {k for k in r if k.startswith("_")}      # "_" keys are internal (launch argv, file paths)
     out = {k: r.get(k) for k in ("model", "status", "error", "timestamp")}
     for group, keys in _GROUPS.items():
         out[group] = {k: r.get(k) for k in keys}
@@ -100,17 +106,25 @@ def _model_entry(r):
         if any(v is not None for v in entry.values()):
             entry["concurrency"] = entry.pop("conc")
             datasets[key] = entry
-    used.update(("eval_avg_pct", "eval_avg_sec", "eval_retry_n", "eval_retry_pct", "eval_quality"))
+    used.update(_EVAL_RUN_KEYS)
     out["evaluation"] = {"avg_pct": r.get("eval_avg_pct"), "avg_sec": r.get("eval_avg_sec"),
                          "retries": r.get("eval_retry_n"), "retry_pct": r.get("eval_retry_pct"),
-                         "quality_after_retry_penalty": r.get("eval_quality"), "datasets": datasets}
+                         "quality_after_retry_penalty": r.get("eval_quality"),
+                         "incomplete": r.get("eval_incomplete"), "skipped": r.get("eval_skipped"),
+                         "screened": r.get("eval_screened"), "stage": r.get("eval_stage"),
+                         "stage1_avg_pct": r.get("eval_stage1_avg_pct"), "in_flight": r.get("eval_inflight"),
+                         "sec_basis": r.get("eval_sec_basis"), "cached": r.get("eval_cached_n"),
+                         "tokens_think": r.get("eval_tok_think"), "tokens_answer": r.get("eval_tok_answer"),
+                         "datasets": datasets}
+    used.update(_TIMING_KEYS + ("timing",))
+    out["timing"] = {"phases_s": r.get("timing") or {}, **{k: r.get(k) for k in _TIMING_KEYS}}
     out["other"] = {k: v for k, v in r.items() if k not in used}       # nothing is dropped silently
     return out
 
 
 def _config_snapshot(cfg):
     snap = {k: v for k, v in dataclasses.asdict(cfg).items()
-            if k not in _SECRETS and k not in ("strata_details", "eval_info")}
+            if k not in _SECRETS and k not in ("strata_details", "eval_info", "eval_pools")}
     snap["ha_configured"] = bool(cfg.ha_url and cfg.ha_token and cfg.ha_cpu_entity)
     snap["api_key_set"] = bool(cfg.api_key)
     return snap
@@ -124,7 +138,9 @@ def build_report(results, cfg, info):
     for key, spec in EVAL_SPECS.items():
         if any(r.get(f"eval_{key}_n") or r.get(f"eval_{key}_na") for r in results):
             datasets[key] = {"label": spec["label"], "kind": spec["kind"], "repo": spec["repo"],
-                             "rows": ds_info.get(key, {}).get("rows"), "available": ds_info.get(key, {}).get("available")}
+                             "rows": ds_info.get(key, {}).get("rows"), "available": ds_info.get(key, {}).get("available"),
+                             "revision": ds_info.get(key, {}).get("revision"),
+                             "since": ds_info.get(key, {}).get("since")}
     started, finished = info.get("started"), info.get("finished")
     iso = lambda t: datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds") if t else None
     return {
@@ -134,7 +150,8 @@ def build_report(results, cfg, info):
                 "duration_s": round(finished - started, 1) if started and finished else None,
                 "status": info.get("status", "complete"), "mode": info.get("mode"),
                 "backend": cfg.backend, "base_url": cfg.base_url,
-                "models_total": len(results), "models_ok": sum(r["status"] == "ok" for r in results)},
+                "models_total": len(results), "models_ok": sum(r["status"] == "ok" for r in results),
+                "timing": run_timing(results, info)},
         "host": {"hardware": info.get("hardware"), "platform": platform.platform(),
                  "python": sys.version.split()[0], "gpu_backend": cfg.gpu_backend_used,
                  "cpu_power_source": info.get("cpu_source")},
@@ -144,6 +161,13 @@ def build_report(results, cfg, info):
                         "http_backend": cfg.eval_http_backend, "code_sandbox": cfg.eval_sandbox_resolved or None,
                         "stream": cfg.eval_stream, "think_budget": cfg.eval_think_budget or None,
                         "loop_abort": cfg.eval_loop_abort, "salvage": cfg.eval_salvage,
+                        "think_budgets": cfg.eval_think_budgets or None, "budget_forcing": cfg.eval_budget_forcing,
+                        "sq_basis": next((r.get("eval_sec_basis") for r in results if r.get("eval_sec_basis")), None),
+                        "result_cache": bool(cfg.eval_result_cache),
+                        "skip_ineligible": cfg.eval_skip_ineligible,
+                        "funnel": ({"stages": [list(x) for x in funnel_stages(cfg)], "leaders": cfg.eval_leaders,
+                                    "confidence": cfg.eval_funnel_conf, "gates": info.get("funnel") or []}
+                                   if cfg.eval_profile == "funnel" else None),
                         "margin_of_error": margin_of_error(cfg, results),
                         "long_context": ({"lengths": list(cfg.longctx_lengths), "trials": cfg.longctx_trials,
                                           "keys": cfg.longctx_keys, "kv_min": cfg.longctx_kv_min,
@@ -153,6 +177,24 @@ def build_report(results, cfg, info):
         "artifacts": info.get("artifacts", {}),
         "models": [_model_entry(r) for r in results],
     }
+
+
+def run_timing(results, info):
+    """Where the run's time went: wall time of the speed and eval phases, and the sum of every model's phases."""
+    totals = {}
+    for r in results:
+        for phase, sec in (r.get("timing") or {}).items():
+            group = "eval" if phase.startswith("eval:") else phase
+            totals[group] = round(totals.get(group, 0.0) + sec, 1)
+    per_ds = {}
+    for r in results:
+        for phase, sec in (r.get("timing") or {}).items():
+            if phase.startswith("eval:"):
+                per_ds[phase[5:]] = round(per_ds.get(phase[5:], 0.0) + sec, 1)
+    tok = {"think": sum(r.get("eval_tok_think") or 0 for r in results),
+           "answer": sum(r.get("eval_tok_answer") or 0 for r in results)}
+    return {"phase_wall_s": info.get("phases") or {}, "model_phases_s": totals, "eval_by_dataset_s": per_ds,
+            "eval_tokens": tok if tok["think"] or tok["answer"] else None}
 
 
 def _atomic_write(path, text):

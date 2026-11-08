@@ -10,7 +10,7 @@ import threading
 import time
 from datetime import datetime
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 SCHEMA_VERSION = 1          # version of the results.json layout (bump when keys are renamed/removed)
 
 
@@ -42,6 +42,37 @@ def col(rows, key):
 def median(xs):
     xs = [x for x in xs if x is not None]
     return statistics.median(xs) if xs else None
+
+
+# --------------------------------------------------------------------------- #
+# Per-model timing (v2.1): r["timing"] = {phase: seconds}
+# --------------------------------------------------------------------------- #
+
+def add_time(r, phase, seconds):
+    """Add `seconds` to phase `phase` of result row `r` (phases: settle, load, speed, prefill_ctx, agent_ttft,
+    cooldown, eval_load, longctx, eval:<dataset>, grading). Timing never raises."""
+    try:
+        t = r.get("timing")
+        if not isinstance(t, dict):
+            t = r["timing"] = {}
+        t[phase] = round(t.get(phase, 0.0) + max(0.0, float(seconds)), 3)
+    except Exception:
+        pass
+
+
+class Clock:
+    """`with Clock(r, "load"):` adds the block's wall time to r["timing"]["load"]."""
+
+    def __init__(self, r, phase):
+        self.r, self.phase = r, phase
+
+    def __enter__(self):
+        self.t0 = time.time()
+        return self
+
+    def __exit__(self, *exc):
+        add_time(self.r, self.phase, time.time() - self.t0)
+        return False
 
 
 # --------------------------------------------------------------------------- #

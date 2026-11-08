@@ -6,7 +6,7 @@ import time
 
 from . import modelinfo
 from .client import post_chat, unload_all
-from .common import BenchError, avg, col, median, vmax
+from .common import BenchError, Clock, avg, col, median, vmax
 from .config import PREFILL_SLOTS
 from .scoring import blank, parse_quant
 from .telemetry.host import HostMeter
@@ -189,6 +189,8 @@ def prefill_at_lengths(cfg, session, gpu, host, ha, model, r, tpw):
     for n in cfg.prefill_ctx_tests:
         if r.get("ctx_size") and n > r["ctx_size"]:
             continue
+        if n in cfg.defer_prefill:      # the long-context test's first (cold) prompt of this length measures it
+            continue
         words = max(50, int((_fit(n, r.get("ctx_size")) * 0.97 - 20) / tpw))
         try:
             x = measure(cfg, session, gpu, host, ha, model, prefill_prompt(words), 4, max(cfg.timeout_logic, n / 100))
@@ -294,21 +296,26 @@ def bench_model(cfg, session, gpu, host, ha, model, unload_state) -> dict:
         r.update(params_b=cfg.strata_params_b, active_b=cfg.strata_active_b,
                  quant=cfg.strata_quant or parse_quant(cfg.strata_model_id or model))
     try:
-        base = _idle_baseline(cfg, session, gpu, host, model, strata, unload_state)
+        with Clock(r, "settle"):
+            base = _idle_baseline(cfg, session, gpu, host, model, strata, unload_state)
         r["idle_gpu_w"] = base["idle_gpu_w"]
-        _cold_load(cfg, session, host, model, r, strata, base["unloaded"], unload_state)
+        with Clock(r, "load"):
+            _cold_load(cfg, session, host, model, r, strata, base["unloaded"], unload_state)
         check_min_ctx(cfg, r)
         if r["status"] == "skipped":
             return r
-        runs, cache_runs = _timed_runs(cfg, session, gpu, host, ha, model)
+        with Clock(r, "speed"):
+            runs, cache_runs = _timed_runs(cfg, session, gpu, host, ha, model)
     except BenchError as e:
         r.update(status="error", error=str(e))
         return r
     _summarise(r, runs, cache_runs, base)
     tpw = tokens_per_word(runs)
     try:                                        # optional, slow tests: a failure never fails the model
-        prefill_at_lengths(cfg, session, gpu, host, ha, model, r, tpw)
-        agent_ttft(cfg, session, gpu, host, ha, model, r, tpw)
+        with Clock(r, "prefill_ctx"):
+            prefill_at_lengths(cfg, session, gpu, host, ha, model, r, tpw)
+        with Clock(r, "agent_ttft"):
+            agent_ttft(cfg, session, gpu, host, ha, model, r, tpw)
     except BenchError as e:
         print(f"    [warn] long-prompt tests stopped: {e}")
     r["tok_per_word"] = tpw

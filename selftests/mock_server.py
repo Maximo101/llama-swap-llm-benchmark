@@ -19,7 +19,8 @@ import threading
 from aiohttp import web
 
 LATENCY = 0.15          # seconds per chat request; makes concurrency speed-ups measurable
-STATE = {"in_flight": 0, "max_in_flight": 0, "calls": 0, "flaky_503_left": 1, "requests": [], "disconnects": 0}
+STATE = {"in_flight": 0, "max_in_flight": 0, "calls": 0, "flaky_503_left": 1, "requests": [], "disconnects": 0,
+         "native": []}
 
 
 def _answer_for(prompt, thinking_off):
@@ -154,6 +155,11 @@ def _vault_reply(prompt):
 
 async def chat(request):
     body = await request.json()
+    if body.get("model") in STATE.get("weak", ()):      # a deliberately weaker model: every answer is wrong
+        first = dict(body["messages"][0])
+        if first.get("content") and first["content"] != "hi":
+            first["content"] += " [[wrong]]"
+        body = {**body, "messages": [first] + body["messages"][1:]}
     STATE["calls"] += 1
     STATE["requests"].append(body)
     if STATE["flaky_503_left"] > 0 and "hi" == body["messages"][0]["content"]:
@@ -172,9 +178,25 @@ async def chat(request):
             return web.json_response({"choices": [{"message": {"content": t["content"], "tool_calls": t["tool_calls"]},
                                                    "finish_reason": "tool_calls" if t["tool_calls"] else "stop"}],
                                       "usage": {"completion_tokens": 20, "prompt_tokens": ptok}})
+        if "access code for vault" in prompt and ptok > CTX["n_ctx"]:
+            return web.json_response({"error": {"code": 400, "type": "exceed_context_size_error", "message":
+                                      f"request ({ptok} tokens) exceeds the available context size "
+                                      f"({CTX['n_ctx']} tokens), try increasing it"}}, status=400)
+        if "access code for vault" in prompt and body.get("model") in STATE.get("thinks_always", ()) \
+                and (body.get("max_tokens") or 0) < 1000:          # ignores enable_thinking=false: reply is all thinking
+            return web.json_response({"choices": [{"message": {"content": "", "reasoning_content": "hmm " * 300},
+                                                   "finish_reason": "length"}],
+                                      "usage": {"completion_tokens": body.get("max_tokens"), "prompt_tokens": ptok},
+                                      "timings": {"prompt_per_second": 280.0, "prompt_n": ptok, "cache_n": 0}})
         if "access code for vault" in prompt:
+            doc = prompt.split("</document>")[0]
+            seen = STATE.setdefault("docs", set())
+            cache_n = ptok - 60 if doc in seen else 0           # same document again: llama.cpp reuses the prefix
+            seen.add(doc)
             return web.json_response({"choices": [{"message": {"content": _vault_reply(prompt)}, "finish_reason": "stop"}],
-                                      "usage": {"completion_tokens": 20, "prompt_tokens": ptok}})
+                                      "usage": {"completion_tokens": 20, "prompt_tokens": ptok},
+                                      "timings": {"prompt_per_second": 280.0, "prompt_n": ptok - cache_n,
+                                                  "cache_n": cache_n}})
         off = (body.get("chat_template_kwargs") or {}).get("enable_thinking") is False
         out = _answer_for(prompt, off)
         if out is None:
@@ -194,12 +216,33 @@ async def models(request):
     return web.json_response({"data": [{"id": "Mock-9B-Q4_K_M.gguf"}, {"id": "Mock-30B-A3B-IQ3_XXS.gguf"}]})
 
 
-CTX = {"n_ctx": 8192}
+CTX = {"n_ctx": 8192, "slots": 1,
+       "template": "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>{% endfor %}"
+                   "<|im_start|>assistant\n<think>\n"}
 
 
 async def props(request):
     return web.json_response({"default_generation_settings": {"n_ctx": CTX["n_ctx"]},
-                              "model_path": "/models/" + request.match_info["model"], "total_slots": 1})
+                              "model_path": "/models/" + request.match_info["model"], "total_slots": CTX["slots"],
+                              "chat_template": CTX["template"], "build_info": "b9999-mock"})
+
+
+async def apply_template(request):
+    """llama-server /apply-template: messages -> one prompt string (ChatML, thinking opened, like Qwen3)."""
+    body = await request.json()
+    STATE["native"].append(("apply-template", body))
+    text = "".join(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n" for m in body["messages"])
+    return web.json_response({"prompt": text + "<|im_start|>assistant\n<think>\n"})
+
+
+async def completion(request):
+    """llama-server /completion for budget forcing: the prompt ends with closed reasoning; answer from the marker."""
+    body = await request.json()
+    STATE["native"].append(("completion", body))
+    m = re.search(r"\[\[ans:(.+?)\]\]", body["prompt"])
+    ok = body["prompt"].rstrip().endswith("</think>") and "consider" in body["prompt"]
+    content = f"Answer: {m.group(1) if m else 'A'}" if ok else ""
+    return web.json_response({"content": content, "tokens_predicted": 3, "stop_type": "eos"})
 
 
 async def unload(request):
@@ -209,7 +252,9 @@ async def unload(request):
 def make_app():
     app = web.Application()
     app.add_routes([web.post("/v1/chat/completions", chat), web.get("/v1/models", models),
-                    web.get("/upstream/{model}/props", props), web.post("/api/models/unload", unload)])
+                    web.get("/upstream/{model}/props", props), web.post("/api/models/unload", unload),
+                    web.post("/upstream/{model}/apply-template", apply_template),
+                    web.post("/upstream/{model}/completion", completion)])
     return app
 
 

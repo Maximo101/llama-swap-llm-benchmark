@@ -8,8 +8,11 @@ import string
 import sys
 import time
 
-from ..config import EVAL_SPECS, PROFILE_ROWS
+from ..config import EVAL_SPECS, stage_rows
 from .sandbox import resolve_sandbox
+
+_HANGUL = re.compile(r"[\u1100-\u11ff\u3130-\u318f\uac00-\ud7a3]")
+HANGUL_MAX_SHARE = 0.01     # refuse a dataset when more than 1% of the sampled questions contain Korean text
 
 def load_eval_split(cfg, key, offline_first=True):
     """Load one dataset split with cache_dir=cfg.eval_cache_dir (./tests). Normal runs try the local cache
@@ -19,19 +22,21 @@ def load_eval_split(cfg, key, offline_first=True):
     except ImportError:
         sys.exit("[eval] The 'datasets' package is missing. Run: pip install -r requirements.txt")
     spec, cache = EVAL_SPECS[key], str(cfg.eval_cache_dir)
+    rev = (cfg.eval_revisions or {}).get(key)          # EVAL_<DATASET>_REVISION: a pinned commit / tag
+    extra = {"revision": rev} if rev else {}
     ds = None
     if offline_first:
         try:
             from datasets import DownloadConfig
             ds = load_dataset(spec["repo"], spec.get("config"), cache_dir=cache,
-                              download_config=DownloadConfig(local_files_only=True))
+                              download_config=DownloadConfig(local_files_only=True), **extra)
         except Exception:
             ds = None
     if ds is None:
         if offline_first:
             print(f"  [eval] {spec['label']} is not in {cache} yet - downloading it now "
                   "(run --download-datasets next time to do this up front)")
-        ds = load_dataset(spec["repo"], spec.get("config"), cache_dir=cache)
+        ds = load_dataset(spec["repo"], spec.get("config"), cache_dir=cache, **extra)
     if isinstance(ds, dict):                       # DatasetDict
         ds = ds[spec["split"]] if spec["split"] in ds else ds[next(iter(ds))]
     return ds
@@ -67,11 +72,22 @@ def download_datasets(cfg):
     print("\nDone. Normal runs now read these from local disk.")
 
 
-def sample_indices(n, k, seed, key):
-    """Deterministic sample, so every model sees exactly the same rows."""
-    if k is None or k >= n:
-        return list(range(n))
-    return sorted(random.Random(f"{seed}:{key}").sample(range(n), k))
+def question_order(candidates, seed, key):
+    """One seeded permutation of a dataset's rows. Every profile takes a PREFIX of it, so a smaller profile's rows are
+    always a subset of a larger one's (nested samples): the funnel and the result cache build on that.
+    (v2.0.0 drew each profile independently, so e.g. MATH-500 'quick' was not a subset of 'standard'.)"""
+    order = list(candidates)
+    random.Random(f"{seed}:{key}").shuffle(order)
+    return order
+
+
+def sample_indices(n, k, seed, key, candidates=None):
+    """Deterministic, nested sample: the first k of question_order(), sorted. Every model sees exactly the same rows.
+    `candidates` restricts the pool (e.g. LiveCodeBench problems after EVAL_LCB_SINCE)."""
+    pool = list(range(n)) if candidates is None else list(candidates)
+    if k is None or k >= len(pool):
+        return sorted(pool)
+    return sorted(question_order(pool, seed, key)[:k])
 
 
 # ----- prompts --------------------------------------------------------------
@@ -185,12 +201,47 @@ def build_items(cfg, key, ds, idxs):
     return items
 
 
-def prepare_eval_data(cfg):
+def lcb_candidates(cfg, ds):
+    """EVAL_LCB_SINCE: indices of LiveCodeBench problems whose contest_date is on/after the date, or None (all).
+    LiveCodeBench's own method is to score only problems released after a model's training cutoff; older problems
+    may have been seen in training and inflate newer models' scores."""
+    if not cfg.eval_lcb_since:
+        return None
+    try:
+        dates = ds.select_columns(["contest_date"])
+        vals = [str(dates[i]["contest_date"] or "")[:10] for i in range(len(ds))]
+    except Exception:
+        print("  [warn] LiveCodeBench: no contest_date column, EVAL_LCB_SINCE ignored")
+        return None
+    keep = [i for i, d in enumerate(vals) if d and d >= cfg.eval_lcb_since]
+    if not keep:
+        sys.exit(f"[eval] EVAL_LCB_SINCE={cfg.eval_lcb_since}: no LiveCodeBench problem is that recent "
+                 f"(newest: {max(vals) if vals else 'unknown'})")
+    return keep
+
+
+def language_guard(key, items):
+    """Refuse a dataset whose sampled questions are in Korean (a mirror can carry translated text; the bzantium copy's
+    card still mentions a Korean translation inherited from bzantium/ko-livecodebench). Scores on translated prompts
+    would not be comparable with anything else."""
+    if not items:
+        return
+    hits = sum(1 for it in items if _HANGUL.search(it.get("prompt") or ""))
+    if hits / len(items) > HANGUL_MAX_SHARE:
+        sys.exit(f"[eval] {EVAL_SPECS[key]['label']}: {hits} of {len(items)} sampled questions contain Korean text. "
+                 "This copy is not the English benchmark; pin another revision (EVAL_<DATASET>_REVISION) or use an "
+                 "English source.")
+
+
+def prepare_eval_data(cfg, rows=0):
     """Load + sample every enabled dataset up front, so a missing package, dataset or cache fails
-    before the (long) speed test rather than after it."""
-    rows, data, info = PROFILE_ROWS[cfg.eval_profile], {}, {}
+    before the (long) speed test rather than after it. Loads the LARGEST stage's rows (the funnel's final stage);
+    each item carries `_row`, its index in the dataset, so smaller (nested) stages can be selected later."""
+    rows = stage_rows(cfg) if rows == 0 else rows          # rows=None: every row; an int: that many (batch probe)
+    data, info, pools = {}, {}, {}
     cfg.eval_cache_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Loading evaluation datasets (profile {cfg.eval_profile}: "
+    label = "funnel up to " + cfg.eval_funnel_final if cfg.eval_profile == "funnel" else cfg.eval_profile
+    print(f"Loading evaluation datasets (profile {label}: "
           f"{'all rows' if rows is None else f'{rows} rows each'}; cache {cfg.eval_cache_dir})")
     for key in cfg.eval_datasets:
         spec = EVAL_SPECS[key]
@@ -198,22 +249,36 @@ def prepare_eval_data(cfg):
         if spec.get("builtin"):
             from .toolcall_cases import build_items as builtin_items
             pool = builtin_items()
-            data[key] = [pool[i] for i in sample_indices(len(pool), rows, cfg.eval_seed, key)]
+            idxs = sample_indices(len(pool), rows, cfg.eval_seed, key)
+            data[key] = [{**pool[i], "_row": i} for i in idxs]
             info[key] = {"rows": len(data[key]), "available": len(pool)}
+            pools[key] = (len(pool), None)
             print(f"  {spec['label']}: {len(data[key])} of {len(pool)} cases (built in)")
             continue
         try:
             ds = load_eval_split(cfg, key)
-            idxs = sample_indices(len(ds), rows, cfg.eval_seed, key)
+            cand = lcb_candidates(cfg, ds) if key == "livecodebench" else None
+            idxs = sample_indices(len(ds), rows, cfg.eval_seed, key, cand)
             data[key] = build_items(cfg, key, ds, idxs)
+            for it, i in zip(data[key], idxs):
+                it["_row"] = i
+            language_guard(key, data[key])
         except SystemExit:
             raise
         except Exception as e:
             sys.exit(f"[eval] Could not load {spec['label']} ({spec['repo']}): {e.__class__.__name__}: {e}\n"
                      "        Check the network, or run: python benchmark.py --download-datasets")
-        info[key] = {"rows": len(data[key]), "available": len(ds)}
-        print(f"  {spec['label']}: {len(data[key])} of {len(ds)} rows ({time.time() - t:.1f}s)")
+        avail = len(cand) if cand is not None else len(ds)
+        info[key] = {"rows": len(data[key]), "available": avail,
+                     "revision": (cfg.eval_revisions or {}).get(key),
+                     "since": cfg.eval_lcb_since if key == "livecodebench" and cand is not None else None}
+        pools[key] = (len(ds), cand)
+        print(f"  {spec['label']}: {len(data[key])} of {avail} rows"
+              + (f" released since {cfg.eval_lcb_since}" if info[key]["since"] else "")
+              + (f", revision {info[key]['revision']}" if info[key]["revision"] else "")
+              + f" ({time.time() - t:.1f}s)")
     cfg.eval_info = info
+    cfg.eval_pools = pools
     if any(EVAL_SPECS[k]["kind"] == "code" for k in cfg.eval_datasets):
         cfg.eval_sandbox_resolved = resolve_sandbox(cfg)
     return data

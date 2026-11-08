@@ -183,10 +183,16 @@ def probe_strata(cfg):
     print(f"\nRaw responses saved to {path}. Review it before sharing; it is data from your Strata server.")
 
 
+def upstream_url(cfg, model):
+    """Base URL of the model's own llama-server: llama-swap's /upstream/<model> route, or the Strata base URL.
+    llama-server's native endpoints (/props, /apply-template, /completion, /slots) hang off it."""
+    return cfg.base_url if cfg.backend == "strata" else f"{cfg.base_url}/upstream/{quote(model, safe='')}"
+
+
 def get_props(cfg, session, model):
     """llama-server's /props for the loaded model (through llama-swap's /upstream/<model>/ route, or the Strata base
-    URL). {} when unavailable. Holds n_ctx, model_path, total_slots (= --parallel) among others."""
-    url = f"{cfg.base_url}/props" if cfg.backend == "strata" else f"{cfg.base_url}/upstream/{quote(model, safe='')}/props"
+    URL). {} when unavailable. Holds n_ctx, model_path, total_slots (= --parallel), chat_template and build_info."""
+    url = f"{upstream_url(cfg, model)}/props"
     try:
         r = session.get(url, timeout=10)
         if r.ok:

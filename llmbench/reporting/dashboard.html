@@ -39,6 +39,9 @@ tr[data-m]{cursor:pointer}tr[data-m]:hover td{background:#1c2128}tr.sel td{backg
 .mn{cursor:pointer}.mn:hover{text-decoration:underline}
 #charts canvas:not(#c_quant),#evcharts canvas{cursor:pointer}
 .hint-ok{color:#3fb950}.hint-room{color:#d29922}.hint-tight{color:#f85149}
+[data-tip]{cursor:help}.tipd{border-bottom:1px dotted var(--mute)}
+#tipbox{position:fixed;z-index:50;max-width:340px;padding:8px 10px;border-radius:8px;background:#1f2430;color:#e6edf3;border:1px solid #3d444d;font-size:12.5px;line-height:1.45;box-shadow:0 6px 18px rgba(0,0,0,.35);pointer-events:none;display:none;white-space:normal;text-align:left}
+#tipbox b{color:#fff}
 .clip{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bar{display:inline-block;width:70px;height:8px;background:#21262d;border-radius:4px;vertical-align:middle;margin:0 6px;overflow:hidden}
 .bar i{display:block;height:100%}
@@ -74,6 +77,11 @@ footer{margin-top:40px}
 <h2>Full model comparison</h2>
 <div class="toolbar" id="toolbar"></div>
 <div id="tblwrap"><table id="tbl"></table></div>
+
+<div id="timesec" hidden><h2>Where the time went</h2>
+<div class="sub" id="timesub"></div>
+<div class="grid charts" id="timecharts" style="margin-top:12px"></div>
+</div>
 
 <div id="quantsec"><h2>Quantization analysis</h2>
 <div class="card tablewrap2"><table id="qtbl" class="qt"></table></div></div>
@@ -443,12 +451,16 @@ const ALLCOLS = [
  {k:'tech_tps',l:'Tech TPS',tps:1,better:'high'},
  {k:'logic_tps',l:'Logic TPS',tps:1,better:'high'},
  {k:'avg_tps',l:'Avg TPS',tps:1,better:'high'},
- ...EV.flatMap(e=>[{k:'eval_'+e.key+'_pct',l:e.short+' %',dec:1,better:'high',acc:1},
-                   {k:'eval_'+e.key+'_sec',l:e.short+' s/q',dec:1,better:'low'}]),
- ...(EV.length>1?[{k:'eval_avg_pct',l:'Eval avg %',dec:1,better:'high',acc:1},{k:'eval_avg_sec',l:'Avg s/q',dec:1,better:'low'}]:[]),
+ ...EV.flatMap(e=>[{k:'eval_'+e.key+'_pct',l:e.short+' %',dec:1,better:'high',acc:1,tip:`<b>${e.label}</b><br>${e.desc||''}<br>Score: % answered correctly (${e.rows??'?'} questions).`},
+                   {k:'eval_'+e.key+'_sec',l:e.short+' s/q',dec:1,better:'low',tip:`<b>${e.label}: seconds per question</b><br>Mean time to answer one question, including retries and grading (never the model load).`}]),
+ ...(EV.length>1?[{k:'eval_avg_pct',l:'Eval avg %',dec:1,better:'high',acc:1,tip:'<b>Eval average</b><br>Mean of the dataset scores. Only for a model with a score on every dataset of the run; otherwise it is not ranked.'},{k:'eval_avg_sec',l:'Avg s/q',dec:1,better:'low',tip:'<b>Average seconds per question</b> over the datasets. With several questions in flight the Agent score uses the single-stream estimate instead.'}]:[]),
+ {k:'eval_stage',l:'Funnel stage',nodelta:1},
+ {k:'eval_stage1_avg_pct',l:'First-stage avg %',dec:1,better:'high',acc:1},
+ {k:'eval_inflight',l:'In flight',dec:0,nodelta:1,get:m=>EVM&&EVM.concurrency>1?m.eval_inflight:null},
+ {k:'time_total_s',l:'Time min',dec:1,better:'low',get:m=>m.time_total_s==null?null:m.time_total_s/60},
  {k:'eval_retry_pct',l:'Retries',better:'low',retry:1},
  {k:'eval_quality',l:'Eval \u2212 retry penalty %',dec:1,better:'high',acc:1},
- ...LCL.map(l=>({k:'longctx_'+l+'_pct',l:'Long-ctx '+l+' %',dec:0,better:'high',acc:1})),
+ ...LCL.map(l=>({k:'longctx_'+l+'_pct',l:'Long-ctx '+l+' %',dec:0,better:'high',acc:1,tip:`<b>Long-context retrieval at ${l} tokens</b><br>Vault codes hidden at different depths of one ${l}-token document, plus as many decoy vaults; the model is asked for several codes at once. Shows whether it can still find and keep apart facts deep in a long context at the KV-cache precision it is deployed with. Not a reasoning test.`})),
  ...BRULES.map(rk=>({k:'bud_'+rk,l:rk.replace(/_/g,' ').toLowerCase().replace(/^\w/,c=>c.toUpperCase()),nodelta:1,bud:rk,get:m=>m.budget&&m.budget[rk]?m.budget[rk].ok:null})),
  ...(BUD?[{k:'budget_pass',l:'Budget ('+BUD.name+')',nodelta:1,bud:'*'}]:[]),
  {k:'goldilocks',l:'Goldilocks',dec:0,better:'high'},
@@ -494,7 +506,7 @@ function cell(m, c, base){
   const dl = deltaHtml(m,c,v,base);
   if (c.k==='model'){
     const star = base && base.model===m.model ? '\u2605 ' : '';
-    inner = `<div class="clip${hlc(m.model)}" title="${esc(v)}${m.error?' \u2014 '+esc(m.error):''}${m.score_note?' \u2014 Agent score: '+esc(m.score_note):''}">${star}${esc(v)}${m.status==='skipped'?` <span class="hint-room">SKIPPED: ${esc(m.error)}</span>`:m.status!=='ok'?` <span class="err">ERR: ${esc(m.error)}</span>`:''}${m.score_note&&m.score_note.startsWith('no eval')?` <span class="err" title="${esc(m.score_note)}">no eval score</span>`:''}</div>`;
+    inner = `<div class="clip${hlc(m.model)}" title="${esc(v)}${m.error?' \u2014 '+esc(m.error):''}${m.score_note?' \u2014 Agent score: '+esc(m.score_note):''}">${star}${esc(v)}${m.status==='skipped'?` <span class="hint-room">SKIPPED: ${esc(m.error)}</span>`:m.status!=='ok'?` <span class="err">ERR: ${esc(m.error)}</span>`:''}${m.score_note&&m.score_note.startsWith('no eval')?` <span class="err" title="${esc(m.score_note)}">no eval score</span>`:''}${m.score_note&&m.score_note.startsWith('not ranked')?` <span class="hint-room" title="${esc(m.score_note)}">not ranked</span>`:''}${m.score_note&&m.score_note.startsWith('evals skipped')?` <span class="hint-room" title="${esc(m.score_note)}">evals skipped</span>`:''}</div>`;
   } else if (c.k==='vram_gb' || c.k==='ram_used_gb'){
     if (v==null) inner = '&ndash;';
     else {
@@ -542,7 +554,7 @@ function renderTable(){
     return (typeof x==='string' ? x.localeCompare(y) : x-y) * state.sd;
   });
   $('tbl').innerHTML = '<thead><tr>' + COLS.map(c=>{
-      return `<th class="${fzClass(c)}" data-k="${c.k}"${fzStyle(c)}>${c.l}${state.sk===c.k?(state.sd<0?' \u25BC':' \u25B2'):''}</th>`;
+      return `<th class="${fzClass(c)}" data-k="${c.k}"${fzStyle(c)}${c.tip?` data-tip="${esc(c.tip)}"`:''}>${c.tip?`<span class="tipd">${c.l}</span>`:c.l}${state.sk===c.k?(state.sd<0?' \u25BC':' \u25B2'):''}</th>`;
     }).join('') + '</tr></thead><tbody>' +
     rows.map(m=>`<tr data-m="${encodeURIComponent(m.model)}"${base&&base.model===m.model?' class="sel"':''}>${COLS.map(c=>cell(m,c,base)).join('')}</tr>`).join('') + '</tbody>';
   wrap.scrollLeft = sx; wrap.scrollTop = sy;
@@ -613,6 +625,42 @@ function render(){
   const OKR = cur_rows.filter(isOK);
   if ($('fcount')) $('fcount').textContent = `Showing ${cur_rows.length} of ${ALL.length} models`;
   renderPodium(OKR); renderCharts(OKR); renderEvalCharts(cur_rows.filter(m=>m.status==='ok')); renderQuant(OKR); renderTable(); updateChip();
+  renderTime(cur_rows.filter(m=>m.status==='ok'));
+}
+
+/* ---------- where the time went (v2.1) ---------- */
+const SPEEDPH = ['settle','load','speed','prefill_ctx','agent_ttft','cooldown'];
+function timeGroups(m){
+  const t = m.timing || {}, g = {};
+  const add = (k,v) => { if (v) g[k] = (g[k]||0) + v; };
+  SPEEDPH.forEach(p=>add('Speed tests', t[p]));
+  add('Eval load', t.eval_load); add('Long-ctx', t.longctx);
+  Object.keys(t).filter(k=>k.startsWith('eval:')).forEach(k=>{ const e = EV.find(x=>x.key===k.slice(5)); add(e?e.short:k.slice(5), t[k]); });
+  return g;
+}
+function renderTime(rows){
+  const tm = rows.filter(m=>m.timing && Object.keys(m.timing).length);
+  if (!tm.length) return;
+  $('timesec').hidden = false;
+  const groups = [...new Set(tm.flatMap(m=>Object.keys(timeGroups(m))))];
+  const tot = m => Object.values(timeGroups(m)).reduce((s,x)=>s+x,0);
+  const items = tm.slice().sort((a,b)=>tot(b)-tot(a));
+  const sum = {}; tm.forEach(m=>Object.entries(timeGroups(m)).forEach(([k,v])=>sum[k]=(sum[k]||0)+v));
+  const all = Object.values(sum).reduce((s,x)=>s+x,0) || 1;
+  const think = tm.reduce((s,m)=>s+(m.eval_tok_think||0),0), ans = tm.reduce((s,m)=>s+(m.eval_tok_answer||0),0);
+  const cached = tm.reduce((s,m)=>s+(m.eval_cached_n||0),0);
+  const hm = s => s>=3600 ? `${Math.floor(s/3600)}h ${Math.round(s%3600/60)}m` : `${Math.round(s/60)}m`;
+  $('timesub').innerHTML = `Summed over the models shown: <b>${hm(all)}</b> &mdash; ` +
+    Object.entries(sum).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${esc(k)} ${hm(v)} (${Math.round(100*v/all)}%)`).join(' &middot; ') +
+    (think||ans ? `<br>Eval tokens generated: <b>${(think/1e6).toFixed(2)}M thinking</b> + ${(ans/1e6).toFixed(2)}M answer (${Math.round(100*think/Math.max(1,think+ans))}% thinking; estimated while streaming)` : '') +
+    (cached ? ` &middot; ${cached} answers reused from the result cache` : '') +
+    `<br>Token generation is GPU-bound: only faster hardware speeds it up per request; fewer questions (funnel), fewer tokens (thinking budgets) or several requests at once (EVAL_CONCURRENCY) shorten the run.`;
+  const PAL = ['#8b949e','#6e7681','#a371f7','#58a6ff','#3fb950','#f778ba','#db6d28','#79c0ff','#d29922','#ff7b72','#56d364'];
+  if (box('time', items, Math.max(320, items.length*22+110)))
+    mk('c_time', {type:'bar',
+      data:{labels:items.map(m=>m.model), datasets:groups.map((g,i)=>({label:g, data:items.map(m=>(timeGroups(m)[g]||0)/60), backgroundColor:PAL[i%PAL.length]}))},
+      options:{indexAxis:'y', plugins:{legend:{display:true}, tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.parsed.x.toFixed(1)} min`}}},
+        scales:{x:{stacked:true, title:axTitle('minutes')}, y:{stacked:true, ticks:yTicks}}}});
 }
 
 $('hdr').innerHTML = `${META.count} models` + (META.tests.length ? ` &middot; <b style="color:#e6edf3">Tests:</b> ${META.tests.map(esc).join(', ')}${META.evals?` (profile ${esc(META.evals.profile)})`:''}` : '') +
@@ -627,10 +675,23 @@ const CH = [['tps','Avg generation speed (tok/s)'],['vram','VRAM vs speed (bubbl
   .concat(PFL.length ? [['pctx','Prefill speed by prompt length (tok/s) \u2014 offloaded MoEs slow down most']] : []);
 const chartCard = ([id,t])=>`<div class="card"><h3>${t}</h3><div class="chartbox" id="b_${id}"><canvas id="c_${id}"></canvas></div><p class="sub" id="e_${id}" hidden>No data for this chart (telemetry unavailable, or filtered out).</p></div>`;
 $('charts').innerHTML = CH.map(chartCard).join('');
+$('timecharts').innerHTML = chartCard(['time','Time per model and phase (minutes)']);
+/* hover bubbles for [data-tip] (one floating box, so table scrolling never clips it) */
+const TIPBOX = document.createElement('div'); TIPBOX.id = 'tipbox'; document.body.appendChild(TIPBOX);
+document.addEventListener('mouseover', ev=>{
+  const t = ev.target.closest && ev.target.closest('[data-tip]');
+  if (!t){ TIPBOX.style.display = 'none'; return; }
+  TIPBOX.innerHTML = t.getAttribute('data-tip'); TIPBOX.style.display = 'block';
+  const r = t.getBoundingClientRect(), w = TIPBOX.offsetWidth, h = TIPBOX.offsetHeight;
+  let x = Math.min(Math.max(8, r.left + r.width/2 - w/2), window.innerWidth - w - 8);
+  let y = r.bottom + 8; if (y + h > window.innerHeight - 8) y = Math.max(8, r.top - h - 8);
+  TIPBOX.style.left = x + 'px'; TIPBOX.style.top = y + 'px';
+});
+document.addEventListener('scroll', ()=>{ TIPBOX.style.display = 'none'; }, true);
 if (EV.length || LCL.length){
   $('evsec').hidden = false;
   const mo = MOE ? ` &middot; margin of error (95%): ${EV.map(e=>MOE.per_dataset[e.key]?`${esc(e.short)} &plusmn;${MOE.per_dataset[e.key].moe.toFixed(0)}`:'').filter(Boolean).join(', ')}, average &plusmn;${MOE.average.moe.toFixed(0)} points` : '';
-  $('evsub').innerHTML = (EV.length ? `${EV.map(e=>`<b>${esc(e.label)}</b> (${e.rows??'?'}${e.available?' of '+e.available:''} rows)`).join(' &middot; ')} &mdash; Test profile <b>${esc(EVM.profile)}</b>${mo}. Only the tests and models that were actually run are shown.` : 'Long-context retrieval only.')
+  $('evsub').innerHTML = (EV.length ? `${EV.map(e=>`<b class="tipd" data-tip="${esc('<b>'+esc(e.label)+'</b><br>'+esc(e.desc||''))}">${esc(e.label)}</b> (${e.rows??'?'}${e.available?' of '+e.available:''} rows)`).join(' &middot; ')} &mdash; Test profile <b>${esc(EVM.profile)}</b>${mo}. Only the tests and models that were actually run are shown.` : 'Long-context retrieval only.')
     + (MOE && MOE.rough ? `<div class="card" style="margin-top:8px;border-color:#d29922"><b style="color:#d29922">\u26A0 Rough guide only.</b> The <code>${esc(EVM.profile)}</code> profile asks so few questions that gaps smaller than the margin above are noise. Use it to drop clear losers, then re-run the finalists with <code>EVAL_PROFILE=standard</code> (&plusmn;10) or <code>thorough</code> (&plusmn;7) before choosing.</div>` : '')
     + (ALL.some(m=>(m.eval_retry_pct||0)>RETRY_WARN) ? `<div class="sub" style="margin-top:6px">\u26A0 = more than ${RETRY_WARN}% of a model's questions needed the No-Thinking retry. That usually points to a chat-template, <code>--jinja</code> / reasoning-format or sampling problem rather than the model itself; check it before judging the scores.</div>` : '');
   $('evcharts').innerHTML = [...EVKINDS.map(([k,t])=>['ev'+k,t]), ...(LCL.length?[['evlong',`Long-context retrieval (${LC.keys} keys per prompt, KV &ge; ${esc(LC.kv_min)})`]]:[]), ['evspeed','Quality vs speed (top-right is best)']].map(chartCard).join('');
@@ -666,13 +727,15 @@ $('meth').innerHTML = `<ul>
  ${META.min_ctx?`<li><b>Minimum context:</b> ${ctxFmt(META.min_ctx)} tokens (<code>MIN_CTX</code> / budget profile). Models loaded with less are ${META.min_ctx_action==='refuse'?'not benchmarked (SKIPPED)':'marked &#9888; in the Ctx column and kept off the podium'}: VRAM and speed at a smaller context flatter them.</li>`:''}
  ${PFL.length||META.agent_prompt_tokens?`<li><b>Deployed-context speed:</b> ${PFL.length?`prefill at ${PFL.join(', ')} prompt tokens (one cold, unique prompt each; lengths above the loaded context are skipped) &mdash; offloaded MoEs that look fine at 1.4k often slow down sharply here. `:''}${META.agent_prompt_tokens?`<b>Agent TTFT</b>: time to first token for a ~${Math.round(META.agent_prompt_tokens/1000)}k-token agent-style request (system prompt with tool catalogue + history); <b>Next-turn TTFT</b> = the following turn with the prefix cached.`:''}</li>`:''}
  ${BUD?`<li><b>Budget profile <code>${esc(BUD.name)}</code>:</b> ${Object.entries(BUD.rules).map(([k,v])=>`<code>${k}=${v}</code>`).join(', ')}. One pass/fail column per rule (hover for the numbers; ? = not measured, never a fail). VRAM rule: model VRAM (increase over idle) + reserve &le; GPU total &times; MAX_VRAM_PCT. ${META.budget_pass_only?'Models that fail a rule are kept off the podium.':''}</li>`:''}`}
- ${EVM?`<li><b>Evaluations</b> (run after all speed tests, one model at a time): ${EV.map(e=>esc(e.label)+' ('+(e.rows??'?')+' rows)').join(', ')}. Profile <code>${esc(EVM.profile)}</code>; rows are sampled with seed ${EVM.seed}, so every model gets the same questions. Temperature ${EVM.temperature}, max_tokens ${EVM.max_tokens_qa} (QA) / ${EVM.max_tokens_code} (code)${EVM.max_tokens_qa==='dynamic'||EVM.max_tokens_code==='dynamic'?' (dynamic = model context minus prompt)':''}. Reasoning blocks are stripped before grading. ${EVM.retry_nothink?`A reply that is cut off or times out is retried once with thinking disabled (No Thinking). `:''}${EVM.stream?`Replies are streamed: a reply that falls into a repetition loop is stopped early (<b>Fail: Degradation</b>), and thinking is capped at ${EVM.think_budget?EVM.think_budget.toLocaleString()+' tokens':'no limit'} per question (<b>Fail: Think cap</b>)${EVM.salvage?'; a stopped reply whose visible answer is already complete is graded as it is':''}. `:''}A reply that is still cut off with no usable answer counts as wrong, but is tracked separately as N/A (shown in the chart tooltips and the CSV). <b>s/q</b> = average seconds per question: total time for the dataset divided by the questions asked, so it includes retries and timeouts. Compare it between models that scored about the same.</li>
+ ${EVM?`<li><b>Evaluations</b> (run after all speed tests, one model at a time): ${EV.map(e=>esc(e.label)+' ('+(e.rows??'?')+' rows)').join(', ')}. Profile <code>${esc(EVM.profile)}</code>; rows are sampled with seed ${EVM.seed}, so every model gets the same questions. Temperature ${EVM.temperature}, max_tokens ${EVM.max_tokens_qa} (QA) / ${EVM.max_tokens_code} (code)${EVM.max_tokens_qa==='dynamic'||EVM.max_tokens_code==='dynamic'?' (dynamic = model context minus prompt)':''}. Reasoning blocks are stripped before grading. ${EVM.retry_nothink?`A reply that is cut off or times out is retried once with thinking disabled (No Thinking). `:''}${EVM.stream?`Replies are streamed: a reply that falls into a repetition loop is stopped early (<b>Fail: Degradation</b>), and thinking is capped at ${EVM.think_budget?EVM.think_budget.toLocaleString()+' tokens':'no limit'} per question (<b>Fail: Think cap</b>)${EVM.salvage?'; a stopped reply whose visible answer is already complete is graded as it is':''}. `:''}A reply that is still cut off with no usable answer counts as wrong, but is tracked separately as N/A (shown in the chart tooltips and the CSV). <b>s/q</b> = mean seconds to answer one question, including retries, timeouts and grading (never the model load). Compare it between models that scored about the same.</li>
  ${EV.some(e=>e.kind==='qa')?'<li><b>QA grading:</b> the model is told to end with <code>Answer: X</code>; the last <i>Answer:</i> / <i>the answer is</i> / <code>\\boxed{}</code> letter (else a final line that is just a letter) is compared with the dataset\'s answer. API failures count as wrong; a model that returned nothing at all gets no score.</li>':''}
  ${EV.some(e=>e.kind==='math')?'<li><b>Math grading:</b> the model is told to end with <code>Answer: &lt;answer&gt;</code>; the last <i>Answer:</i> line (else the last <code>\\boxed{}</code>; for GSM8K also the last number of a finished reply) is normalised (units, <code>\\dfrac</code>, thousands separators, <code>x=</code> prefixes) and compared with the reference: equal strings, or numerically equal to 1e-6 (fractions and decimals). Purely symbolic equivalents count as wrong, so scores are a slight lower bound.</li>':''}
  ${EV.some(e=>e.kind==='code')?`<li><b>Code grading (pass@1):</b> the last python block of the reply is executed in a <code>${esc(EVM.code_sandbox)}</code> sandbox, ${EVM.code_timeout}s per run, no network where available. <b>HumanEval:</b> the task's own <code>check()</code>. <b>MBPP:</b> the <code>test_list</code> asserts (also shown in the prompt, the standard MBPP protocol). <b>LCB:</b> public tests plus up to ${EVM.lcb_max_tests||'all'} tests per problem (stdin/stdout or starter-code function).</li>`:''}
  <li><b>Read the scores with care:</b> with ${Math.min(...EV.map(e=>e.rows||Infinity))} questions the 95% margin of error is about &plusmn;${Math.round(98/Math.sqrt(Math.min(...EV.map(e=>e.rows||Infinity))))} points per dataset${MOE?` (&plusmn;${MOE.average.moe.toFixed(0)} on the average)`:''}, so small gaps between models are noise.${MOE&&MOE.rough?' This profile is a rough guide only: re-run the finalists with <code>standard</code> or <code>thorough</code>.':' Use the <code>standard</code> or <code>full</code> profile for finer comparisons.'}</li>
  <li><b>Retries:</b> questions that needed the No-Thinking retry (cut off, repetition loop, thinking cap or timeout). Above ${RETRY_WARN}% (&#9888;) this usually means a chat-template, <code>--jinja</code> / reasoning-format or sampling problem, not a weak model. The Agent score loses ${EVM.fallback_penalty}% &times; the retried share; <b>Eval &minus; retry penalty</b> shows the same penalty in points.</li>
  ${EV.some(e=>e.kind==='tool')?'<li><b>Tool calling</b> (built in, BFCL-style): OpenAI <code>tools</code> requests in four categories &mdash; simple, multiple (pick the right tool), parallel (two calls in one reply) and irrelevance (must <i>not</i> call). Graded on the function name and arguments (case-insensitive, numbers numerically, unknown arguments fail). Only native <code>tool_calls</code> count unless <code>EVAL_TOOLCALL_STRICT=false</code>; calls written as text usually mean llama-server is not running with <code>--jinja</code> or the template has no tool support.</li>':''}`:''}
+ ${EVM&&EVM.funnel?`<li><b>Funnel (<code>EVAL_PROFILE=funnel</code>):</b> every model answers the first stage; after each stage a model goes on only if its upper bound (${Math.round(EVM.funnel.confidence*100)}% one-sided) reaches the lower bound of model #${EVM.funnel.leaders} (ranked by score), and at least ${EVM.funnel.leaders} always go on. Stages: ${EVM.funnel.stages.map(s=>esc(s[0])+' ('+(s[1]??'all')+')').join(' &rarr; ')}. Questions are nested, so a later stage only asks the new ones. Models screened out earlier are <b>not ranked</b> against the finalists (their stage score has a larger margin of error); <b>First-stage avg</b> compares every model on the same first-stage questions.</li>`:''}
+ ${EVM?`<li><b>s/q in the Agent score:</b> ${EVM.sq_basis==='single'?'the <b>single-stream estimate</b> (tokens &divide; speed-test tok/s + prompt &divide; prefill tok/s + grading), because some questions ran concurrently and measured latency would include queueing':'measured per-question latency (one request at a time)'}. Each model's eval phase starts with a warm-up request, so the model load is never counted in a question's latency.${EVM.cache?' Answers obtained earlier with identical settings (same model file, launch flags, prompt, sampling and grader) are reused from the result cache.':''}${EVM.budget_forcing?' <b>Budget forcing</b> is on: at the thinking cap the reasoning is closed and the model asked for its answer, instead of a No-Thinking retry.':''}${EVM.think_budgets&&Object.keys(EVM.think_budgets).length?' Per-dataset thinking budgets: '+Object.entries(EVM.think_budgets).map(([k,v])=>esc(k)+' '+(v||'unlimited')).join(', ')+' (scores measure accuracy within that budget).':''}</li>`:''}
  ${LC?`<li><b>Long-context retrieval:</b> at ${LCL.join(' and ')} tokens, ${LC.trials} prompt(s) per length, each hiding ${LC.keys} vault codes plus ${LC.keys} decoys at spread-out depths; score = share of asked codes returned. Asked with thinking off, temperature 0. The benchmark cannot change the server's KV type: it reads it, and results with KV below <code>LONGCTX_KV_MIN=${esc(LC.kv_min)}</code> are ${LC.kv_action==='skip'?'skipped':'flagged (amber KV type)'}. A length longer than the loaded context is not run.</li>`:''}
 </ul>`;
 </script></body></html>

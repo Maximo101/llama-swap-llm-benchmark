@@ -184,23 +184,23 @@ def _budget():
 # kind "math" = free-form final answer (number / LaTeX expression), scored as accuracy against the reference answer.
 # Optional "config" = the Hugging Face dataset configuration name (GSM8K has no default config).
 EVAL_SPECS = {
-    "gpqa":          {"label": "GPQA Diamond",  "short": "GPQA",      "kind": "qa",   "env": "EVAL_GPQA",
+    "gpqa":          {"desc": "198 graduate-level multiple-choice questions in biology, physics and chemistry, written by PhD experts so that they cannot be answered by searching. Tests deep scientific reasoning. 4 options (25% by guessing).", "label": "GPQA Diamond",  "short": "GPQA",      "kind": "qa",   "env": "EVAL_GPQA",
                       "repo": "fingertap/GPQA-Diamond",               "split": "test"},
-    "mmlu_pro":      {"label": "MMLU-Pro",      "short": "MMLU-Pro",  "kind": "qa",   "env": "EVAL_MMLU_PRO",
+    "mmlu_pro":      {"desc": "Harder version of MMLU: about 12,000 multiple-choice questions over 14 subjects (law, engineering, psychology, economics, ...) with 10 options each (10% by guessing). Tests broad knowledge plus reasoning.", "label": "MMLU-Pro",      "short": "MMLU-Pro",  "kind": "qa",   "env": "EVAL_MMLU_PRO",
                       "repo": "TIGER-Lab/MMLU-Pro",                   "split": "test"},
-    "humaneval":     {"label": "HumanEval",     "short": "HumanEval", "kind": "code", "env": "EVAL_HUMANEVAL",
+    "humaneval":     {"desc": "164 Python tasks: write a function from its signature and docstring. The code is run in the sandbox against the task's unit tests (pass@1). Tests basic coding.", "label": "HumanEval",     "short": "HumanEval", "kind": "code", "env": "EVAL_HUMANEVAL",
                       "repo": "openai/openai_humaneval",              "split": "test"},
-    "mbpp":          {"label": "MBPP",          "short": "MBPP",      "kind": "code", "env": "EVAL_MBPP",
+    "mbpp":          {"desc": "Mostly Basic Python Problems: about 500 short everyday programming tasks; the test asserts are shown in the prompt and the code is run against them (pass@1). Tests practical coding.", "label": "MBPP",          "short": "MBPP",      "kind": "code", "env": "EVAL_MBPP",
                       "repo": "google-research-datasets/mbpp",        "split": "test"},
-    "livecodebench": {"label": "LiveCodeBench", "short": "LCB",       "kind": "code", "env": "EVAL_LIVECODEBENCH",
+    "livecodebench": {"desc": "Competitive-programming problems from LeetCode, AtCoder and Codeforces, collected over time so newer problems are less likely to be in a model's training data. Code is run against the problem's tests (pass@1). Tests hard coding.", "label": "LiveCodeBench", "short": "LCB",       "kind": "code", "env": "EVAL_LIVECODEBENCH",
                       "repo": "bzantium/livecodebench",               "split": "test"},
-    "gsm8k":         {"label": "GSM8K",         "short": "GSM8K",     "kind": "math", "env": "EVAL_GSM8K",
+    "gsm8k":         {"desc": "Grade-school math word problems that need several steps of arithmetic; the final number must match. Tests step-by-step reasoning.", "label": "GSM8K",         "short": "GSM8K",     "kind": "math", "env": "EVAL_GSM8K",
                       "repo": "openai/gsm8k",  "config": "main",       "split": "test"},
-    "math":          {"label": "MATH-500",      "short": "MATH",      "kind": "math", "env": "EVAL_MATH",
+    "math":          {"desc": "500 competition math problems (algebra, geometry, number theory, probability, precalculus, ...) from the MATH dataset; the final answer is checked for mathematical equivalence. Tests harder math.", "label": "MATH-500",      "short": "MATH",      "kind": "math", "env": "EVAL_MATH",
                       "repo": "HuggingFaceH4/MATH-500",               "split": "test"},
     # Built into the tool (llmbench/evals/toolcall_cases.py), nothing to download. BFCL-style: native OpenAI `tools`
     # requests, graded by matching the function name and arguments (AST-style), including "should not call" cases.
-    "toolcall":      {"label": "Tool calling",  "short": "Tools",     "kind": "tool", "env": "EVAL_TOOLCALL",
+    "toolcall":      {"desc": "32 built-in function-calling cases sent as OpenAI 'tools' requests: pick the right tool, fill its arguments, call several tools at once, or correctly call none. Graded on the function name and arguments. Tests agent readiness.", "label": "Tool calling",  "short": "Tools",     "kind": "tool", "env": "EVAL_TOOLCALL",
                       "repo": "builtin",                              "split": "test", "builtin": True},
 }
 # Rows per active dataset. Sizes come from n = 0.9604 / E^2 (95% confidence, worst-case variance), where E is the
@@ -214,6 +214,32 @@ PROFILE_ROWS = {"test": 6,          # about +/-40%
                 "deep": 384,        # +/-5%
                 "ultra": 9604,      # +/-1% (larger than every dataset except MMLU-Pro)
                 "full": None}       # every row
+# EVAL_PROFILE=funnel (v2.1): every model answers the first stage, then confidence-interval gates drop the models that
+# are clearly below the leaders, and the survivors answer the next (nested) stage, up to EVAL_FUNNEL_FINAL.
+FUNNEL_CHAIN = ("quick", "basic", "moderate", "standard", "thorough", "deep")
+
+
+def funnel_stages(cfg):
+    """[(profile, rows)] for EVAL_PROFILE=funnel: EVAL_FUNNEL_STAGES if set, else every FUNNEL_CHAIN profile below
+    EVAL_FUNNEL_FINAL, then the final profile. Rows grow strictly (each stage asks only the new questions)."""
+    if cfg.eval_funnel_stages:
+        names = list(cfg.eval_funnel_stages)
+    else:
+        final = cfg.eval_funnel_final
+        cap = PROFILE_ROWS[final] if PROFILE_ROWS[final] is not None else float("inf")
+        names = [p for p in FUNNEL_CHAIN if PROFILE_ROWS[p] < cap] + [final]
+    out = []
+    for n in names:
+        rows = PROFILE_ROWS[n]
+        if out and (out[-1][1] is None or (rows is not None and rows <= out[-1][1])):
+            sys.exit(f"[config] EVAL_FUNNEL_STAGES must grow: {n} ({rows}) does not have more rows than {out[-1][0]}")
+        out.append((n, rows))
+    return out
+
+
+def stage_rows(cfg):
+    """Rows of the LARGEST stage (what has to be loaded): the profile's rows, or the funnel's final stage."""
+    return funnel_stages(cfg)[-1][1] if cfg.eval_profile == "funnel" else PROFILE_ROWS[cfg.eval_profile]
 
 
 @dataclass
@@ -341,6 +367,23 @@ class Config:
     vram_underuse_floor: float = 0.85       # VRAM_UNDERUSE_FLOOR: VRAM fit of a model that uses almost no VRAM
     budget: dict | None = None              # BUDGET_PROFILE + BUDGET_<PROFILE>_<RULE>
     budget_podium_pass_only: bool = True    # BUDGET_PODIUM_PASS_ONLY: models that fail a budget rule stay off the podium
+    # --- v2.1: faster runs ---
+    eval_skip_ineligible: str = "auto"      # EVAL_SKIP_INELIGIBLE: auto | true | false (skip evals of undeployable models)
+    eval_funnel_final: str = "standard"     # EVAL_FUNNEL_FINAL: profile the funnel's survivors finish at
+    eval_funnel_stages: tuple = ()          # EVAL_FUNNEL_STAGES: explicit stage profiles (default: chain up to the final)
+    eval_leaders: int = 5                   # EVAL_LEADERS: minimum number of models kept at every funnel gate
+    eval_funnel_conf: float = 0.95          # EVAL_FUNNEL_CONF: one-sided confidence of each gate's bounds
+    eval_result_cache: bool = True          # EVAL_RESULT_CACHE: reuse answers already obtained (resume / reruns)
+    eval_result_cache_dir: Path | None = None   # EVAL_RESULT_CACHE_DIR (default <OUTPUT_DIR>/cache)
+    eval_think_budgets: dict | None = None  # EVAL_THINK_BUDGET_<DATASET>: per-dataset thinking budget (opt-in)
+    eval_budget_forcing: bool = False       # EVAL_BUDGET_FORCING: at the thinking cap, close the thinking and ask for the answer
+    eval_lcb_since: str = ""                # EVAL_LCB_SINCE: only LiveCodeBench problems released on/after this date
+    eval_revisions: dict | None = None      # EVAL_<DATASET>_REVISION: pin a Hugging Face dataset revision
+    eval_sq_basis: str = "auto"             # EVAL_SQ_BASIS: auto | measured | single (s/q used by the Agent score)
+    batch_probe_levels: tuple = (1, 2, 4, 8)    # BATCH_PROBE_LEVELS
+    batch_probe_questions: int = 32         # BATCH_PROBE_QUESTIONS
+    eval_pools: dict | None = None          # set at run time: {dataset: (rows available, candidate row indices | None)}
+    defer_prefill: tuple = ()               # set at run time: prefill lengths measured by the long-context test instead
 
     @property
     def chat_url(self): return f"{self.base_url}/v1/chat/completions"
@@ -358,6 +401,32 @@ def _eval_cache_dir() -> Path:
     """EVAL_CACHE_DIR (default ./tests next to the script). Relative paths are relative to the script."""
     p = Path(_env("EVAL_CACHE_DIR", "tests")).expanduser()
     return p if p.is_absolute() else SCRIPT_DIR / p
+
+
+def _cache_dir() -> Path:
+    """EVAL_RESULT_CACHE_DIR (default <OUTPUT_DIR>/cache). Relative paths are relative to the script."""
+    raw = _env("EVAL_RESULT_CACHE_DIR")
+    if not raw:
+        return _output_dir() / "cache"
+    p = Path(raw).expanduser()
+    return p if p.is_absolute() else SCRIPT_DIR / p
+
+
+def _think_budgets():
+    """EVAL_THINK_BUDGET_<DATASET> (e.g. EVAL_THINK_BUDGET_GSM8K=2048): per-dataset thinking budgets, opt-in.
+    The dataset part is the dataset's EVAL_<NAME> switch without the EVAL_ prefix (GPQA, MMLU_PRO, LIVECODEBENCH...)."""
+    out = {}
+    for k, s in EVAL_SPECS.items():
+        name = "EVAL_THINK_BUDGET_" + s["env"][len("EVAL_"):]
+        if os.getenv(name, "").strip():
+            out[k] = _env_budget(name, None)
+    return out
+
+
+def think_budget(cfg, key):
+    """Thinking budget for one dataset: its EVAL_THINK_BUDGET_<DATASET> override, else EVAL_THINK_BUDGET."""
+    b = (cfg.eval_think_budgets or {}).get(key)
+    return cfg.eval_think_budget if b is None else b
 
 
 def _eval_extra_body():
@@ -378,8 +447,28 @@ def load_config() -> Config:
     _load_dotenv()
     _export_hf_token()
     profile = (_env("EVAL_PROFILE", "quick") or "quick").lower()
-    if profile not in PROFILE_ROWS:
-        sys.exit(f"[config] EVAL_PROFILE must be one of {', '.join(PROFILE_ROWS)} (got {profile!r})")
+    if profile not in PROFILE_ROWS and profile != "funnel":
+        sys.exit(f"[config] EVAL_PROFILE must be one of {', '.join(PROFILE_ROWS)} or funnel (got {profile!r})")
+    funnel_final = (_env("EVAL_FUNNEL_FINAL", "standard") or "standard").lower()
+    if funnel_final not in PROFILE_ROWS or funnel_final in ("test", "quick"):
+        sys.exit(f"[config] EVAL_FUNNEL_FINAL must be a profile larger than quick (got {funnel_final!r})")
+    funnel_stages_env = tuple(x.lower() for x in _env_list("EVAL_FUNNEL_STAGES"))
+    bad = [x for x in funnel_stages_env if x not in PROFILE_ROWS]
+    if bad:
+        sys.exit(f"[config] EVAL_FUNNEL_STAGES: unknown profile(s) {', '.join(bad)}")
+    skip_inel = (_env("EVAL_SKIP_INELIGIBLE", "auto") or "auto").lower()
+    if skip_inel in ("1", "yes", "on"):
+        skip_inel = "true"
+    if skip_inel in ("0", "no", "off"):
+        skip_inel = "false"
+    if skip_inel not in ("auto", "true", "false"):
+        sys.exit(f"[config] EVAL_SKIP_INELIGIBLE must be auto, true or false (got {skip_inel!r})")
+    sq_basis = (_env("EVAL_SQ_BASIS", "auto") or "auto").lower()
+    if sq_basis not in ("auto", "measured", "single"):
+        sys.exit(f"[config] EVAL_SQ_BASIS must be auto, measured or single (got {sq_basis!r})")
+    lcb_since = (_env("EVAL_LCB_SINCE", "") or "").strip()
+    if lcb_since and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", lcb_since):
+        sys.exit(f"[config] EVAL_LCB_SINCE must be a date like 2025-01-01 (got {lcb_since!r})")
     gpu_backend = (_env("GPU_BACKEND", "auto") or "auto").lower()
     if gpu_backend not in ("auto", "nvml", "smi"):
         sys.exit(f"[config] GPU_BACKEND must be auto, nvml or smi (got {gpu_backend!r})")
@@ -513,4 +602,19 @@ def load_config() -> Config:
         vram_underuse_floor=min(1.0, max(0.0, _env("VRAM_UNDERUSE_FLOOR", 0.85, float))),
         budget=budget,
         budget_podium_pass_only=_env("BUDGET_PODIUM_PASS_ONLY", True, bool),
+        eval_skip_ineligible=skip_inel,
+        eval_funnel_final=funnel_final,
+        eval_funnel_stages=funnel_stages_env,
+        eval_leaders=max(1, _env("EVAL_LEADERS", 5, int)),
+        eval_funnel_conf=min(0.999, max(0.5, _env("EVAL_FUNNEL_CONF", 0.95, float))),
+        eval_result_cache=_env("EVAL_RESULT_CACHE", True, bool),
+        eval_result_cache_dir=_cache_dir(),
+        eval_think_budgets=_think_budgets(),
+        eval_budget_forcing=_env("EVAL_BUDGET_FORCING", False, bool),
+        eval_lcb_since=lcb_since,
+        eval_revisions={k: _env(s["env"] + "_REVISION") for k, s in EVAL_SPECS.items()
+                        if not s.get("builtin") and _env(s["env"] + "_REVISION")},
+        eval_sq_basis=sq_basis,
+        batch_probe_levels=tuple(sorted(set(max(1, n) for n in _env_ints("BATCH_PROBE_LEVELS", (1, 2, 4, 8))))) or (1, 2, 4, 8),
+        batch_probe_questions=max(4, _env("BATCH_PROBE_QUESTIONS", 32, int)),
     )

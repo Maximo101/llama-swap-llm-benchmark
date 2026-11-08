@@ -93,12 +93,19 @@ def _md_evals(results, cfg, evk):
          "| Model | " + " | ".join(f"{EVAL_SPECS[k]['short']} | {EVAL_SPECS[k]['short']} s/q" for k in evk)
          + " | Avg | Retries |",
          "|---|" + "---|" * (2 * len(evk) + 2)]
+    # funnel finalists first: a model screened out after fewer questions never sorts above one that finished
     ranked = sorted((r for r in results if r["status"] == "ok" and r.get("eval_avg_pct") is not None),
-                    key=lambda r: -r["eval_avg_pct"])
+                    key=lambda r: (bool(r.get("eval_screened")), -r["eval_avg_pct"]))
     for r in ranked:
         rt = r.get("eval_retry_n")
         retry = "–" if rt is None else f"{rt} ({r['eval_retry_pct']:.0f}%)" + (" ⚠" if r["eval_retry_pct"] > 20 else "")
-        L.append(f"| {r['model']} | " + " | ".join(_md_eval_cells(r, evk)) + f" | {r['eval_avg_pct']:.1f}% | {retry} |")
+        name = r["model"] + (f" _(screened out at {r['eval_stage']})_" if r.get("eval_screened") else "")
+        L.append(f"| {name} | " + " | ".join(_md_eval_cells(r, evk)) + f" | {r['eval_avg_pct']:.1f}% | {retry} |")
+    unranked = [r for r in results if r["status"] == "ok" and (r.get("eval_incomplete") or r.get("eval_skipped"))]
+    if unranked:
+        L += ["", "Not ranked:"] + [f"- {r['model']}: " + (f"evals skipped ({r['eval_skipped']})" if r.get("eval_skipped")
+                                                          else f"incomplete evals ({r['eval_incomplete']})")
+                                     for r in unranked]
     L += ["", f"_Retries = questions that needed the No-Thinking retry (cut off, loop, thinking cap or timeout); many "
           "retries usually point to a chat-template or thinking problem, not the model. The Agent score loses "
           f"{cfg.agent_fallback_penalty:g}% × the retried share._"]
@@ -106,7 +113,8 @@ def _md_evals(results, cfg, evk):
           "questions were asked; N/A = no answer because the reply was cut off, counted as wrong; Degr. = Fail: Degradation, i.e. the model fell into a repetition loop and was stopped early "
           "(the question is then answered by the retry or counted as wrong); s/q = mean latency of one "
           "question (request, retries and grading; measured with "
-          + (f"{cfg.eval_concurrency} requests in flight" if cfg.eval_concurrency > 1 else "one request at a time") + ")._"]
+          + (f"up to {cfg.eval_concurrency} requests in flight; the Agent score uses the single-stream estimate"
+             if cfg.eval_concurrency > 1 else "one request at a time") + ")._"]
     return L
 
 
