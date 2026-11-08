@@ -51,6 +51,17 @@ small.d{font-size:11px;margin-left:4px}.good{color:#3fb950}.bad{color:#f85149}.d
 .tablewrap2{overflow-x:auto}
 .qt th,.qt td{background:transparent}.qt th{position:static}
 summary{cursor:pointer}
+/* column chooser + per-header hide button */
+th .colx{display:inline-block;margin-left:5px;padding:0 4px;border-radius:4px;color:#6e7681;font-weight:700;opacity:.35}
+th:hover .colx{opacity:1}th .colx:hover{color:#ff7b72;background:#3a1d1f}
+th[data-k="model"] .colx{display:none}
+#colpanel{margin-bottom:10px}
+#colpanel>summary{display:inline-flex;gap:10px;align-items:center}
+#colpanel .cgrp{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin:8px 0 0}
+#colpanel .cgrp>button.gname{min-width:150px;text-align:left;font-weight:600}
+#colpanel .tog.off{opacity:.45;text-decoration:line-through}
+#colpanel .tog.part{border-style:dashed}
+.tlink{color:#58a6ff;text-decoration:none;border-bottom:1px dotted #58a6ff}.tlink:hover{border-bottom-style:solid}
 footer{margin-top:40px}
 @media(max-width:900px){body{padding:12px}.charts{grid-template-columns:1fr}.fz{position:static}}
 </style></head><body>
@@ -76,6 +87,7 @@ footer{margin-top:40px}
 
 <h2>Full model comparison</h2>
 <div class="toolbar" id="toolbar"></div>
+<details class="card" id="colpanel"></details>
 <div id="tblwrap"><table id="tbl"></table></div>
 
 <div id="timesec" hidden><h2>Where the time went</h2>
@@ -398,7 +410,7 @@ function renderQuant(OKR){
 }
 
 /* ---------- comparison table ---------- */
-const FROZEN = {model:260, params_b:64, quant:84, load_s:78, vram_gb:236};   // widths of the frozen columns
+const FROZEN = {model:260, params_b:80, quant:100, load_s:88, vram_gb:250};   // widths of the frozen columns
 const rateKey = () => state.rate==='off' ? 'off' : 'peak';
 const ALLCOLS = [
  {k:'model',l:'Model'},
@@ -469,6 +481,85 @@ const ALLCOLS = [
  {k:'agent_quality',l:'Agent quality',dec:0,better:'high'},
  {k:'score_sweet',l:'Sweet spot',dec:0,better:'high'}
 ];
+/* Header tooltips and column groups (for the column chooser). Columns that already set c.tip keep it. */
+const LOW = ' Lower is better.', HIGH = ' Higher is better.';
+const COLINFO = {
+ model:['Model','<b>Model</b><br>Name as served by llama-swap. Click a row to make it the baseline (other rows show % change).'],
+ params_b:['Model','<b>Parameters</b><br>Total parameters in billions (GGUF header, else the file name). For a MoE this is all experts, not the active ones.'],
+ quant:['Model','<b>Quantization</b><br>Weight format from the file name (e.g. Q4_K_M, IQ3_XXS). Lower bits = smaller and faster, but less accurate.'],
+ arch:['Model','<b>Type</b><br>Dense or MoE, read from the GGUF header (expert count), not the name.'],
+ attn_type:['Model','<b>Attention</b><br>Attention layout from the GGUF header: GQA, MLA, SWA (sliding window) or hybrid SSM. It decides how much KV cache each token costs.'],
+ experts:['Model','<b>Experts</b><br>MoE experts used per token, of the total.'],
+ layers:['Model','<b>Full-attention layers</b><br>Layers that keep a KV entry for every token of context, of all layers. Sliding-window / SSM layers have a fixed cost instead.'],
+ gguf_gb:['Model','<b>GGUF GB</b><br>Size of the model file(s) on disk.'+LOW],
+ bpw:['Model','<b>Bits per weight</b><br>File bits &divide; parameters. Below ~4.5 quality usually drops faster.'],
+ ctx_size:['Launch','<b>Ctx</b><br>Context size the model was loaded with (llama-server <code>/props</code>). &#9888; = below MIN_CTX. Compare VRAM and prefill between models with similar Ctx.'],
+ n_ctx_train:['Launch','<b>Train ctx</b><br>Context length the model was trained for (GGUF header). Loading more than this rarely works well.'],
+ kv_type:['Launch','<b>KV type</b><br>KV-cache precision from the launch flags (<code>-ctk/-ctv</code>; f16 when not set). Amber = below LONGCTX_KV_MIN.'],
+ flash_attn:['Launch','<b>FA</b><br>Flash attention setting from the launch flags (<code>-fa</code>).'],
+ ubb:['Launch','<b>-ub / -b</b><br>Micro-batch and batch size from the launch flags. Larger values speed up prefill but use more VRAM.'],
+ parallel:['Launch','<b>Slots</b><br>Server slots (<code>--parallel</code> / <code>-np</code>): how many requests the server can run at once.'],
+ mmproj:['Launch','<b>mmproj</b><br>Vision projector file loaded with the model (<code>--mmproj</code>), if any.'],
+ offload:['Launch','<b>CPU offload</b><br>Weights kept in system RAM, read from the launch flags (<code>--n-cpu-moe</code>, <code>-ngl</code> &lt; 99, <code>-ot ...CPU</code>). Offloaded models are slower, most of all on prefill.'],
+ vram_gb:['VRAM & memory','<b>VRAM</b><br>Peak GPU memory used during the speed tests, with % of the card.'+LOW],
+ vram_fit:['VRAM & memory','<b>VRAM fit %</b><br>100% when VRAM use is inside the sweet-spot band (VRAM_SWEET_LOW&ndash;HIGH), less when it is far below it or close to full. Multiplies the Agent score to give the Sweet-spot score.'],
+ max_ctx_vram:['VRAM & memory','<b>Max ctx @'+META.max_ctx_pct+'%</b><br>Estimated context that would fit with VRAM at '+META.max_ctx_pct+'%: loaded ctx + spare VRAM &divide; KV per token, capped at the training context. * = approximate.'+HIGH],
+ kv_kib_token:['VRAM & memory','<b>KV KiB/tok</b><br>KV-cache memory per token of context at this KV type, over the full-attention layers.'+LOW],
+ kv_gb_ctx:['VRAM & memory','<b>KV GB @ctx</b><br>KV-cache memory at the loaded context (KV KiB/tok &times; Ctx).'+LOW],
+ vram_hint:['VRAM & memory','<b>VRAM tuning hint</b><br>Where the model sits against the sweet-spot band and which way to move (context, KV type, <code>--n-cpu-moe</code>, a bigger or smaller quant).'],
+ ram_delta_gb:['VRAM & memory','<b>RAM vs idle</b><br>Increase in system RAM over the baseline sampled with no model loaded.'+LOW],
+ ram_used_gb:['VRAM & memory','<b>System RAM</b><br>Absolute system RAM in use (MemTotal &minus; MemAvailable), peak during the tests.'],
+ ram_spill_gb:['VRAM & memory','<b>RAM spill</b><br>Estimated model weights held in system RAM (Server RAM minus the typical overhead). 0 for models fully on the GPU.'+LOW],
+ ram_proc_gb:['VRAM & memory','<b>Server RAM</b><br>Peak resident memory of the inference-server process, including CUDA/pinned-buffer overhead.'],
+ gpu_w:['Power & cost','<b>GPU W</b><br>Mean GPU power while generating.'+LOW],
+ idle_gpu_w:['Power & cost','<b>Idle W</b><br>GPU power with no model loaded (the baseline).'],
+ gpu_peak_w:['Power & cost','<b>Peak W</b><br>Highest GPU power sample during the tests.'],
+ cpu_w:['Power & cost','<b>CPU W</b><br>Mean CPU package power while generating (RAPL where available). Matters most for offloaded models.'+LOW],
+ gpu_util:['Power & cost','<b>GPU %</b><br>Mean GPU utilisation while generating. Low values on an offloaded model mean the CPU is the bottleneck.'],
+ gpu_temp:['Power & cost','<b>Temp</b><br>Peak GPU temperature during the tests.'],
+ energy_wh:['Power & cost','<b>Energy Wh</b><br>GPU + CPU energy for one Technical plus one Logic request.'+LOW],
+ j_per_token:['Power & cost','<b>J/token</b><br>Energy per generated token (GPU + CPU).'+LOW],
+ cost1m:['Power & cost','<b>Cost per 1M tokens</b><br>GPU + CPU energy only, at the selected electricity rate.'+LOW],
+ cost1kq:['Power & cost','<b>Cost per 1k queries</b><br>Average of the Technical and Logic requests, at the selected electricity rate. Scales with max_tokens.'+LOW],
+ load_s:['Speed','<b>Load s</b><br>Cold load time: from request to first reply with nothing loaded. Depends on disk speed and file size.'+LOW],
+ ttft_ms:['Speed','<b>TTFT ms</b><br>Time to first token on the short speed prompts (<code>timings.prompt_ms</code>).'+LOW],
+ latency_s:['Speed','<b>Latency s</b><br>Mean wall time of the Technical and Logic requests (prompt + full reply).'+LOW],
+ prefill_tps:['Speed','<b>Prefill t/s</b><br>Prompt-processing speed on the short prefill test (size in Prefill tok).'+HIGH],
+ prefill_tokens:['Speed','<b>Prefill tok</b><br>Size of the short prefill prompt, in tokens.'],
+ agent_ttft_s:['Speed','<b>Agent TTFT s</b><br>Time to first token for a ~'+Math.round((META.agent_prompt_tokens||0)/1000)+'k-token agent-style request (system prompt, tool catalogue, history), cold. 40% of the Agent speed factor.'+LOW],
+ agent_ttft_warm_s:['Speed','<b>Next-turn TTFT s</b><br>Time to first token for the following agent turn, with the shared prefix already in the KV cache.'+LOW],
+ cache_hit_pct:['Speed','<b>Cache hit %</b><br>Share of a follow-up prompt reused from the KV cache (<code>cache_n</code>). Low = multi-turn chats re-process the whole history.'+HIGH],
+ cache_speedup:['Speed','<b>Cache &times;</b><br>How much faster the cached follow-up prompt was processed than the cold one.'+HIGH],
+ tech_tps:['Speed','<b>Tech TPS</b><br>Generation speed on the Technical prompt (median of runs).'+HIGH],
+ logic_tps:['Speed','<b>Logic TPS</b><br>Generation speed on the Logic prompt (median of runs).'+HIGH],
+ avg_tps:['Speed','<b>Avg TPS</b><br>Mean of Tech and Logic generation speed, one request at a time. 25% of the Agent speed factor.'+HIGH],
+ eval_stage:['Evals','<b>Funnel stage</b><br>Last funnel stage the model reached. Models screened out earlier are not ranked against the finalists.'],
+ eval_stage1_avg_pct:['Evals','<b>First-stage avg %</b><br>Eval average over the first funnel stage only: the same questions for every model, so it compares screened-out models and finalists like for like.'+HIGH],
+ eval_inflight:['Evals','<b>In flight</b><br>Most questions this model answered at the same time, capped by its slots and KV pool.'],
+ time_total_s:['Evals','<b>Time min</b><br>Total benchmark time for this model across all phases (speed tests, loads, evals, long-ctx). See &ldquo;Where the time went&rdquo;.'],
+ eval_retry_pct:['Evals','<b>Retries</b><br>Questions that needed the No-Thinking retry (cut off, loop, thinking cap or timeout), count and %. &#9888; above '+RETRY_WARN+'% usually means a template or reasoning-format problem.'+LOW],
+ eval_quality:['Evals','<b>Eval &minus; retry penalty</b><br>Eval average after the retry penalty, in points: what the Agent score&rsquo;s quality part sees.'+HIGH],
+ goldilocks:['Scores','<b>Goldilocks</b><br>'+(META.goldilocks_mode==='log'?'ln(params)':'params')+' &times; avg TPS, for models at &le; '+META.max_vram_pct+'% VRAM. Ranks the Overall-balance podium.'+HIGH],
+ score_chat:['Scores','<b>Chat score</b><br>Avg TPS &times; (100 &minus; VRAM%): fast models that leave GPU memory free.'+HIGH],
+ score_agent:['Scores','<b>Agent score (0&ndash;100)</b><br>Quality first: eval credit vs the best model (ties within the noise count as 100), minus a retry penalty, then up to '+Math.round(META.agent_speed_weight*100)+'% off for speed (agent TTFT, s/q, TPS). Speed never lifts a clearly weaker model.'+HIGH],
+ agent_quality:['Scores','<b>Agent quality</b><br>The quality part of the Agent score alone (0&ndash;100), before the speed factor.'+HIGH],
+ score_sweet:['Scores','<b>Sweet spot</b><br>Agent score &times; VRAM fit: the best model that also sits in the VRAM band.'+HIGH],
+ budget_pass:['Budget','<b>Budget'+(BUD?' ('+esc(BUD.name)+')':'')+'</b><br>&#10003; when every rule of the budget profile passes. Hover a cell for the failing rules.'],
+};
+ALLCOLS.forEach(c=>{
+  const i = COLINFO[c.k]; let g = i && i[0], tip = i && i[1];
+  if (!g){
+    if (/^prefill_.+_tps$/.test(c.k)){ const l = c.k.slice(8,-4); g = 'Speed'; tip = `<b>Prefill at ${l} tokens</b><br>Prompt-processing speed on one cold, unique ${l}-token prompt. Offloaded MoEs slow down most at long prompts.`+HIGH; }
+    else if (/^eval_/.test(c.k)) g = 'Evals';
+    else if (/^longctx_/.test(c.k)) g = 'Long-ctx';
+    else if (c.bud){ g = 'Budget'; const R = (BUD && BUD.rules) || {};
+      const set = (c.bud==='VRAM' ? ['VRAM_RESERVE_GB','MAX_VRAM_PCT'] : [c.bud]).filter(k=>R[k]!=null).map(k=>`<code>${esc(k)}=${esc(R[k])}</code>`).join(', ');
+      tip = `<b>Budget rule: ${esc(c.l)}</b>${set?` (${set})`:''}${c.bud==='VRAM'?'<br>Model VRAM (increase over idle) + reserve &le; GPU total &times; MAX_VRAM_PCT.':''}<br>Pass/fail for this rule of the budget profile. Hover a cell for the measured numbers; ? = not measured (never a fail).`; }
+    else g = 'Other';
+  }
+  c.g = g; if (!c.tip && tip) c.tip = tip;
+});
+const GROUPS = ['Model','Launch','VRAM & memory','Power & cost','Speed','Evals','Long-ctx','Budget','Scores','Other'];
 // Where the model sits against the VRAM sweet spot, and what to try (offload = launched with --n-cpu-moe / -ngl / -ot flags).
 function vramHint(m){
   const p = m.vram_pct, tot = m.vram_total_gb; if (p==null || m.vram_gb==null) return null;
@@ -484,10 +575,21 @@ const hintCls = h => h.startsWith('OK') ? 'hint-ok' : h.startsWith('Too') ? 'hin
 const val = (m,c) => c.get ? c.get(m) : m[c.k];
 // Columns with no data in this run (e.g. Load s / RAM delta on Strata) are hidden instead of shown empty.
 const COLS = ALLCOLS.filter(c => c.k==='model' || ALL.some(m => m.status==='ok' && val(m,c)!=null));
-const HIDDEN = ALLCOLS.filter(c => !COLS.includes(c)).map(c => c.l);
-const FZ = {}; let fzLeft = 0;
-COLS.forEach(c => { if (FROZEN[c.k]) { FZ[c.k] = {left:fzLeft, w:FROZEN[c.k]}; fzLeft += FROZEN[c.k]; } });
-const LASTFZ = [...COLS].reverse().find(c => FZ[c.k])?.k;
+const NODATA = ALLCOLS.filter(c => !COLS.includes(c)).map(c => c.l);
+/* Columns hidden by the user (column chooser or the x in a header). Remembered in this browser by column key,
+   so the same view comes back for the next run's dashboard; storage may be unavailable, which is fine. */
+const COLSTORE = 'llmbench.hiddenCols.v1';
+const userHidden = (() => { try { return new Set(JSON.parse(localStorage.getItem(COLSTORE) || '[]')); } catch(e){ return new Set(); } })();
+userHidden.delete('model');
+const saveHidden = () => { try { localStorage.setItem(COLSTORE, JSON.stringify([...userHidden])); } catch(e){} };
+let VIS = [], FZ = {}, LASTFZ = null;
+function layoutCols(){
+  VIS = COLS.filter(c => !userHidden.has(c.k));
+  FZ = {}; let left = 0;
+  VIS.forEach(c => { if (FROZEN[c.k]) { FZ[c.k] = {left, w:FROZEN[c.k]}; left += FROZEN[c.k]; } });
+  LASTFZ = [...VIS].reverse().find(c => FZ[c.k])?.k;
+}
+layoutCols();
 const fzStyle = c => FZ[c.k] ? ` style="left:${FZ[c.k].left}px;width:${FZ[c.k].w}px;min-width:${FZ[c.k].w}px;max-width:${FZ[c.k].w}px"` : '';
 const fzClass = c => FZ[c.k] ? 'fz'+(c.k===LASTFZ?' last':'') : '';
 
@@ -553,10 +655,11 @@ function renderTable(){
     if (x==null && y==null) return 0; if (x==null) return 1; if (y==null) return -1;
     return (typeof x==='string' ? x.localeCompare(y) : x-y) * state.sd;
   });
-  $('tbl').innerHTML = '<thead><tr>' + COLS.map(c=>{
-      return `<th class="${fzClass(c)}" data-k="${c.k}"${fzStyle(c)}${c.tip?` data-tip="${esc(c.tip)}"`:''}>${c.tip?`<span class="tipd">${c.l}</span>`:c.l}${state.sk===c.k?(state.sd<0?' \u25BC':' \u25B2'):''}</th>`;
+  $('tbl').innerHTML = '<thead><tr>' + VIS.map(c=>{
+      const tip = (c.tip || `<b>${esc(c.l)}</b>`) + '<br><span style="color:#8b949e">Click to sort &middot; &times; to hide this column</span>';
+      return `<th class="${fzClass(c)}" data-k="${c.k}"${fzStyle(c)} data-tip="${esc(tip)}"><span class="tipd">${c.l}</span>${state.sk===c.k?(state.sd<0?' \u25BC':' \u25B2'):''}<span class="colx" data-hide="${c.k}" data-tip="Hide this column (bring it back with Columns or Show all)">&times;</span></th>`;
     }).join('') + '</tr></thead><tbody>' +
-    rows.map(m=>`<tr data-m="${encodeURIComponent(m.model)}"${base&&base.model===m.model?' class="sel"':''}>${COLS.map(c=>cell(m,c,base)).join('')}</tr>`).join('') + '</tbody>';
+    rows.map(m=>`<tr data-m="${encodeURIComponent(m.model)}"${base&&base.model===m.model?' class="sel"':''}>${VIS.map(c=>cell(m,c,base)).join('')}</tr>`).join('') + '</tbody>';
   wrap.scrollLeft = sx; wrap.scrollTop = sy;
   renderToolbar(base);
 }
@@ -567,11 +670,46 @@ function renderToolbar(base){
   const bl = base
     ? `<span><span class="good">\u2605 Baseline:</span> <b>${esc(base.model)}</b> &mdash; other rows show change vs this model (green = better, red = worse). <button class="tog" data-clear="1">Clear baseline</button> <span class="sub">(shown in red everywhere)</span></span>`
     : '<span class="sub">Click a column header to sort (click again to reverse). Click a model name anywhere (table row, winner cards, chart labels or dots) to highlight it in red everywhere and use it as the 100% baseline; click it again, or press Reset, to clear.</span>';
-  const hid = HIDDEN.length ? `<span class="sub">Hidden (no data this run): ${HIDDEN.join(', ')}</span>` : '';
-  $('toolbar').innerHTML = bl + rate + hid;
+  const hid = NODATA.length ? `<span class="sub">Not shown (no data this run): ${NODATA.join(', ')}</span>` : '';
+  const sortHidden = state.sk!=='model' && userHidden.has(state.sk) ? `<span class="hint-room">Sorted by a hidden column: ${esc((COLS.find(c=>c.k===state.sk)||{}).l||state.sk)}</span>` : '';
+  $('toolbar').innerHTML = bl + rate + sortHidden + hid;
+  renderColPanel();
+}
+
+/* ---------- column chooser ---------- */
+function renderColPanel(){
+  const p = $('colpanel'), open = p.open;
+  const n = COLS.filter(c=>!userHidden.has(c.k)).length;
+  const groups = GROUPS.map(g=>[g, COLS.filter(c=>c.g===g && c.k!=='model')]).filter(([,cs])=>cs.length);
+  p.innerHTML = `<summary><b>Columns</b> <span class="sub">${n} of ${COLS.length} shown${userHidden.size?' &middot; your choice is remembered in this browser':''}</span>` +
+      `<button class="tog" data-colall="1"${userHidden.size?'':' disabled'}>Show all columns</button></summary>` +
+    `<div class="sub" style="margin-top:6px">Click a column to hide or show it, or a group name to hide / show the whole group. <b>Only this group</b> keeps the Model columns (name, params, quant, ...) plus that group. You can also hover a header and click its &times;.</div>` +
+    groups.map(([g,cs])=>{
+      const shown = cs.filter(c=>!userHidden.has(c.k)).length, st = shown===cs.length ? 'on' : shown ? 'on part' : 'off';
+      return `<div class="cgrp"><button class="tog gname ${st}" data-colgrp="${esc(g)}" data-tip="Hide or show all ${esc(g)} columns">${esc(g)} (${shown}/${cs.length})</button>` +
+        `<button class="tog" data-colonly="${esc(g)}" data-tip="Show only the Model and ${esc(g)} columns">Only this group</button>` +
+        cs.map(c=>`<button class="tog ${userHidden.has(c.k)?'off':'on'}" data-colk="${c.k}"${c.tip?` data-tip="${esc(c.tip)}"`:''}>${c.l}</button>`).join('') + '</div>';
+    }).join('');
+  p.open = open;
+}
+function setHidden(keys, hide){ keys.forEach(k=>{ if (k==='model') return; hide ? userHidden.add(k) : userHidden.delete(k); }); saveHidden(); layoutCols(); renderTable(); }
+function bindColPanel(){
+  $('colpanel').onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    e.preventDefault();                                          // buttons in <summary> must not toggle the panel
+    TIPBOX.style.display = 'none';
+    if (b.dataset.colall){ userHidden.clear(); saveHidden(); layoutCols(); return renderTable(); }
+    if (b.dataset.colk) return setHidden([b.dataset.colk], !userHidden.has(b.dataset.colk));
+    const ofGroup = g => COLS.filter(c=>c.g===g && c.k!=='model').map(c=>c.k);
+    if (b.dataset.colgrp){ const ks = ofGroup(b.dataset.colgrp); return setHidden(ks, ks.some(k=>!userHidden.has(k))); }
+    if (b.dataset.colonly){ const keep = new Set([...ofGroup(b.dataset.colonly), ...ofGroup('Model')]); userHidden.clear();
+      COLS.forEach(c=>{ if (c.k!=='model' && !keep.has(c.k)) userHidden.add(c.k); }); saveHidden(); layoutCols(); return renderTable(); }
+  };
 }
 function bindTable(){
   $('tblwrap').onclick = e => {
+    const hx = e.target.closest('[data-hide]');
+    if (hx){ TIPBOX.style.display = 'none'; return setHidden([hx.dataset.hide], true); }
     const th = e.target.closest('th');
     if (th){ const k = th.dataset.k; if (state.sk===k) state.sd = -state.sd; else { state.sk=k; state.sd=1; } return renderTable(); }
     const tr = e.target.closest('tr[data-m]');
@@ -663,7 +801,19 @@ function renderTime(rows){
         scales:{x:{stacked:true, title:axTitle('minutes')}, y:{stacked:true, ticks:yTicks}}}});
 }
 
-$('hdr').innerHTML = `${META.count} models` + (META.tests.length ? ` &middot; <b style="color:#e6edf3">Tests:</b> ${META.tests.map(esc).join(', ')}${META.evals?` (profile ${esc(META.evals.profile)})`:''}` : '') +
+/* Header test list: each dataset links to the page it is loaded from (Hugging Face, or the source file for built-in sets). */
+const safeUrl = u => /^https:\/\//.test(u||'') ? u : null;
+function testLinks(){
+  const evTip = e => `<b>${esc(e.label)}</b><br>${esc(e.desc||'')}<br><span style="color:#8b949e">${e.repo==='builtin'?'Built into the benchmark':'Loaded from Hugging Face: '+esc(e.repo)+(e.revision?' @ '+esc(e.revision):' (unpinned)')} &middot; ${e.rows??'?'} questions this run. Click to open.</span>`;
+  return META.tests.map(t=>{
+    const e = EV.find(x=>x.short===t), u = e && safeUrl(e.url);
+    if (e) return u ? `<a class="tlink" href="${esc(u)}" target="_blank" rel="noopener noreferrer" data-tip="${esc(evTip(e))}">${esc(t)}</a>` : `<span class="tipd" data-tip="${esc(evTip(e))}">${esc(t)}</span>`;
+    if (t==='Speed test') return `<span class="tipd" data-tip="${esc('<b>Speed test</b><br>Cold load, Technical and Logic generation, prefill'+(PFL.length?' at '+PFL.join(', '):'')+(META.agent_prompt_tokens?', agent TTFT':'')+', power, VRAM and RAM. Measured on this machine, nothing downloaded.')}">${esc(t)}</span>`;
+    if (t==='Long-ctx') return `<span class="tipd" data-tip="${esc('<b>Long-context retrieval</b><br>Generated at run time (no dataset): vault codes and decoys hidden at spread-out depths of one '+LCL.join(' / ')+'-token document. Method after NIAH (Kamradt) and RULER (Hsieh et al., NVIDIA).')}">${esc(t)}</span>`;
+    return esc(t);
+  }).join(', ');
+}
+$('hdr').innerHTML = `${META.count} models` + (META.tests.length ? ` &middot; <b style="color:#e6edf3">Tests:</b> ${testLinks()}${META.evals?` (profile ${esc(META.evals.profile)})`:''}` : '') +
   ` &middot; ${esc(META.generated)} &middot; ${esc(META.backend)}<br>` +
   (META.partial ? '<b style="color:#d29922">Speed test only &mdash; the evaluations had not finished when this dashboard was saved. It is replaced automatically when they complete.</b><br>' : '') +
   (!META.has_speed ? 'Evaluations only &mdash; speed and hardware telemetry were not measured in this run.' : `<b style="color:#e6edf3">Host:</b> ${META.hardware ? esc(META.hardware) : 'VRAM limit '+META.vram_limit+' GB'} &middot; ` +
@@ -691,7 +841,7 @@ document.addEventListener('scroll', ()=>{ TIPBOX.style.display = 'none'; }, true
 if (EV.length || LCL.length){
   $('evsec').hidden = false;
   const mo = MOE ? ` &middot; margin of error (95%): ${EV.map(e=>MOE.per_dataset[e.key]?`${esc(e.short)} &plusmn;${MOE.per_dataset[e.key].moe.toFixed(0)}`:'').filter(Boolean).join(', ')}, average &plusmn;${MOE.average.moe.toFixed(0)} points` : '';
-  $('evsub').innerHTML = (EV.length ? `${EV.map(e=>`<b class="tipd" data-tip="${esc('<b>'+esc(e.label)+'</b><br>'+esc(e.desc||''))}">${esc(e.label)}</b> (${e.rows??'?'}${e.available?' of '+e.available:''} rows)`).join(' &middot; ')} &mdash; Test profile <b>${esc(EVM.profile)}</b>${mo}. Only the tests and models that were actually run are shown.` : 'Long-context retrieval only.')
+  $('evsub').innerHTML = (EV.length ? `${EV.map(e=>`<b class="tipd" data-tip="${esc('<b>'+esc(e.label)+'</b><br>'+esc(e.desc||''))}">${safeUrl(e.url)?`<a class="tlink" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">${esc(e.label)}</a>`:esc(e.label)}</b> (${e.rows??'?'}${e.available?' of '+e.available:''} rows)`).join(' &middot; ')} &mdash; Test profile <b>${esc(EVM.profile)}</b>${mo}. Only the tests and models that were actually run are shown.` : 'Long-context retrieval only.')
     + (MOE && MOE.rough ? `<div class="card" style="margin-top:8px;border-color:#d29922"><b style="color:#d29922">\u26A0 Rough guide only.</b> The <code>${esc(EVM.profile)}</code> profile asks so few questions that gaps smaller than the margin above are noise. Use it to drop clear losers, then re-run the finalists with <code>EVAL_PROFILE=standard</code> (&plusmn;10) or <code>thorough</code> (&plusmn;7) before choosing.</div>` : '')
     + (ALL.some(m=>(m.eval_retry_pct||0)>RETRY_WARN) ? `<div class="sub" style="margin-top:6px">\u26A0 = more than ${RETRY_WARN}% of a model's questions needed the No-Thinking retry. That usually points to a chat-template, <code>--jinja</code> / reasoning-format or sampling problem rather than the model itself; check it before judging the scores.</div>` : '');
   $('evcharts').innerHTML = [...EVKINDS.map(([k,t])=>['ev'+k,t]), ...(LCL.length?[['evlong',`Long-context retrieval (${LC.keys} keys per prompt, KV &ge; ${esc(LC.kv_min)})`]]:[]), ['evspeed','Quality vs speed (top-right is best)']].map(chartCard).join('');
@@ -703,7 +853,7 @@ if (!META.has_speed){      // evals-only run: no speed / hardware data to show
   $('speedtop').hidden = true; $('quantsec').hidden = true;
   document.querySelector('#filters').hidden = true;
 }
-buildFilters(); bindTable(); render();
+buildFilters(); bindTable(); bindColPanel(); render();
 
 $('meth').innerHTML = `<ul>
  ${!META.has_speed?'':`<li><b>Backend:</b> ${esc(META.backend)} (OpenAI-compatible <code>/v1/chat/completions</code>), non-streaming. The prompt cache is disabled for all speed tests.</li>
@@ -720,6 +870,7 @@ $('meth').innerHTML = `<ul>
  <li><b>Podium:</b> the top 3 in each category, among eligible models: <b>Overall balance</b> (ranked by Goldilocks), <b>Chat driver</b> (Chat score), <b>Agentic reasoner</b> (Agent score) and <b>VRAM sweet spot</b> (Sweet-spot score). The same model can appear in more than one row.</li>
  <li><b>VRAM sweet spot:</b> <code>Agent score &times; VRAM fit</code>. <b>VRAM fit</b> is 100% when the model uses ${META.vram_sweet_low}&ndash;${META.vram_sweet_high}% of the GPU, is ${Math.round(META.underuse_floor*100)}&ndash;100% below that (once a model fits, quality and speed decide, not how full the GPU is; the tuning hint still says when a bigger quant or lower <code>--n-cpu-moe</code> would fit), drops to 50% at ${META.vram_sweet_max}% and to 0 at 100% (no headroom for context or other apps). <b>VRAM tuning hint</b> in the table says which way to move. Set the band with <code>VRAM_SWEET_LOW / HIGH / MAX</code> in .env.</li>
  <li><b>Highlight:</b> click a model name anywhere (table row, winner cards, quantization table, chart labels, bars or dots). It turns red everywhere and becomes the table baseline; click it again or press Reset / Clear to remove it.</li>
+ <li><b>Table columns:</b> hover a header for what it measures; click it to sort. Hide columns with the &times; in a header or the <b>Columns</b> panel (single columns, whole groups, or <i>Only this group</i>); <b>Show all columns</b> brings the full table back. The choice is remembered in this browser for later dashboards. Test names in the page header link to the dataset each one was loaded from.</li>
  <li><b>Chat score:</b> <code>avg TPS &times; (100 &minus; VRAM%)</code>. Rewards a fast model that also leaves GPU memory free (for context or other apps).</li>
  <li><b>Agent score (0&ndash;100, quality first):</b> <b>1. Quality credit.</b> ${META.evals?`The model's eval average${LCL.length&&META.agent_longctx_weight>0?`, blended ${Math.round(META.agent_longctx_weight*100)}% with long-context retrieval when every model has it`:''}, compared with the best of the run. Anything within the noise margin of the best (default one standard error) counts as a tie at 100; below that the credit falls steeply (quadratic, 0 at ${META.agent_acc_span}&nbsp;points under the tie zone). Then the <b>retry penalty</b>: &times; (1 &minus; ${EVM.fallback_penalty}% &times; share of questions retried), applied after the tie zone so it also separates tied models. A model whose evals produced no score (every request failed) gets <b>no</b> Agent score, rather than a proxy on a different scale.`:`No evaluations ran, so a <b>proxy</b> stands in: dense-equivalent size (a MoE counts as &radic;(total &times; active)) on a log scale, times a mild penalty below ~4.5 bits per weight, relative to the best model of the run. It is a rough guide: run evals to rank for real.`} <b>2. Speed factor</b> (0&ndash;1): prompt processing 40% (agent-prompt TTFT, <code>1 &divide; (1 + TTFT &divide; ${META.agent_ttft_ref}s)</code>, if measured; else the longest prefill test, <code>ln(t/s) &divide; ln(${META.agent_prefill_ref})</code>), seconds per eval question 35% (<code>1 &divide; (1 + s/q &divide; ${META.agent_sec_ref})</code>), generation speed 25% (<code>ln(avg TPS) &divide; ln(${META.agent_tps_ref})</code>); missing parts are left out. It can remove at most ${Math.round(META.agent_speed_weight*100)}% of the credit: <code>score = credit &times; (1 &minus; ${META.agent_speed_weight} + ${META.agent_speed_weight} &times; speed)</code>. Speed ranks models of similar quality but never lifts a clearly weaker one. VRAM is not part of the Agent score (see the sweet spot). Tune with <code>AGENT_*</code> in .env.</li>
  <li><b>Limits:</b> max_tokens ${META.max_tokens.join(' / ')}; timeouts ${META.timeouts.join('s / ')}s.</li>

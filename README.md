@@ -32,7 +32,7 @@ A full run of ~28 models is dominated by the GPU generating eval answers. v2.1 a
 * **Click-to-highlight:** click a model name anywhere (table row, winner cards, quantization table, chart labels, bars or dots) and it turns red everywhere and becomes the table baseline. Click it again, or press Reset / Clear, to remove it.
 * **Rankings for real use:** Goldilocks (parameters × average TPS), Chat (speed × free VRAM), Agent (quality first, speed second, no VRAM) and Sweet spot (Agent × how well the model fits the GPU). See [Metric definitions](#metric-definitions).
 * **Strata fallback:** If llama-swap is down, the single model on a Strata server is benchmarked instead.
-* **Interactive dashboard:** Filters, sortable and baseline-comparable table, charts (including Accuracy & Pass Rate graphs for knowledge, math and coding) and a radar per podium model. Hover any eval column or dataset name for a short explanation of that test.
+* **Interactive dashboard:** Filters, sortable and baseline-comparable table, charts (including Accuracy & Pass Rate graphs for knowledge, math and coding) and a radar per podium model. Hover any column header or dataset name for a short explanation; hide the columns you don't need.
 * **Rich outputs:** Per-run CSV, appended history CSV, structured JSON (`results.json`), optional Markdown report, per-question eval JSONL logs, a run log, and the HTML dashboard.
 
 <img width="1410" height="769" alt="ss2" src="https://github.com/user-attachments/assets/f3790d98-cba0-4f8e-a990-e2dd9ed06c4d" />
@@ -89,6 +89,7 @@ llmbench/
   estimate.py           --estimate
   batchprobe.py         --batch-probe
   diagnostics.py        --demo and --check
+  reload.py             --reload
   cli.py                run orchestration
 selftests/              pytest suite with a mock llama-swap server (no GPU needed)
 ```
@@ -167,7 +168,16 @@ Just run it again with the same `.env`. Every answered question is kept in the r
 python benchmark.py --demo
 ```
 
-**11. Help - Lists all flags**
+**11. Rebuild the dashboard of the last run (no server needed)**
+
+```bash
+python benchmark.py --reload                                  # OUTPUT_DIR/results.json, the newest finished run
+python benchmark.py --reload results/benchmark_20261109_004502.json
+```
+
+Mainly for working on the dashboard itself: it rebuilds the page from a finished run's JSON with the current dashboard code and writes `results/benchmark_dashboard_<run>_reload.html` (the run's own dashboard is kept) plus `benchmark_dashboard.html`. Nothing is measured or rescored: every number, score and ranking is the one the run stored, and the run's own settings are used rather than your current `.env`. Needs `JSON=true` (the default) during the run.
+
+**12. Help - Lists all flags**
 
 ```bash
 python benchmark.py --help
@@ -371,11 +381,11 @@ Missing measurements are `null`, never `NaN`. A JSON file is also written when e
 
 ## The dashboard
 
-* **Header:** Model count, date, your host hardware (CPU, RAM, GPU) and the power sources used.
+* **Header:** Model count, the tests run, date, your host hardware (CPU, RAM, GPU) and the power sources used. Each dataset name links to the Hugging Face page it was loaded from (the pinned revision when `EVAL_<DATASET>_REVISION` is set; built-in tool calling links to its source file); hover it for a description.
 * **Filters:** A sticky toggle bar for quantization, Dense/MoE, parameter-size bucket, "Hide VRAM ≥95%" and "Hide failed".
 * **Top 3 Goldilocks podium:** Gold/silver/bronze cards ranking Overall Balance, Chat Driver, and Agentic Reasoner (which factors in eval quality).
 * **Charts:** Generation speed, VRAM vs speed, power efficiency, energy per token, TTFT leaderboard, latency vs throughput, prefill vs generation, active vs idle GPU power, speed by quantization, and **Accuracy & Pass rates** (knowledge, math and coding shown as separate groups).
-* **Full model comparison:** Columns with no data in a run are hidden automatically. Click a row to set it as a baseline, and every other row shows its +/- % against it. Models that are not ranked (incomplete evals, screened out by the funnel) or whose evals were skipped carry a badge; hover it for the reason.
+* **Full model comparison:** Hover any column header for what it measures and which way is better. Hide columns with the × in a header or the **Columns** panel (single columns, whole groups such as Speed or Evals, or *Only this group*); **Show all columns** restores the full table. The choice is remembered in your browser, so the next run's dashboard opens with the same view. Columns with no data in a run are hidden automatically. Click a row to set it as a baseline, and every other row shows its +/- % against it. Models that are not ranked (incomplete evals, screened out by the funnel) or whose evals were skipped carry a badge; hover it for the reason.
 * **Where the time went:** time per model and phase (speed tests, eval load, long context, each dataset) as a stacked chart, the totals, and the thinking vs answer tokens generated.
 * **Quantization analysis and methodology:** Per-quant averages, plus the exact definitions used for this run.
 

@@ -421,3 +421,50 @@ def test_probe_steady_gain_and_recommendation():
     assert recommend(qwen) == 1            # request errors (a KV pool that overflowed) always block a level
     big = [dict(qwen[0], n=48), dict(qwen[1], n=48, errors=0, agree=0.80, acc=95.0)]
     assert recommend(big) == 1             # from 40 questions up, agreement below 90% blocks the level
+
+
+def test_dashboard_dataset_links_and_column_tools(tmp_path):
+    """Header test names link to their dataset page; the table has the column chooser and per-header tooltips."""
+    from llmbench.config import EVAL_SPECS
+    from llmbench.reporting.dashboard import TEMPLATE_PATH, dataset_url
+    assert dataset_url(EVAL_SPECS["mmlu_pro"]) == "https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro"
+    assert dataset_url(EVAL_SPECS["gsm8k"], "abc123") == "https://huggingface.co/datasets/openai/gsm8k/tree/abc123"
+    assert dataset_url(EVAL_SPECS["toolcall"]).endswith("/llmbench/evals/toolcall_cases.py")
+    html = TEMPLATE_PATH.read_text(encoding="utf-8")
+    for needle in ('id="colpanel"', "data-colall", "data-hide=", "COLINFO", "testLinks()"):
+        assert needle in html
+
+
+def _dash_data(path):
+    line = next(l for l in open(path, encoding="utf-8") if l.startswith("const D = "))
+    return json.loads(line[len("const D = "):line.index(", META = D.meta")].replace("<\\/", "</"))
+
+
+def test_reload_rebuilds_the_same_dashboard_from_json(cfg, monkeypatch, tmp_path):
+    """--reload must show exactly what the run measured and scored, with the run's settings, not today's .env."""
+    from llmbench import reload as rl
+    from llmbench.diagnostics import demo_results
+    from llmbench.reporting.dashboard import render_dashboard
+    from llmbench.reporting.json_out import write_json
+    monkeypatch.setattr(rl, "SCRIPT_DIR", tmp_path)            # don't touch the real benchmark_dashboard.html
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    cfg.eval_profile = "funnel"
+    rows = demo_results(cfg)
+    rows[1]["eval_screened"], rows[1]["eval_stage"] = True, "quick"
+    finalize(rows, cfg)
+    original = tmp_path / "orig.html"
+    render_dashboard(rows, cfg, original, "demo data", "Test host")
+    write_json(rows, cfg, {"stamp": "20261109_000000", "hardware": "Test host", "cpu_source": "demo data",
+                           "status": "complete"}, "20261109_000000")
+
+    monkeypatch.setenv("EVAL_PROFILE", "quick")                # today's .env differs from the run's settings
+    out = rl.reload_dashboard(load_config(), str(cfg.output_dir))
+    assert out.name == "benchmark_dashboard_20261109_000000_reload.html"
+    a, b = _dash_data(original), _dash_data(out)
+    a["meta"].pop("generated"), b["meta"].pop("generated")
+    assert b["meta"] == a["meta"]
+    assert len(a["models"]) == len(b["models"])
+    for ra, rb in zip(a["models"], b["models"]):
+        for k, v in ra.items():                               # every value the dashboard had is back, unchanged
+            assert rb.get(k) == v or (v is None and k not in rb), (ra["model"], k, v, rb.get(k))
+    assert (tmp_path / "benchmark_dashboard.html").read_text() == out.read_text()

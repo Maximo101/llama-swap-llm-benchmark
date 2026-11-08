@@ -343,6 +343,10 @@ def _parser():
     ap.add_argument("--batch-probe", action="store_true",
                     help="measure what answering several eval questions at once gains on this GPU: the same "
                          "questions at BATCH_PROBE_LEVELS requests in flight, per selected model; then exit")
+    ap.add_argument("--reload", nargs="?", const="", metavar="JSON",
+                    help="rebuild the dashboard from the newest finished run (OUTPUT_DIR/results.json, or the "
+                         "given benchmark_<stamp>.json / folder) with the current dashboard code, then exit; "
+                         "nothing is benchmarked or rescored (for working on the dashboard)")
     return ap
 
 
@@ -382,6 +386,10 @@ def main():
     cfg = load_config()
     if args.speed_only:
         cfg.run_eval_tests, cfg.run_speed_tests = False, True
+    if args.reload is not None:
+        from .reload import reload_dashboard
+        reload_dashboard(cfg, args.reload or None)
+        return
     if _utility_command(args, cfg):
         return
     cfg.output_dir.mkdir(parents=True, exist_ok=True)

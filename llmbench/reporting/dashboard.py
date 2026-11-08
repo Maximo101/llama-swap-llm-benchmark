@@ -12,6 +12,17 @@ from .margin import margin_of_error
 
 TEMPLATE_PATH = Path(__file__).with_name("dashboard.html")
 GPU_LABELS = {"nvml": "NVML (pynvml)", "smi": "nvidia-smi", "none": "no GPU telemetry"}
+REPO_URL = "https://github.com/Maximo101/llama-swap-llm-benchmark"
+BUILTIN_URLS = {"toolcall": REPO_URL + "/blob/main/llmbench/evals/toolcall_cases.py"}
+
+
+def dataset_url(spec, revision=None):
+    """Link for a dataset in the dashboard header: its Hugging Face page (the pinned revision when set),
+    or the source file for built-in sets."""
+    if spec.get("builtin"):
+        return BUILTIN_URLS.get(next((k for k, s in EVAL_SPECS.items() if s is spec), ""), REPO_URL)
+    url = f"https://huggingface.co/datasets/{spec['repo']}"
+    return f"{url}/tree/{revision}" if revision else url
 
 def render_dashboard(results, cfg, path, cpu_source="none", hardware="", partial=False):
     meta = {"partial": partial, "generated": datetime.now().strftime("%Y-%m-%d %H:%M"), "count": len(results),
@@ -31,8 +42,9 @@ def render_dashboard(results, cfg, path, cpu_source="none", hardware="", partial
     for k, s in EVAL_SPECS.items():
         if any(r.get(f"eval_{k}_n") or r.get(f"eval_{k}_na") for r in results):
             info = (cfg.eval_info or {}).get(k, {})
+            rev = (cfg.eval_revisions or {}).get(k)
             evs.append({"key": k, "label": s["label"], "short": s["short"], "kind": s["kind"], "repo": s["repo"],
-                        "desc": s.get("desc", ""),
+                        "desc": s.get("desc", ""), "revision": rev, "url": dataset_url(s, rev),
                         "rows": info.get("rows"), "available": info.get("available")})
     meta["tests"] = (["Speed test"] if meta["has_speed"] else []) + [e["short"] for e in evs]
     meta["evals"] = {"profile": cfg.eval_profile, "seed": cfg.eval_seed, "datasets": evs,
