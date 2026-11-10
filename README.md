@@ -168,6 +168,8 @@ python benchmark.py --estimate
 
 Uses earlier runs' JSON in `results/` (measured tok/s, prefill speed, seconds and tokens per question) and any batch-probe result; models without history get a rough guess from their size and quantisation and the GPU's memory bandwidth (`ESTIMATE_GPU_BW_GBS`, PART 1: `auto` looks up the detected NVIDIA GPU in a table of common cards, else 670 GB/s; a number overrides it, e.g. when estimating for another machine's GPU). Models that `EVAL_SKIP_INELIGIBLE` would skip (context below `MIN_CTX`, a failed budget rule) get no eval time. It also reads the result cache: it says whether the run will reuse cached answers or is a full re-run (`EVAL_RESULT_CACHE=refresh` / `false`), shows per model how many answers it expects to reuse, and counts only the rest (plus any sanity-check re-asks). A one-line estimate is also printed at the start of every run.
 
+<img width="1199" height="727" alt="d3" src="https://github.com/user-attachments/assets/e21dc80c-17e3-4518-9119-7fc2cdfd9336" />
+
 **8. Measure what batched evaluation gains on your GPU**
 
 ```bash
@@ -461,8 +463,6 @@ Missing measurements are `null`, never `NaN`. A JSON file is also written when e
 * **? Help:** what the colours mean with every threshold for this run (and the VRAM and tool-calling marks), how the toggles and family patterns work, and a rough speed-by-setup table: the generation speed to expect from a few typical GPUs and model sizes (estimates from memory bandwidth, not measurements), to read the tiers against your hardware.
 
 <img width="551" height="798" alt="m1" src="https://github.com/user-attachments/assets/0aab53fc-f4b0-434a-a1b3-52515a556116" />
-
-<img width="1199" height="727" alt="d3" src="https://github.com/user-attachments/assets/e21dc80c-17e3-4518-9119-7fc2cdfd9336" />
 
 ## Metric definitions
 
