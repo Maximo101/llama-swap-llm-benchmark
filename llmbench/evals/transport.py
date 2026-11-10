@@ -45,6 +45,7 @@ def _stream_sync(cfg, session, payload, timeout, guard):
         if remaining <= 0:
             return guard.result("timeout", time.monotonic() - t0)
         resp = None
+        guard.restart()
         try:
             try:
                 resp = session.post(cfg.chat_url, json=payload, stream=True, timeout=(min(30.0, remaining), remaining))
@@ -176,6 +177,7 @@ class AiohttpTransport:
             if remaining <= 0:
                 return guard.result("timeout", time.monotonic() - t0)
             resp = None
+            guard.restart()
             try:
                 try:
                     resp = await asyncio.wait_for(

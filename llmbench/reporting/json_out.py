@@ -49,7 +49,11 @@ _SECRETS = {"api_key", "strata_api_key", "ha_token"}
 _GROUPS = {
     "metadata": ["params_b", "active_b", "arch", "quant", "offload", "ctx_size"],
     "speed": ["load_s", "tech_tps", "logic_tps", "avg_tps", "prefill_tps", "prefill_tokens", "cache_hit_pct",
-              "cache_speedup", "ttft_ms", "gen_ms", "latency_s"],
+              "cache_speedup", "ttft_ms", "gen_ms", "latency_s",
+              # v2.3.1: the single runs, their spread, how tokens/s was obtained, the llama.cpp build, and the change
+              # against the previous run of the same model
+              "tps_samples", "tps_spread_pct", "tps_basis", "speed_retries", "build_info", "tps_prev",
+              "tps_change_pct", "build_prev"],
     "gpu": ["gpu_w", "gpu_peak_w", "idle_gpu_w", "gpu_util", "gpu_temp", "vram_gb", "vram_delta_gb",
             "vram_total_gb", "vram_pct"],
     "cpu": ["cpu_w", "cpu_util"],
@@ -58,14 +62,19 @@ _GROUPS = {
     "energy": ["energy_wh", "j_per_token", "tps_per_watt", "cost_1m_peak", "cost_1m_off", "cost_1kq_peak",
                "cost_1kq_off"],
     "scores": ["goldilocks", "score_chat", "score_agent", "agent_quality", "vram_fit", "score_sweet", "eligible",
-               "score_note"],
+               "score_note",
+               # v2.3: the Agent score's parts
+               "agent_composite_pct", "agent_longctx_pct", "agent_ctx_usable", "agent_ctx_factor", "agent_borderline",
+               "agent_basis"],
     "launch": ["kv_type", "flash_attn", "ngl", "n_cpu_moe", "ubatch", "batch", "parallel", "mmproj", "jinja",
                "override_tensor", "kv_unified"],
     "gguf": ["gguf_gb", "mmproj_gb", "bpw", "gguf_arch", "attn_type", "n_layers", "full_attn_layers", "swa_layers",
              "n_ctx_train", "expert_count", "expert_used", "kv_kib_token", "kv_swa_gb", "kv_approx", "kv_gb_ctx",
              "max_ctx_vram", "tok_per_word"],
     "context": ["ctx_ok", "prefill_8k_tps", "prefill_16k_tps", "prefill_32k_tps", "prefill_64k_tps", "prefill_128k_tps",
-                "agent_prompt_tokens", "agent_ttft_s", "agent_ttft_warm_s"],
+                "agent_prompt_tokens", "agent_ttft_s", "agent_ttft_warm_s",
+                # v2.3: prefill at depth
+                "prefill_depth_tps", "prefill_depth_ttft_s", "prefill_depth_tokens", "prefill_depth_new"],
     "long_context": ["longctx_32k_pct", "longctx_64k_pct", "longctx_128k_pct", "longctx_avg_pct", "longctx_kv_ok",
                      "longctx_note"],
     "budget": ["budget_profile", "budget_pass", "budget_fails", "budget"],
@@ -73,10 +82,13 @@ _GROUPS = {
 _TOP = {"model", "status", "error", "timestamp"}
 _EVAL_SUFFIXES = ("pct", "n", "err", "na", "fallback", "sec", "trunc", "degr", "cap", "salv", "tok", "wall", "conc",
                   # v2.1
-                  "rows", "sec1", "forced", "think", "answer", "ptok", "grade_s", "cached")
+                  "rows", "sec1", "forced", "think", "answer", "ptok", "grade_s", "cached",
+                  # v2.3.1: client-side seconds to the first token / first answer token (median, 95th percentile)
+                  "ttft", "ttfa", "ttfa95")
 _EVAL_RUN_KEYS = ("eval_avg_pct", "eval_avg_sec", "eval_retry_n", "eval_retry_pct", "eval_quality", "eval_incomplete",
                   "eval_skipped", "eval_screened", "eval_stage", "eval_stage1_avg_pct", "eval_inflight",
-                  "eval_sec_basis", "eval_cached_n", "eval_tok_think", "eval_tok_answer")
+                  "eval_sec_basis", "eval_cached_n", "eval_tok_think", "eval_tok_answer", "eval_sanity_n",
+                  "eval_sanity_diff", "eval_sampling")
 _TIMING_KEYS = ("time_total_s", "time_speed_s", "time_load_s", "time_eval_s", "time_longctx_s")
 
 
@@ -115,6 +127,8 @@ def _model_entry(r):
                          "stage1_avg_pct": r.get("eval_stage1_avg_pct"), "in_flight": r.get("eval_inflight"),
                          "sec_basis": r.get("eval_sec_basis"), "cached": r.get("eval_cached_n"),
                          "tokens_think": r.get("eval_tok_think"), "tokens_answer": r.get("eval_tok_answer"),
+                         "sanity_checked": r.get("eval_sanity_n"), "sanity_different": r.get("eval_sanity_diff"),
+                         "sampling": r.get("eval_sampling"),
                          "datasets": datasets}
     used.update(_TIMING_KEYS + ("timing",))
     out["timing"] = {"phases_s": r.get("timing") or {}, **{k: r.get(k) for k in _TIMING_KEYS}}
@@ -157,13 +171,19 @@ def build_report(results, cfg, info):
                  "cpu_power_source": info.get("cpu_source")},
         "config": _config_snapshot(cfg),
         "evaluation": ({"enabled": True, "profile": cfg.eval_profile, "seed": cfg.eval_seed,
-                        "temperature": cfg.eval_temperature, "concurrency": cfg.eval_concurrency,
+                        "temperature": "server" if cfg.eval_temperature is None else cfg.eval_temperature,
+                        "server_sampling_models": cfg.eval_server_sampling or None,
+                        "concurrency": cfg.eval_concurrency,
                         "http_backend": cfg.eval_http_backend, "code_sandbox": cfg.eval_sandbox_resolved or None,
                         "stream": cfg.eval_stream, "think_budget": cfg.eval_think_budget or None,
                         "loop_abort": cfg.eval_loop_abort, "salvage": cfg.eval_salvage,
                         "think_budgets": cfg.eval_think_budgets or None, "budget_forcing": cfg.eval_budget_forcing,
                         "sq_basis": next((r.get("eval_sec_basis") for r in results if r.get("eval_sec_basis")), None),
                         "result_cache": bool(cfg.eval_result_cache),
+                        "result_cache_mode": ("refresh" if cfg.eval_cache_refresh else "true")
+                                             if cfg.eval_result_cache else "false",
+                        "sanity_pct": cfg.eval_sanity_pct if cfg.eval_result_cache and not cfg.eval_cache_refresh
+                                      else 0, "sanity_adaptive": cfg.eval_sanity_adaptive,
                         "skip_ineligible": cfg.eval_skip_ineligible,
                         "funnel": ({"stages": [list(x) for x in funnel_stages(cfg)], "leaders": cfg.eval_leaders,
                                     "confidence": cfg.eval_funnel_conf, "gates": info.get("funnel") or []}

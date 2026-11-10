@@ -8,7 +8,7 @@ import string
 import sys
 import time
 
-from ..config import EVAL_SPECS, stage_rows
+from ..config import EVAL_SPECS, rows_for, stage_rows
 from .sandbox import resolve_sandbox
 
 _HANGUL = re.compile(r"[\u1100-\u11ff\u3130-\u318f\uac00-\ud7a3]")
@@ -249,7 +249,7 @@ def prepare_eval_data(cfg, rows=0):
         if spec.get("builtin"):
             from .toolcall_cases import build_items as builtin_items
             pool = builtin_items()
-            idxs = sample_indices(len(pool), rows, cfg.eval_seed, key)
+            idxs = sample_indices(len(pool), rows_for(key, rows), cfg.eval_seed, key)
             data[key] = [{**pool[i], "_row": i} for i in idxs]
             info[key] = {"rows": len(data[key]), "available": len(pool)}
             pools[key] = (len(pool), None)

@@ -6,8 +6,8 @@ import time
 
 from . import modelinfo
 from .client import post_chat, unload_all
-from .common import BenchError, Clock, avg, col, median, vmax
-from .config import PREFILL_SLOTS
+from .common import BenchError, Clock, avg, col, median, vmax, now
+from .config import DEPTH_NEW_TOKENS, PREFILL_SLOTS, depth_for
 from .scoring import blank, parse_quant
 from .telemetry.host import HostMeter
 
@@ -37,30 +37,42 @@ def request_energy_j(gpu_w, cpu_w, wall, e0=None, e1=None):
 def measure(cfg, session, gpu, host, ha, model, prompt, max_tokens, timeout, cache=False, messages=None) -> dict:
     """One timed generation plus the telemetry captured during exactly that window."""
     payload = {"model": model, "messages": messages or [{"role": "user", "content": prompt}],
-               "max_tokens": max_tokens, "temperature": cfg.temperature, "stream": False,
-               "cache_prompt": cache}
-    a = host.snap()
-    e0 = gpu.energy_mj()                      # exact GPU energy counter (NVML, opt-in) before the request ...
-    t0 = time.time()
+               "max_tokens": max_tokens, "stream": False, "cache_prompt": cache}
+    if cfg.temperature is not None:                       # TEMPERATURE=server (default): llama-swap's own sampling
+        payload["temperature"] = cfg.temperature
+    mark = {}
+
+    def start(attempt):                       # runs right before every send, so backoff sleeps and failed attempts
+        mark.update(a=host.snap(), e0=gpu.energy_mj(), t0=now(), attempts=attempt + 1)     # stay outside
+
+    start(0)
     try:
-        data = post_chat(cfg, session, payload, timeout)
+        data = post_chat(cfg, session, payload, timeout, on_attempt=start)
     finally:
-        t1 = time.time()
+        t1 = now()
         e1 = gpu.energy_mj()                  # ... and after it
         b = host.snap()
+    a, e0, t0 = mark["a"], mark["e0"], mark["t0"]
 
     usage, timings = data.get("usage") or {}, data.get("timings") or {}
     if not usage and not timings:
         raise BenchError("response contained neither 'usage' nor 'timings'")
     wall = t1 - t0
     tokens = usage.get("completion_tokens") or timings.get("predicted_n") or 0
-    tps = timings.get("predicted_per_second")
+    tps, basis = timings.get("predicted_per_second"), "server"
     if tps is None and tokens and wall > 0:     # fallback includes prompt processing time
-        tps = tokens / wall
+        tps, basis = tokens / wall, "wall"      # v2.3.1: recorded as tps_basis, so the two are never mixed unseen
     if tps is None:
         raise BenchError("could not determine tokens/sec")
 
-    g = gpu.window(t0, t1)
+    # v2.3.1: a request shorter than a few polls may have no sample inside it; TimeSeries.window() then hands back
+    # the LAST sample, taken before the request (idle). Wait one poll and include the sample taken right after it.
+    poll = getattr(cfg, "gpu_poll_ms", 200) / 1000
+    if gpu.ok and wall < 3 * poll:
+        time.sleep(poll)
+        g = gpu.window(t0, t1 + poll)
+    else:
+        g = gpu.window(t0, t1)
     rw = host.ram.window(t0, t1)
     h = host.diff(a, b)
     cpu_w = h.get("cpu_w")
@@ -68,9 +80,9 @@ def measure(cfg, session, gpu, host, ha, model, prompt, max_tokens, timeout, cac
         cpu_w = ha.window_avg(t0, t1)
     gpu_w = avg(col(g, "gpu_w"))
     energy = request_energy_j(gpu_w, cpu_w, wall, e0, e1)
-    return {"tps": float(tps), "prompt_tps": timings.get("prompt_per_second"),
+    return {"tps": float(tps), "tps_basis": basis, "prompt_tps": timings.get("prompt_per_second"),
             "ttft_ms": timings.get("prompt_ms"), "gen_ms": timings.get("predicted_ms"),
-            "wall_s": wall, "tokens": tokens, "energy_j": energy,
+            "wall_s": wall, "tokens": tokens, "energy_j": energy, "attempts": mark["attempts"],
             "cache_n": timings.get("cache_n"), "prompt_n": timings.get("prompt_n"),
             "gpu_w": gpu_w, "gpu_peak_w": vmax(col(g, "gpu_w")), "gpu_util": avg(col(g, "gpu_util")),
             "gpu_temp": vmax(col(g, "gpu_temp")), "vram_gb": vmax(col(g, "vram_gb")),
@@ -104,20 +116,20 @@ def _idle_baseline(cfg, session, gpu, host, model, strata, unload_state):
         unload_state["warned"] = True
         print("  [warn] could not unload models via the API; load time and VRAM delta will be skipped")
     time.sleep(min(cfg.settle, 1.0) if strata else cfg.settle)
-    now = time.time()
+    t_now = now()
     span = max(0.5, min(3.0, cfg.settle))
-    base = gpu.window(now - span, now) if gpu.ok else []
+    base = gpu.window(t_now - span, t_now) if gpu.ok else []
     return {"unloaded": unloaded, "idle_gpu_w": avg(col(base, "gpu_w")), "base_vram": avg(col(base, "vram_gb")),
-            "ram_idle": avg(col(host.ram.window(now - span, now), "ram_gb"))}
+            "ram_idle": avg(col(host.ram.window(t_now - span, t_now), "ram_gb"))}
 
 
 def _cold_load(cfg, session, host, model, r, strata, unloaded, unload_state):
     """Step 2: the first request loads the model (it doubles as the warm-up). Then reads what was loaded: context
     size, launch flags (KV type, -fa, -ub/-b, offload, mmproj) and the GGUF header (modelinfo.collect)."""
-    t = time.time()
+    t = now()
     post_chat(cfg, session, {"model": model, "max_tokens": 8, "stream": False,
                              "messages": [{"role": "user", "content": "hi"}]}, cfg.timeout_load)
-    r["load_s"] = (time.time() - t) if unloaded else None
+    r["load_s"] = (now() - t) if unloaded else None
     host.ram.rescan()                           # the server process (re)started during the load
     modelinfo.collect(cfg, session, host, model, r, strata, unload_state)
     if r["ctx_size"] is None and not unload_state.get("ctx_warned"):
@@ -183,25 +195,94 @@ def _fit(target, ctx, reserve=96):
     return min(target, ctx - reserve) if ctx else target
 
 
-def prefill_at_lengths(cfg, session, gpu, host, ha, model, r, tpw):
+def prefill_at_lengths(cfg, session, gpu, host, ha, model, r, tpw, depth=None):
     """PREFILL_CTX_TESTS: one cold, unique prompt per length (no prefix cache), prompt tokens/s from llama-server's
-    timings. A length longer than the loaded context is skipped (blank)."""
-    for n in cfg.prefill_ctx_tests:
+    timings. A length longer than the loaded context is skipped (blank). Returns {length: prompt text} of the prompts
+    sent, so prefill_at_depth() can reuse the cold prompt of its depth instead of sending another one."""
+    sent = {}
+    depth = depth_for(cfg, r.get("ctx_size")) if depth is None else depth
+    # the depth prompt goes last, so nothing evicts it from the slot before prefill_at_depth() reuses it
+    for n in sorted(cfg.prefill_ctx_tests, key=lambda n: n == depth):
         if r.get("ctx_size") and n > r["ctx_size"]:
             continue
         if n in cfg.defer_prefill:      # the long-context test's first (cold) prompt of this length measures it
             continue
         words = max(50, int((_fit(n, r.get("ctx_size")) * 0.97 - 20) / tpw))
-        try:
-            x = measure(cfg, session, gpu, host, ha, model, prefill_prompt(words), 4, max(cfg.timeout_logic, n / 100))
+        text = prefill_prompt(words)
+        try:            # cache_prompt on: the prompt is unique (random), so this is still a cold measurement, and the
+                        # slot keeps it for the prefill-at-depth test that follows
+            x = measure(cfg, session, gpu, host, ha, model, text, 4, max(cfg.timeout_logic, n / 100),
+                        cache=n == depth)
         except BenchError as e:
             print(f"    [warn] prefill at {PREFILL_SLOTS[n]}: {e}")
             continue
         r[f"prefill_{PREFILL_SLOTS[n]}_tps"] = x["prompt_tps"]
+        sent[n] = (text, x.get("prompt_n"))
     got = [f"{PREFILL_SLOTS[n]} {r[f'prefill_{PREFILL_SLOTS[n]}_tps']:.0f}" for n in cfg.prefill_ctx_tests
            if r.get(f"prefill_{PREFILL_SLOTS[n]}_tps")]
     if got:
         print("  prefill t/s by prompt length: " + ", ".join(got))
+    return sent
+
+
+REUSE_SHARE = 0.9           # cache_n must cover at least this share of the depth, else the measurement is not kept
+
+
+def depth_fits(cfg, ctx):
+    """Is there a prefill-at-depth test for a model loaded with `ctx` (config.depth_for)?"""
+    return bool(depth_for(cfg, ctx))
+
+
+def depth_messages(base, tpw, seed=None):
+    """The next agent turn on top of `base`: the model's short reply, then a ~4k-token tool result to read."""
+    rng = random.Random(seed)
+    block = " ".join(rng.choice(_VOCAB) for _ in range(max(50, int((DEPTH_NEW_TOKENS - 40) / tpw))))
+    return [{"role": "user", "content": base}, {"role": "assistant", "content": "Noted."},
+            {"role": "user", "content": f"Tool result (read_file):\n{block}\n\nSummarise the tool result in one sentence."}]
+
+
+def prefill_at_depth(cfg, session, gpu, host, ha, model, r, tpw, sent=None, depth=None):
+    """PREFILL_DEPTH (v2.3): what an agent waits for each turn. The cold PREFILL_DEPTH prompt (reused from
+    prefill_at_lengths when it was just sent, else sent here) stays in the server's prompt cache; the same prompt
+    plus a ~4k-token tool result is sent next, and only the NEW tokens are processed: their tokens/s and time are
+    prefill_depth_tps / prefill_depth_ttft_s. Needs llama-server's prompt-cache reuse on the same slot: when the
+    reply's cache_n shows the prefix was not reused (another slot, cache off, a server without it) nothing is kept,
+    since a full re-prefill would be recorded as a much too slow 'depth' speed. Skipped when it does not fit."""
+    if not cfg.prefill_depth:
+        return
+    depth = depth_for(cfg, r.get("ctx_size")) if depth is None else depth
+    if not depth:
+        what = ("no 8k-64k depth" if cfg.prefill_depth_auto else f"{cfg.prefill_depth // 1024}k")
+        print(f"  prefill at depth: skipped ({what} + {DEPTH_NEW_TOKENS // 1024}k does not fit the loaded "
+              f"{(r.get('ctx_size') or 0) // 1024}k context)")
+        return
+    to = max(cfg.timeout_logic, depth / 100)
+    try:
+        if sent and depth in sent:
+            base, base_n = sent[depth]
+        else:                                   # not one of PREFILL_CTX_TESTS (or deferred): send the cold prompt here
+            base = prefill_prompt(max(50, int((depth * 0.97 - 20) / tpw)))
+            cold = measure(cfg, session, gpu, host, ha, model, base, 4, to, cache=True)
+            base_n = cold.get("prompt_n")
+            slot = PREFILL_SLOTS.get(depth)
+            if (slot and depth in cfg.prefill_ctx_tests and depth not in cfg.defer_prefill  # long-ctx fills deferred ones
+                    and r.get(f"prefill_{slot}_tps") is None):
+                r[f"prefill_{slot}_tps"] = cold["prompt_tps"]
+        x = measure(cfg, session, gpu, host, ha, model, None, 8, to, cache=True, messages=depth_messages(base, tpw))
+    except BenchError as e:
+        print(f"    [warn] prefill at depth: {e}")
+        return
+    reused, new = x.get("cache_n") or 0, x.get("prompt_n")
+    if not base_n or reused < REUSE_SHARE * base_n or not new or not x.get("prompt_tps"):
+        print(f"    [warn] prefill at depth not recorded: the server reused {reused:,} of ~{base_n or 0:,} prompt tokens "
+              "(no prompt-cache reuse on the same slot)")
+        return
+    r["prefill_depth_tps"] = x["prompt_tps"]
+    r["prefill_depth_ttft_s"] = x["ttft_ms"] / 1000 if x.get("ttft_ms") else None
+    r["prefill_depth_tokens"], r["prefill_depth_new"] = reused, new
+    print(f"  prefill at depth {PREFILL_SLOTS.get(depth, depth)}: {new:,} new tokens on top of {reused:,} cached: "
+          f"{x['prompt_tps']:.0f} tok/s"
+          + (f", {r['prefill_depth_ttft_s']:.1f}s" if r["prefill_depth_ttft_s"] is not None else ""))
 
 
 _TOOL_STUB = ('{"type":"function","function":{"name":"%s","description":"%s","parameters":{"type":"object",'
@@ -263,6 +344,13 @@ def _summarise(r, runs, cache_runs, base):
     gen = runs["tech"] + runs["logic"]
     every = gen + runs.get("prefill", [])
     r["tech_tps"], r["logic_tps"] = med("tech", "tps"), med("logic", "tps")
+    # v2.3.1: the individual runs and how far apart they are. A difference between two models smaller than their
+    # spread is not a ranking. spread = (max - min) / median over the runs of a prompt, the larger of the two prompts.
+    r["tps_samples"] = {k: [round(x["tps"], 2) for x in runs[k]] for k in ("tech", "logic")}
+    spreads = [100 * (max(v) - min(v)) / median(v) for v in r["tps_samples"].values() if len(v) > 1 and median(v)]
+    r["tps_spread_pct"] = round(max(spreads), 1) if spreads else None
+    r["tps_basis"] = "wall" if any(x.get("tps_basis") == "wall" for x in gen) else "server"
+    r["speed_retries"] = sum((x.get("attempts") or 1) - 1 for x in every) or None
     if "prefill" in runs:
         r["prefill_tps"] = med("prefill", "prompt_tps")
         r["prefill_tokens"] = med("prefill", "prompt_n")
@@ -308,12 +396,19 @@ def bench_model(cfg, session, gpu, host, ha, model, unload_state) -> dict:
             runs, cache_runs = _timed_runs(cfg, session, gpu, host, ha, model)
     except BenchError as e:
         r.update(status="error", error=str(e))
+        from .loadfail import describe
+        label, why = describe(cfg, session, model, str(e), r.get("vram_total_gb"))
+        if label:                                # "Failed to load (out of memory): ..." in the log and the dashboard
+            r["error"] = f"{label}: {e}\n  hint: {why}"
         return r
     _summarise(r, runs, cache_runs, base)
     tpw = tokens_per_word(runs)
     try:                                        # optional, slow tests: a failure never fails the model
         with Clock(r, "prefill_ctx"):
-            prefill_at_lengths(cfg, session, gpu, host, ha, model, r, tpw)
+            depth = depth_for(cfg, r.get("ctx_size"))
+            sent = prefill_at_lengths(cfg, session, gpu, host, ha, model, r, tpw, depth)
+        with Clock(r, "prefill_depth"):
+            prefill_at_depth(cfg, session, gpu, host, ha, model, r, tpw, sent, depth)
         with Clock(r, "agent_ttft"):
             agent_ttft(cfg, session, gpu, host, ha, model, r, tpw)
     except BenchError as e:

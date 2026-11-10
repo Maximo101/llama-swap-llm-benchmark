@@ -13,9 +13,16 @@ WHY NOT "KEEP THE TOP K"
   a spread-out field drops more.
 
 WHAT IS COMPARED
-  The quantity the Agent score ranks on: the mean of the per-dataset scores, blended with long-context retrieval
-  (AGENT_LONGCTX_WEIGHT) when every model has it. Its standard error combines the binomial error of each dataset:
-  SE = sqrt(sum SE_d^2) / D. Models with incomplete evals (a dataset that failed) cannot be ranked and are dropped.
+  The quantity the Agent score ranks on (v2.3, llmbench/agent.py): the composite of the evals (mean of the dataset
+  scores except tool calling), tool calling and long-context retrieval over the lengths every Agent-rankable model
+  of the stage ran, weighted AGENT_* (0.45 / 0.30 / 0.25 by default). Its standard error combines the binomial error
+  of each part (weights squared; the evals part is a mean of D datasets: sqrt(sum SE_d^2) / D). The context factor
+  and the retry penalty are NOT applied here: a gate only drops a model whose quality is clearly below the leaders,
+  so leaving them out keeps more models (the safe side). A model that cannot get an Agent score (context below
+  AGENT_CTX_MIN, tools below MIN_TOOLCALL_PCT) is still gated, on the parts it has. Models with incomplete evals (a
+  dataset that failed) cannot be ranked and are dropped.
+  Without a Config (unit tests, older callers) it is the v2.2 figure: the mean of the dataset scores, blended with
+  long-ctx at lc_weight when every model has it.
 """
 from __future__ import annotations
 
@@ -36,7 +43,8 @@ def _se_pct(p_pct, n):
 
 
 def model_estimate(r, keys, lc_weight=0.0, lc_n=None):
-    """(score, standard error) for a result row over the datasets `keys`, or None when a dataset has no score."""
+    """v2.2 figure (no Config): (score, standard error) over the datasets `keys`, or None when a dataset has no
+    score. Kept for callers without a Config; the gate uses composite_estimate() when it has one."""
     pcts, ses = [], []
     for k in keys:
         p, n, err = r.get(f"eval_{k}_pct"), r.get(f"eval_{k}_n") or 0, r.get(f"eval_{k}_err") or 0
@@ -56,15 +64,46 @@ def model_estimate(r, keys, lc_weight=0.0, lc_n=None):
     return mean, se
 
 
-def gate(rows, keys, leaders, conf=0.95, lc_weight=0.0, lc_n=None):
+def _complete(r, keys):
+    return all(r.get(f"eval_{k}_pct") is not None
+               and (r.get(f"eval_{k}_n") or 0) - (r.get(f"eval_{k}_err") or 0) > 0 for k in keys)
+
+
+def composite_estimates(rows, keys, cfg):
+    """{model: (score, se) or None} on the Agent composite (v2.3), plus the basis text."""
+    from .. import agent
+    complete = [r for r in rows if _complete(r, keys)]
+    _, has_tools = agent.eval_keys(rows)
+    rankable = [r for r in complete if not agent.exclusion(r, cfg, has_tools)]
+    b = agent.basis(cfg, rankable or complete, rows)
+    est = {}
+    for r in rows:
+        if r not in complete:
+            est[r["model"]] = None
+            continue
+        e = agent.composite(r, b["weights"], b["ekeys"], b["has_tools"], b["lengths"], b["lc_n"], _se_pct)
+        if e is None:                      # e.g. no long-ctx at the common lengths: gate it on the parts it has
+            w = {k: v for k, v in b["weights"].items() if k != "longctx"}
+            tot = sum(w.values()) or 1
+            e = agent.composite(r, {k: v / tot for k, v in w.items()}, b["ekeys"], b["has_tools"], [], b["lc_n"],
+                                _se_pct)
+        est[r["model"]] = e
+    return est, b["text"]
+
+
+def gate(rows, keys, leaders, conf=0.95, lc_weight=0.0, lc_n=None, cfg=None):
     """Decide which models go on to the next stage.
 
-    rows      result rows evaluated in this stage (dicts with eval_<k>_pct / _n / _err, longctx_avg_pct)
+    rows      result rows evaluated in this stage (dicts with eval_<k>_pct / _n / _err, longctx_<len>_pct)
     keys      datasets that count
+    cfg       the run's Config: rank on the Agent composite (v2.3). Without it: the v2.2 figure (model_estimate).
     Returns (keep: set of model names, report: {model: {"score", "se", "ub", "lb", "kept", "why"}}, bar)."""
     z = z_one_sided(conf)
-    use_lc = lc_weight > 0 and rows and all(r.get("longctx_avg_pct") is not None for r in rows)
-    est = {r["model"]: model_estimate(r, keys, lc_weight if use_lc else 0.0, lc_n) for r in rows}
+    if cfg is not None:
+        est, _ = composite_estimates(rows, keys, cfg)
+    else:
+        use_lc = lc_weight > 0 and rows and all(r.get("longctx_avg_pct") is not None for r in rows)
+        est = {r["model"]: model_estimate(r, keys, lc_weight if use_lc else 0.0, lc_n) for r in rows}
     ranked = sorted((m for m, e in est.items() if e), key=lambda m: -est[m][0])
     report = {}
     if not ranked:

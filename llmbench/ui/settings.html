@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llama-swap Benchmark · Settings</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--text:#e6edf3;--mute:#8b949e;--link:#58a6ff;--chip:#21262d;--chipon:#1f3a5f;
+  --hover:#1c2128;--warnbg:#3a1d1f;--okbg:#12261e;--red:#f85149;--green:#3fb950;--amber:#d29922;--shadow:rgba(0,0,0,.35);--input:#0d1117}
+:root[data-theme="light"]{--bg:#f6f8fa;--card:#ffffff;--line:#d0d7de;--text:#1f2328;--mute:#59636e;--link:#0969da;--chip:#f6f8fa;
+  --chipon:#ddf4ff;--hover:#f3f6f9;--warnbg:#ffebe9;--okbg:#dafbe1;--red:#cf222e;--green:#1a7f37;--amber:#9a6700;--shadow:rgba(31,35,40,.15);--input:#ffffff}
+*{box-sizing:border-box}
+body{margin:0 auto;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;padding:24px;max-width:1400px}
+a{color:var(--link)}code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+h1{margin:0 0 4px}h2{margin:28px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}h3{margin:16px 0 6px;font-size:15px}
+.sub{color:var(--mute)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:10px 0}
+.topline{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:8px 20px}
+.fg{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.fg>span.lbl{color:var(--mute);font-size:12px;margin-right:2px}
+.tog,button{background:var(--chip);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:4px 12px;font:inherit;font-size:12.5px;cursor:pointer}
+button:hover{border-color:var(--link)}.tog.on{background:var(--chipon);border-color:var(--link)}
+button.primary{background:var(--chipon);border-color:var(--link);font-weight:600}
+button.danger:hover{border-color:var(--red);color:var(--red)}
+button:disabled{opacity:.45;cursor:default}
+.bar{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;box-shadow:0 4px 12px var(--shadow)}
+input[type=text],input[type=password],input[type=search],select{background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:inherit;font-size:13px}
+input:focus,select:focus{outline:none;border-color:var(--link)}
+input.bad,select.bad{border-color:var(--red)}
+.part>summary{cursor:pointer;font-weight:700;font-size:16px}
+.sect{margin:12px 0 0}.sect h3{color:var(--mute);font-weight:600;font-size:13px;text-transform:uppercase;letter-spacing:.04em}
+.row{display:grid;grid-template-columns:minmax(220px,300px) minmax(220px,360px) 1fr;gap:4px 16px;padding:7px 4px;border-top:1px solid var(--line);align-items:start}
+.row:hover{background:var(--hover)}
+.row .k{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;word-break:break-all}
+.row .k .chg{display:block;color:var(--amber);font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:11px}
+.row .d{color:var(--mute);font-size:12.5px}.row .d b{color:var(--text);font-weight:600}
+.row .w input[type=text],.row .w input[type=password],.row .w select{width:100%}
+.prob{color:var(--red);font-size:12px;margin-top:3px}
+.sw{display:inline-flex;gap:6px;align-items:center}
+.secret{display:flex;gap:6px}.secret input{flex:1}
+pre.out{background:var(--input);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:420px;overflow:auto;white-space:pre-wrap;font-size:12px;margin:8px 0 0}
+#msg .card{margin:8px 0}.noteclose{float:right;margin:-4px -6px 0 8px;border:0;background:none;font-size:18px;line-height:1;cursor:pointer;color:var(--mute)}.ok{border-color:var(--green);background:var(--okbg)}.warn{border-color:var(--amber)}.errc{border-color:var(--red);background:var(--warnbg)}
+table.models{border-collapse:collapse;width:100%;font-size:12.5px}table.models td,table.models th{border-bottom:1px solid var(--line);padding:4px 8px;text-align:left}
+table.models th{color:var(--mute);font-weight:600}
+table.models td{white-space:nowrap}table.models td.note{white-space:normal;min-width:200px}
+.tscroll{overflow-x:auto}
+table.models td.note div{max-width:420px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+#helppop{position:fixed;z-index:60;top:60px;right:24px;width:min(720px,calc(100vw - 32px));max-height:calc(100vh - 90px);overflow:auto;box-shadow:0 10px 30px var(--shadow)}
+.fam{display:flex;gap:6px;margin:3px 0}.fam input{flex:1}
+.guide{grid-column:1/-1;margin:4px 0 2px;border:1px solid var(--line);border-radius:8px;padding:6px 10px;background:var(--bg)}
+.guide>summary{cursor:pointer;color:var(--link);font-size:12.5px}
+.guide p{margin:6px 0;color:var(--mute);font-size:12.5px}.guide p b{color:var(--text)}
+.guide table{border-collapse:collapse;font-size:12px;margin:6px 0}.guide td,.guide th{border-bottom:1px solid var(--line);padding:3px 8px;text-align:left;white-space:nowrap}
+.guide th{color:var(--mute);font-weight:600}.guide td.use{white-space:normal;min-width:220px;color:var(--mute)}
+.guide tr.me td{background:var(--chipon)}.guide .off{color:var(--mute);opacity:.6}.guide .rec{color:var(--green);font-weight:600}
+.guide tr.pick{cursor:pointer}.guide tr.pick:hover td{background:var(--hover)}
+.hidden{display:none!important}
+@media(max-width:900px){.row{grid-template-columns:1fr}body{padding:12px}}
+</style></head><body>
+<div class="topline"><div><h1>llama-swap Benchmark &middot; Settings</h1><div class="sub" id="hdr">loading&hellip;</div></div>
+<div class="fg"><span class="lbl">Theme</span><button class="tog" data-theme="auto">Auto</button><button class="tog" data-theme="light">Light</button><button class="tog" data-theme="dark">Dark</button><button id="helpbtn" style="font-weight:700">? Help</button></div></div>
+<div class="card" id="helppop" hidden></div>
+<div class="card errc hidden" id="remote"></div>
+<div id="msg"></div>
+
+<div class="card bar" id="actions">
+  <span class="fg"><button class="primary" id="save" title="Check the settings, then write .env (the old file is kept as .env.bak)">Save</button>
+    <button class="danger" id="defaults" title="Write the shipped .env.example values (tokens and keys are kept; favourites are untouched)">Return to defaults</button>
+    <span class="sub" id="dirty"></span></span>
+  <span class="fg"><span class="lbl">Favourite</span><select id="favsel"></select><button id="favload">Load</button><button id="favsave">Save as&hellip;</button><button class="danger" id="favdel">Delete</button></span>
+  <span class="fg"><button id="estimate" title="python benchmark.py --estimate with the settings on this page (saved or not)">Estimate</button>
+    <button id="openlatest" title="The newest dashboard (benchmark_dashboard.html)">Open latest dashboard</button>
+    <button id="reload" title="python benchmark.py --reload: rebuild the newest dashboard with this version's dashboard code">Reload dashboard</button></span>
+  <span class="fg"><span class="lbl">Run</span><button id="runall">Full run</button><button id="runspeed">Speed only</button><button id="runevals">Evals only</button><button id="runprobe" title="python benchmark.py --batch-probe: measures how much EVAL_CONCURRENCY > 1 speeds up evals on up to 4 models (loads them; takes minutes). The estimate uses its result.">Batch probe</button><button class="danger" id="stop" title="Ctrl+C for the run: it stops and writes partial results (dashboard, CSV, JSON)">Stop</button><span id="runst" class="sub"></span></span>
+</div>
+
+<div class="card hidden" id="outcard"><div class="topline"><b id="outtitle">Output</b><button id="outclose">Close</button></div><pre class="out" id="out"></pre></div>
+<div class="card hidden" id="runcard"><div class="topline"><b>Run</b><span class="sub" id="runinfo"></span></div><pre class="out" id="runlog"></pre></div>
+
+<h2>Checks</h2>
+<div class="card" id="report"></div>
+<details class="card" id="checkbox"><summary><b>python benchmark.py --check</b> <span class="sub" id="checkst">(telemetry sources, server and code sandbox; runs once per browser session)</span></summary><pre class="out" id="checkout"></pre></details>
+<div class="fg"><button id="check" title="python benchmark.py --check: telemetry sources and the code sandbox">Run --check again</button>
+  <button id="checkenv" title="--check-env on the settings on this page">--check-env on this page</button></div>
+
+<h2>Models</h2>
+<div class="card"><div class="fg"><button id="models" class="primary">List the server's models</button><span class="sub" id="modelsub">uses LLAMA_SWAP_URL below; ticking a model edits INCLUDE_MODELS / EXCLUDE_MODELS (Save to keep it)</span></div>
+<div id="modellist"></div></div>
+
+<h2>Compare runs</h2>
+<div class="card"><div class="sub">Pick finished runs (JSON in the output folder) to combine into one dashboard (<code>--compare</code>). Scores are re-computed over all of them together.</div>
+<div id="runs" class="fg" style="margin-top:8px"></div>
+<div class="fg" style="margin-top:8px"><label class="sw"><input type="checkbox" id="force"> --force (combine even when eval settings differ)</label><button id="compare">Compare</button><span id="cmplink"></span></div></div>
+
+<h2>Settings <span class="sub" style="font-size:14px;font-weight:400" id="setsub"></span></h2>
+<div class="fg"><input type="search" id="filter" placeholder="filter settings, e.g. AGENT or colour" style="width:280px"><label class="sw"><input type="checkbox" id="onlychg"> only changed / not at default</label></div>
+<div id="settings"></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let S = null, V = {}, ORIG = {}, SEC = {}, REP = null, checkTimer = null;
+
+/* theme: shared with the dashboard (same browser storage key) */
+const VIEWSTORE = 'llmbench.view.v1';
+const view = () => { try { return JSON.parse(localStorage.getItem(VIEWSTORE) || '{}') || {}; } catch(e){ return {}; } };
+const OSDARK = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+function applyTheme(){
+  const t = view().theme || 'auto', eff = t==='auto' ? (OSDARK && !OSDARK.matches ? 'light' : 'dark') : t;
+  document.documentElement.setAttribute('data-theme', eff);
+  document.querySelectorAll('[data-theme]').forEach(b => { if (b.tagName==='BUTTON') b.classList.toggle('on', b.dataset.theme===t); });
+}
+document.querySelectorAll('button[data-theme]').forEach(b => b.onclick = () => {
+  const v = view(); v.theme = b.dataset.theme; try { localStorage.setItem(VIEWSTORE, JSON.stringify(v)); } catch(e){}
+  applyTheme(); });
+if (OSDARK && OSDARK.addEventListener) OSDARK.addEventListener('change', applyTheme);
+applyTheme();
+
+/* API: every call is same-origin JSON with the X-LLMB-UI header (the server refuses anything else) */
+async function api(path, body){
+  const r = await fetch(path, body===undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json','X-LLMB-UI':'1'}, body:JSON.stringify(body)});
+  let d = {}; try { d = await r.json(); } catch(e){}
+  if (!r.ok) throw new Error(d.error || r.status+' '+r.statusText);
+  return d;
+}
+/* A message above the toolbar. keep = stays until closed (x) or replaced; tag = a newer message with the same tag
+   (or clearNotes(tag)) removes it, so e.g. a "Not saved" goes away once a save works. */
+function note(kind, html, keep, tag){
+  if (tag) clearNotes(tag);
+  const d = document.createElement('div'); d.className = 'card ' + kind; d.innerHTML = html;
+  if (tag) d.dataset.tag = tag;
+  if (keep){ const x = document.createElement('button'); x.className = 'noteclose'; x.title = 'Close'; x.textContent = '\u00d7';
+    x.onclick = () => d.remove(); d.prepend(x); }
+  $('msg').prepend(d);
+  if (!keep) setTimeout(() => d.remove(), 9000);
+}
+function clearNotes(tag){ document.querySelectorAll('#msg [data-tag="'+tag+'"]').forEach(n => n.remove()); }
+function showOut(title, text){ $('outtitle').textContent = title; $('out').textContent = text || '(no output)'; $('outcard').classList.remove('hidden'); $('outcard').scrollIntoView({block:'nearest'}); }
+$('outclose').onclick = () => $('outcard').classList.add('hidden');
+
+/* values: what is in .env now (secrets are never sent to the page) plus edits */
+const ent = k => S.entries.find(e => e.key===k);
+const shown = e => (e.key in V) ? V[e.key] : (e.active ? e.shipped : e.default);
+const changed = () => Object.keys(V).filter(k => (V[k] ?? '') !== (ORIG[k] ?? '')).concat(Object.keys(SEC));
+function setVal(k, v){ V[k] = v; markDirty(); scheduleCheck(); }
+function markDirty(){ const n = new Set(changed()).size; $('dirty').textContent = n ? `${n} unsaved change${n>1?'s':''}` : ''; }
+function payload(){ const values = {...V}; S.entries.forEach(e => { if (e.secret) delete values[e.key]; }); return {values, secrets: SEC}; }
+function scheduleCheck(){ clearTimeout(checkTimer); checkTimer = setTimeout(async () => {
+  try { REP = await api('/api/check', payload()); renderProblems(); renderReport(); } catch(e){} }, 600); }
+
+function widget(e){
+  const v = shown(e), id = 'w_'+e.key, prob = REP && REP.problems[e.key];
+  if (e.secret){
+    const set = S.secrets_set[e.key];
+    return `<div class="secret"><input type="password" id="${id}" data-k="${e.key}" data-secret="1" placeholder="${set?'set (hidden) – type to replace':'not set'}" autocomplete="off" value="${esc(SEC[e.key]||'')}"><button data-show="${e.key}">show</button>${set?`<button class="danger" data-clear="${e.key}">clear</button>`:''}</div>`;
+  }
+  if (e.kind==='bool'){
+    const on = ['1','true','yes','on'].includes(String(v).toLowerCase());
+    return `<label class="sw"><input type="checkbox" id="${id}" data-k="${e.key}" data-bool="1" ${on?'checked':''}> ${on?'true':'false'}</label>`;
+  }
+  if (e.choices.length){
+    const lv = String(v||'').toLowerCase(), opts = e.choices.includes(lv) || !lv ? e.choices : [lv, ...e.choices];
+    return `<select id="${id}" data-k="${e.key}" class="${prob?'bad':''}">${(!lv?['']:[]).concat(opts).map(c=>`<option value="${esc(c)}" ${c===lv?'selected':''}>${esc(c||'(default)')}${(S.guides.recommended||{})[e.key]===c?' (recommended)':''}</option>`).join('')}</select>`;
+  }
+  if (e.family){
+    const re = new RegExp(e.pattern), keys = Object.keys(V).filter(k => re.test(k) && !ent(k));
+    return keys.map(k => `<div class="fam"><input type="text" class="mono" value="${esc(k)}" disabled><input type="text" data-k="${esc(k)}" value="${esc(V[k])}"><button class="danger" data-famdel="${esc(k)}">&times;</button></div>`).join('')
+      + `<div class="fam"><input type="text" class="mono" placeholder="${esc(e.key)}" data-famnew="${esc(e.key)}"><input type="text" placeholder="value" data-famval="${esc(e.key)}"><button data-famadd="${esc(e.key)}">add</button></div>`;
+  }
+  return `<input type="text" id="${id}" data-k="${e.key}" value="${esc(v)}" class="${prob?'bad':''}" spellcheck="false" placeholder="${e.default?esc(e.default):'(not set)'}">`;
+}
+function rowHtml(e){
+  const isChg = (e.key in V) && String(V[e.key]) !== String(e.active ? e.shipped : e.default) && !e.family;
+  const dflt = e.secret ? '' : `<b>default:</b> <span class="mono">${esc(e.default || 'empty')}</span>${e.active && e.shipped!==e.default ? ` &middot; <b>.env.example:</b> <span class="mono">${esc(e.shipped)}</span>` : ''}${e.choices.length?` &middot; <b>one of:</b> ${e.choices.map(esc).join(', ')}`:''}`;
+  return `<div class="row" data-row="${esc(e.key)}" data-text="${esc((e.key+' '+e.desc+' '+e.section).toLowerCase())}" data-chg="${isChg?1:0}">
+    <div class="k">${esc(e.key)}${isChg?'<span class="chg">changed</span>':''}${(S.report&&S.report.missing.includes(e.key))?'<span class="chg">new: not in your .env yet</span>':''}</div>
+    <div class="w">${widget(e)}<div class="prob" id="p_${esc(e.key)}"></div></div>
+    <div class="d">${esc(e.desc)}${dflt?'<br>'+dflt:''}</div>${guideHtml(e.key)}</div>`;
+}
+/* guides under some settings (data from the server: config.PROFILE_ROWS, funnel stages, gpubw.GPU_TABLE) */
+const on = k => ['1','true','yes','on'].includes(String(shown(ent(k))||'').toLowerCase());
+const pm = m => m==null ? '&ndash;' : '&plusmn;' + m;
+function profileGuide(){
+  const G = S.guides, cur = String(shown(ent('EVAL_PROFILE'))||'').toLowerCase();
+  const envk = {gpqa:'EVAL_GPQA',mmlu_pro:'EVAL_MMLU_PRO',humaneval:'EVAL_HUMANEVAL',mbpp:'EVAL_MBPP',livecodebench:'EVAL_LIVECODEBENCH',gsm8k:'EVAL_GSM8K',math:'EVAL_MATH',toolcall:'EVAL_TOOLCALL'};
+  return `<details class="guide" open><summary>Guide: which profile, margin of error per test, how long it takes</summary>
+  <p><span class="rec">Recommended: <code>funnel</code></span>, then choose how far the finalists go with <code>EVAL_FUNNEL_FINAL</code> (guide below it). A fixed profile asks every model the same number of questions; the funnel spends most of the time on the models that can still win.</p>
+  <p><b>How the funnel works.</b> Every model answers the <code>quick</code> questions (11 per test). A confidence gate then compares each model with the leaders: a model whose score is clearly below them, even allowing for its margin of error, stops there and is shown as <i>screened out</i> (not ranked). The rest answer the next, larger set (the earlier answers are kept and new questions added: basic 24, moderate 43, standard 96, ...) and are gated again, up to <code>EVAL_FUNNEL_FINAL</code>. At least <code>EVAL_LEADERS</code> (5) models always go on, and <code>EVAL_FUNNEL_CONF</code> (0.95) sets how sure a gate must be. In testing it found the same winner as asking everyone everything with about 40&ndash;50% less work.</p>
+  <p><b>Margin of error</b> (95%): a test score of 80% on 43 questions means &ldquo;somewhere between about 65 and 95&rdquo;. Two models closer than that on one test can't be told apart; an average over several tests is tighter (roughly &divide;&radic;tests). Tool calling always asks all 32 cases (&plusmn;17); long-context retrieval asks ${G.longctx_n} codes per length (&plusmn;${G.longctx_margin}, <code>LONGCTX_TRIALS</code> &times; <code>LONGCTX_KEYS</code>). Greyed tests are switched off.</p>
+  <table><tr><th>Profile</th><th>Questions per test</th>${G.tests.map(t=>`<th class="${on(envk[t.key])?'':'off'}">${esc(t.label)}</th>`).join('')}</tr>
+  ${G.profiles.map(p=>`<tr class="${p.name===cur?'me':''}"><td><b>${esc(p.name)}</b>${p.name===cur?' &larr;':''}</td><td>${p.rows??'all'}</td>${G.tests.map(t=>{const x=p.tests[t.key]; return `<td class="${on(envk[t.key])?'':'off'}" title="${x.n?x.n+' questions':'depends on LCB_START/LCB_END'}">${x.n?pm(x.margin):(p.margin?'&plusmn;'+p.margin+'*':'all*')}</td>`;}).join('')}</tr>`).join('')}
+  <tr class="${cur==='funnel'?'me':''}"><td><b>funnel</b>${cur==='funnel'?' &larr;':''}</td><td colspan="${G.tests.length+1}">quick for everyone, then larger stages for the models still in the race, up to EVAL_FUNNEL_FINAL (see its guide)</td></tr></table>
+  <p>* LiveCodeBench's size depends on its date window. <b>Time:</b> it depends on your models and GPU &ndash; press <button data-estimate="1">Estimate</button> to see how long the settings on this page take (it uses your earlier runs and the cache).</p></details>`;
+}
+function finalGuide(){
+  const G = S.guides, cur = String(shown(ent('EVAL_FUNNEL_FINAL'))||'').toLowerCase();
+  return `<details class="guide" open><summary>Guide: where the funnel stops</summary>
+  <p>Only used with <code>EVAL_PROFILE=funnel</code>. The finalists end at this profile, so it sets the margin of error of the final ranking. Bigger = more certain and longer; a model screened out earlier never reaches it. <b>moderate</b> is a good everyday choice, <b>standard</b> for a release-quality comparison of close models, <b>thorough</b>/<b>deep</b> when the top models are within a few points. Check the time with Estimate.</p>
+  <table><tr><th>EVAL_FUNNEL_FINAL</th><th>Stages (questions per test)</th><th>Finalists' margin per test</th></tr>
+  ${G.finals.map(f=>`<tr class="${f.final===cur?'me':''}"><td><b>${esc(f.final)}</b>${f.final===cur?' &larr;':''}</td><td>${f.stages.map(s=>`${esc(s.name)} ${s.rows??'all'}`).join(' &rarr; ')}</td><td>${pm(f.stages[f.stages.length-1].margin)}</td></tr>`).join('')}</table></details>`;
+}
+function gpuGuide(){
+  const g = S.guides.gpu, cur = String(shown(ent('ESTIMATE_GPU_BW_GBS'))||'auto').toLowerCase();
+  return `<details class="guide" open><summary>Guide: GPU memory bandwidth (used by --estimate for models without earlier results)</summary>
+  <p>Generation speed is mostly memory bandwidth &divide; the model's active weights, so the estimate guesses tok/s from it until a run has measured the model. <b>auto</b> looks up the detected GPU below; an unknown GPU (or none) uses ${g.fallback} GB/s. A number overrides it (e.g. for the server's GPU when this page runs elsewhere). Click a row to use its value.</p>
+  <p><b>Now:</b> ${g.bw} GB/s &ndash; ${esc(g.source)}${g.detected.length?` &middot; detected: ${g.detected.map(d=>esc(d[0])+' '+d[1]+' GB').join(', ')}`:''}${cur!=='auto'?' (set by hand)':''}</p>
+  <table><tr><th>GPU</th><th>Architecture</th><th>VRAM</th><th>Bus</th><th>Memory</th><th>Bandwidth</th><th>Local AI suitability</th></tr>
+  ${g.table.map(r=>`<tr class="pick ${String(r[5])===cur||(cur==='auto'&&g.source===r[0]+' (detected)')?'me':''}" data-bw="${r[5]}"><td><b>${esc(r[0])}</b></td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td>${esc(r[4])}</td><td>${Number(r[5]).toLocaleString()} GB/s</td><td class="use">${esc(r[6])}</td></tr>`).join('')}</table>
+  <p>Bandwidths are the published memory specifications. Apple, AMD and Intel GPUs are not detected: enter their bandwidth by hand.</p></details>`;
+}
+const tempGuide = k => `<details class="guide"><summary>Guide: server or a number?</summary><p><b>server</b> (recommended) sends no temperature, so each model uses the sampling in its llama-swap config (<code>--temp</code>, <code>--top-k</code>, ...): the results match how you actually run the models. A number overrides every model's <code>--temp</code>${k==='EVAL_TEMPERATURE'?' (0 = greedy: repeatable, but some models loop or overthink without their recommended sampling). Changing it re-asks every cached answer, and runs with different values can\'t be combined with --compare':''}.</p></details>`;
+function guideHtml(k){
+  if (!S.guides) return '';
+  if (k==='EVAL_PROFILE') return profileGuide();
+  if (k==='EVAL_FUNNEL_FINAL') return finalGuide();
+  if (k==='ESTIMATE_GPU_BW_GBS') return gpuGuide();
+  if (k==='EVAL_TEMPERATURE' || k==='TEMPERATURE') return tempGuide(k);
+  return '';
+}
+
+function renderSettings(){
+  const parts = {};
+  S.entries.forEach(e => { ((parts[e.part] = parts[e.part] || {title:e.part_title, secs:{}}).secs[e.section] = parts[e.part].secs[e.section] || []).push(e); });
+  $('settings').innerHTML = Object.entries(parts).map(([n,p]) => `<details class="card part" ${n<3?'open':''}><summary>PART ${n} &ndash; ${esc(p.title)}</summary>` +
+    Object.entries(p.secs).map(([sec, es]) => `<div class="sect"><h3>${esc(sec)}</h3>${es.map(rowHtml).join('')}</div>`).join('') + '</details>').join('');
+  const unknown = Object.keys(V).filter(k => !ent(k) && !S.entries.some(e => e.family && new RegExp(e.pattern).test(k)));
+  if (unknown.length) $('settings').innerHTML += `<details class="card part" open><summary>Not in .env.example (kept as they are)</summary>` +
+    unknown.map(k => `<div class="row" data-row="${esc(k)}" data-text="${esc(k.toLowerCase())}" data-chg="1"><div class="k">${esc(k)}</div><div class="w"><input type="text" data-k="${esc(k)}" value="${esc(V[k])}"></div><div class="d">${esc((REP&&REP.unknown.find(u=>u.key===k)||{}).hint||'unknown to this version')}</div></div>`).join('') + '</details>';
+  $('setsub').textContent = `${S.entries.length} settings · ${S.env}`;
+  renderProblems(); applyFilter();
+}
+function renderProblems(){
+  document.querySelectorAll('.prob').forEach(p => p.textContent = '');
+  document.querySelectorAll('.bad').forEach(x => x.classList.remove('bad'));
+  Object.entries((REP||{}).problems || {}).forEach(([k,why]) => { const p = $('p_'+k); if (p) p.textContent = why; const w = $('w_'+k); if (w) w.classList.add('bad'); });
+}
+function applyFilter(){
+  const q = $('filter').value.trim().toLowerCase(), only = $('onlychg').checked;
+  document.querySelectorAll('.row[data-row]').forEach(r => r.classList.toggle('hidden', (q && !r.dataset.text.includes(q)) || (only && r.dataset.chg!=='1')));
+  /* while filtering: open the parts that have matches, hide sections and parts without any */
+  document.querySelectorAll('#settings .sect').forEach(s => s.classList.toggle('hidden', !!(q || only) && !s.querySelector('.row[data-row]:not(.hidden)')));
+  document.querySelectorAll('#settings details.part').forEach(d => {
+    const any = d.querySelector('.row:not(.hidden)');
+    d.classList.toggle('hidden', !!(q || only) && !any);
+    if ((q || only) && any) d.open = true;
+  });
+}
+$('filter').oninput = applyFilter; $('onlychg').onchange = applyFilter;
+
+$('settings').addEventListener('input', e => {
+  const t = e.target;
+  if (t.dataset.secret){ SEC[t.dataset.k] = t.value; markDirty(); return; }
+  if (t.dataset.k && !t.dataset.bool && t.tagName!=='SELECT') setVal(t.dataset.k, t.value);
+});
+$('settings').addEventListener('change', e => {
+  const t = e.target;
+  if (t.dataset.bool){ setVal(t.dataset.k, t.checked ? 'true' : 'false'); t.parentElement.lastChild.textContent = ' '+(t.checked?'true':'false'); }
+  else if (t.tagName==='SELECT') setVal(t.dataset.k, t.value);
+  if (/^(EVAL_PROFILE|EVAL_FUNNEL_FINAL|EVAL_[A-Z_]+|ESTIMATE_GPU_BW_GBS)$/.test(t.dataset.k||'')) renderSettings();   /* guides follow */
+});
+$('settings').addEventListener('click', async e => {
+  const tr = e.target.closest('tr.pick');
+  if (tr){ setVal('ESTIMATE_GPU_BW_GBS', tr.dataset.bw); renderSettings(); return; }
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.estimate){ $('estimate').click(); return; }
+  if (b.dataset.show){ const inp = $('w_'+b.dataset.show);
+    if (inp.type==='password' && !inp.value){ try { const d = await api('/api/secret', {key:b.dataset.show}); inp.value = d.value; inp.dataset.revealed = '1'; } catch(err){ note('errc', esc(err.message)); } }
+    inp.type = inp.type==='password' ? 'text' : 'password'; b.textContent = inp.type==='password' ? 'show' : 'hide'; return; }
+  if (b.dataset.clear){ if (!confirm(`Clear ${b.dataset.clear} in .env when you save?`)) return; SEC[b.dataset.clear] = ''; $('w_'+b.dataset.clear).value=''; markDirty(); return; }
+  if (b.dataset.famdel){ delete V[b.dataset.famdel]; markDirty(); scheduleCheck(); renderSettings(); return; }
+  if (b.dataset.famadd){ const f = b.dataset.famadd, k = document.querySelector(`[data-famnew="${CSS.escape(f)}"]`).value.trim().toUpperCase(), v = document.querySelector(`[data-famval="${CSS.escape(f)}"]`).value;
+    if (!new RegExp(ent(f).pattern).test(k)){ note('errc', `${esc(k)} does not fit ${esc(f)}`); return; }
+    setVal(k, v); renderSettings(); }
+});
+/* revealed secrets typed over count as a new value; just revealing does not */
+$('settings').addEventListener('focusout', e => { const t = e.target; if (t.dataset && t.dataset.revealed && SEC[t.dataset.k]===undefined) t.dataset.revealed = '1'; });
+
+function renderReport(){
+  const r = REP || S.report;
+  if (!S.env_exists){ $('report').innerHTML = `<b>No .env yet.</b> <span class="sub">The values below are the shipped .env.example; Save writes ${esc(S.env)}.</span>`; return; }
+  if (!r){ $('report').textContent = ''; return; }
+  const bits = [];
+  if (Object.keys(r.problems).length) bits.push(`<div class="prob"><b>Values that won't work:</b> ${Object.entries(r.problems).map(([k,w])=>`<code>${esc(k)}</code> ${esc(w)}`).join('; ')}</div>`);
+  if (r.unknown.length) bits.push(`<div><b>Unknown settings:</b> ${r.unknown.map(u=>`<code>${esc(u.key)}</code>${u.hint?' ('+esc(u.hint)+')':''}`).join(', ')}</div>`);
+  if (r.legacy.length) bits.push(`<div><b>Old names:</b> ${r.legacy.map(l=>`<code>${esc(l.key)}</code> &rarr; <code>${esc(l.now)}</code>`).join(', ')} (saving writes the new name)</div>`);
+  if (r.missing.length) bits.push(`<div><b>New in this version (not in your .env yet):</b> ${r.missing.map(k=>`<code>${esc(k)}</code>`).join(', ')}. Saving adds them with the values shown.</div>`);
+  if (r.duplicates.length) bits.push(`<div><b>Set twice:</b> ${r.duplicates.map(d=>`<code>${esc(d.key)}</code>`).join(', ')} (the last line wins; saving keeps one)</div>`);
+  if (r.shell.length) bits.push(`<div class="sub"><b>Your shell overrides:</b> ${r.shell.map(s=>`<code>${esc(s.key)}</code>`).join(', ')} (the shell wins over .env, also for runs started here)</div>`);
+  (r.info||[]).forEach(i => bits.push(`<div class="sub">${esc(i)}</div>`));
+  $('report').innerHTML = bits.length ? bits.join('') : '<span style="color:var(--green)">&#10003; No problems found in the settings.</span>';
+}
+
+/* favourites */
+function renderFavs(sel){
+  $('favsel').innerHTML = S.favourites.length ? S.favourites.map(f=>`<option ${f===sel?'selected':''}>${esc(f)}</option>`).join('') : '<option value="">(none yet)</option>';
+}
+$('favsave').onclick = async () => {
+  const name = prompt('Save the settings on this page as favourite (letters, digits, . _ -):', $('favsel').value || 'main'); if (!name) return;
+  if (S.favourites.includes(name) && !confirm(`Replace favourite "${name}"?`)) return;
+  try { const d = await api('/api/fav/save', {name, values: payload().values}); S.favourites = d.favourites; renderFavs(name);
+    note('ok', `Saved <code>configs/${esc(d.saved)}</code>: only the settings that differ from the shipped .env.example, no secrets.`); } catch(e){ note('errc', esc(e.message)); }
+};
+$('favload').onclick = async () => {
+  const name = $('favsel').value; if (!name) return;
+  if (changed().length && !confirm('Replace the unsaved changes on this page with the favourite?')) return;
+  try { const d = await api('/api/fav/load', {name});
+    const secrets = Object.fromEntries(Object.entries(V).filter(([k]) => ent(k) && ent(k).secret));
+    V = {...d.values, ...secrets}; SEC = {};
+    let msg = `Loaded favourite <b>${esc(name)}</b> onto this version's defaults (not saved yet: press Save).`;
+    if (d.renamed.length) msg += `<br>Renamed settings: ${d.renamed.map(([a,b])=>`<code>${esc(a)}</code> &rarr; <code>${esc(b)}</code>`).join(', ')}.`;
+    if (d.removed.length) msg += `<br>No longer exist (left out): ${d.removed.map(([k,v])=>`<code>${esc(k)}=${esc(v)}</code>`).join(', ')}.`;
+    note(d.conflicts.length ? 'warn' : 'ok', msg, d.conflicts.length || d.removed.length);
+    d.conflicts.forEach(c => {
+      const id = 'cf_'+c.key;
+      note('warn', `<b>${esc(c.key)}</b>: the shipped value changed from <code>${esc(c.shipped_then)}</code> to <code>${esc(c.shipped_now)}</code>, and your favourite has <code>${esc(c.favourite)}</code>. Keep which? <button id="${id}a">favourite: ${esc(c.favourite)}</button> <button id="${id}b">new default: ${esc(c.shipped_now)}</button>`, true);
+      $(id+'a').onclick = () => { setVal(c.key, c.favourite); renderSettings(); };
+      $(id+'b').onclick = () => { setVal(c.key, c.shipped_now); renderSettings(); };
+    });
+    markDirty(); renderSettings(); scheduleCheck();
+  } catch(e){ note('errc', esc(e.message)); }
+};
+$('favdel').onclick = async () => { const name = $('favsel').value; if (!name || !confirm(`Delete favourite "${name}"?`)) return;
+  try { const d = await api('/api/fav/delete', {name}); S.favourites = d.favourites; renderFavs(); } catch(e){ note('errc', esc(e.message)); } };
+
+/* save / defaults */
+$('save').onclick = async () => {
+  $('save').disabled = true;
+  try { const d = await api('/api/save', payload()); REP = d.report; renderProblems(); renderReport();
+    if (!d.saved){ note('errc', `<b>Not saved.</b> ${d.error ? '<pre class="out">'+esc(d.error)+'</pre>' : 'Fix the values marked in red first.'}`, true, 'save'); return; }
+    note('ok', `Saved <code>${esc(S.env)}</code>${d.backup?` (previous file: <code>${esc(d.backup)}</code>)`:''}.`, false, 'save'); await load();
+  } catch(e){ note('errc', esc(e.message), true, 'save'); } finally { $('save').disabled = false; }
+};
+$('defaults').onclick = async () => {
+  if (!confirm('Are you sure? .env gets the shipped .env.example values. Your tokens and keys are kept, favourites are untouched, and the old file is kept as .env.bak.')) return;
+  try { const d = await api('/api/defaults', {}); note('ok', `Back to the defaults${d.backup?` (previous file: <code>${esc(d.backup)}</code>)`:''}.`); await load(); } catch(e){ note('errc', esc(e.message)); }
+};
+
+/* commands (fixed on the server) */
+async function cmd(name, title, withValues, extra){
+  showOut(title, 'running…');
+  try { const d = await api('/api/cmd', {cmd:name, ...(withValues ? payload() : {}), ...(extra||{})});
+    if (d.report){ REP = d.report; renderProblems(); renderReport(); showOut(title, Object.keys(d.report.problems).length || d.report.unknown.length ? 'Problems shown under Checks and next to the settings.' : 'No problems found.'); return d; }
+    showOut(title + (d.code ? ` (exit code ${d.code})` : ''), d.output); return d;
+  } catch(e){ showOut(title, 'Error: ' + e.message); }
+}
+$('estimate').onclick = () => cmd('estimate', 'Estimate (settings on this page)', true);
+async function runCheck(){
+  $('checkst').textContent = 'running\u2026 (up to a few minutes: it tests the GPU readers and the code sandbox)'; $('checkout').textContent = '';
+  try { const d = await api('/api/cmd', {cmd:'check'});
+    $('checkout').textContent = d.output || '(no output)';
+    const warn = (d.output||'').split('\n').filter(l => /NOT AVAILABLE|FAIL|\[(warn|error)|No process matches|not reachable|refused/i.test(l)).length;
+    $('checkst').innerHTML = d.code ? `<span style="color:var(--red)">exit code ${d.code}</span>` : (warn ? `<span style="color:var(--amber)">&#9888; ${warn} line${warn>1?'s':''} to look at (not available / warnings): open to read</span>` : '<span style="color:var(--green)">&#10003; no warnings</span>');
+  } catch(e){ $('checkst').textContent = 'error: ' + e.message; }
+}
+$('check').onclick = () => { $('checkbox').open = true; runCheck(); };
+$('checkenv').onclick = () => cmd('check-env', '--check-env (settings on this page)', true);
+$('reload').onclick = async () => { const d = await cmd('reload', 'python benchmark.py --reload'); if (d && !d.code) note('ok', 'Dashboard rebuilt. <a href="/dashboard" target="_blank" rel="noopener">Open it</a>'); };
+$('openlatest').onclick = () => window.open('/dashboard', '_blank', 'noopener');
+$('compare').onclick = async () => {
+  const files = [...document.querySelectorAll('#runs input:checked')].map(i=>i.value);
+  if (files.length < 2){ note('warn', 'Pick at least two runs.'); return; }
+  const d = await cmd('compare', '--compare ' + files.join(' '), false, {files, force:$('force').checked});
+  if (d && !d.code) $('cmplink').innerHTML = '<a href="/compare" target="_blank" rel="noopener">Open the combined dashboard</a>';
+};
+
+/* models: the checklist edits INCLUDE_MODELS / EXCLUDE_MODELS */
+const listOf = k => String(shown(ent(k)) || '').split(',').map(x=>x.trim().replace(/^["']|["']$/g,'')).filter(Boolean);
+$('models').onclick = async () => {
+  $('modellist').innerHTML = '<span class="sub">asking the server…</span>';
+  try { const d = await api('/api/models', payload()); renderModels(d); } catch(e){ $('modellist').innerHTML = `<div class="prob">${esc(e.message)}</div>`; }
+};
+const fmtB = b => b >= 10 ? Math.round(b)+'B' : b.toFixed(1).replace(/\.0$/,'')+'B';
+function renderModels(d){
+  if (d.error){ $('modellist').innerHTML = `<div class="prob">${esc(d.error)}</div>`; return; }
+  const n = d.models.filter(m=>!m.skip).length;
+  $('modellist').innerHTML = `<div class="sub" style="margin:6px 0">${n} of ${d.models.length} will run &middot; INCLUDE_MODELS <code>${esc(listOf('INCLUDE_MODELS').join(', ')||'all')}</code> &middot; EXCLUDE_MODELS <code>${esc(listOf('EXCLUDE_MODELS').join(', ')||'none')}</code>${shown(ent('MODEL_FILTER'))?` &middot; MODEL_FILTER <code>${esc(shown(ent('MODEL_FILTER')))}</code>`:''}</div>
+   ${d.gguf_hint?`<div class="sub" style="margin:0 0 6px">${esc(d.gguf_hint)}</div>`:''}
+   <div class="tscroll"><table class="models"><tr><th>Run</th><th>Model</th><th>Why not</th><th title="GGUF file size (all shards)">File</th><th title="Total parameters; MoE: total / active">Params</th><th title="Context the model was trained for (GGUF)">Trained ctx</th><th title="Architecture (GGUF) and bits per weight">Arch / BPW</th><th>VRAM (last run)</th><th>ctx</th><th>Agent</th><th>Note (last run)</th></tr>` +
+   d.models.map(m => { const g = m.gguf||{}, src = g.src ? `from the ${g.src}` : '';
+   return `<tr><td><input type="checkbox" data-model="${esc(m.id)}" ${m.skip?'':'checked'}></td><td class="mono">${esc(m.id)}</td><td class="sub">${esc(m.skip||'')}</td>
+     <td title="${esc(src)}">${g.size_gb!=null?g.size_gb.toFixed(1)+' GB':'&ndash;'}</td>
+     <td title="${esc(src)}">${g.params_b!=null?fmtB(g.params_b)+(g.active_b!=null?' / '+fmtB(g.active_b)+' active':''):'&ndash;'}</td>
+     <td title="${esc(src)}">${g.n_ctx_train?Math.round(g.n_ctx_train/1024)+'k':'&ndash;'}</td>
+     <td title="${esc(src)}" class="sub">${esc(g.arch||'')}${g.bpw?` ${g.bpw.toFixed(2)}`:''}</td>
+     <td>${m.last&&m.last.vram_gb!=null?m.last.vram_gb.toFixed(1)+' GB ('+Math.round(m.last.vram_pct)+'%)':'&ndash;'}</td><td>${m.last&&m.last.ctx?Math.round(m.last.ctx/1024)+'k':'&ndash;'}</td>
+     <td>${m.last&&m.last.agent!=null?Math.round(m.last.agent):'&ndash;'}</td><td class="sub note" title="${esc(m.last&&m.last.note||'')}"><div>${esc(m.last&&m.last.note||'')}</div></td></tr>`; }).join('') + '</table></div>';
+  $('modellist').querySelectorAll('input[data-model]').forEach(cb => cb.onchange = () => {
+    const id = cb.dataset.model; let inc = listOf('INCLUDE_MODELS'), exc = listOf('EXCLUDE_MODELS');
+    const all = !inc.length || inc.some(x=>['all','*'].includes(x.toLowerCase()));
+    if (cb.checked){ exc = exc.filter(x=>x.toLowerCase()!==id.toLowerCase()); if (!all && !inc.includes(id)) inc.push(id); }
+    else { if (all) exc.push(id); else inc = inc.filter(x=>x.toLowerCase()!==id.toLowerCase()); if (!all && !inc.length) exc.push(id); }
+    setVal('INCLUDE_MODELS', all ? 'all' : inc.join(',')); setVal('EXCLUDE_MODELS', exc.join(','));
+    renderSettings(); $('models').click();
+  });
+}
+
+/* run / stop: the page follows the run's own log and re-attaches after a reload */
+let logOff = 0, logTimer = null, curLog = null;
+async function pollRun(){
+  try { const sent = logOff, d = await api('/api/log?offset=' + sent);
+    if (d.log && d.log !== curLog){                     /* another run's log: start it from the top */
+      curLog = d.log; logOff = 0; $('runlog').textContent = '';
+      if (sent > 0) return pollRun();
+    }
+    if (d.text){ $('runlog').textContent += d.text; $('runlog').scrollTop = $('runlog').scrollHeight; $('runcard').classList.remove('hidden'); }
+    logOff = d.offset || logOff;
+    setRun(d.running, d);
+    if (!d.running && logTimer){ clearInterval(logTimer); logTimer = null; runEnded(d); }
+  } catch(e){}
+}
+function whyFailed(){                  /* the last lines of the run log that say something (not the footer) */
+  const keep = $('runlog').textContent.split('\n').map(l => l.trim()).filter(l => l && !/^=+$/.test(l) &&
+    !/^(Benchmark stopped|Time taken|Script Finished|Benchmark started|Log file)/.test(l));
+  return keep.slice(-3).join('\n');
+}
+function runEnded(d){                  /* say how it ended; a failed run is not "ended" in green */
+  const s = d.status || {}, dash = ' <a href="/dashboard" target="_blank" rel="noopener">Open the latest dashboard</a>';
+  if (s.state === 'failed' || (!d.status && d.exited != null)){
+    const why = whyFailed();
+    note('errc', '<b>The run failed' + (s.phase ? ' while ' + esc(s.phase) : '') + (d.exited != null && !d.status ? ' (exit code ' + d.exited + ' before it started)' : '') + '.</b>' +
+      (why ? '<pre class="out">' + esc(why) + '</pre>' : ' No reason was recorded: run <code>python benchmark.py</code> in a terminal on this machine to see it.') +
+      ' Nothing was measured.', true, 'run');
+  } else if (s.state === 'interrupted' || s.state === 'partial'){
+    note('warn', 'The run stopped early (' + esc(s.state) + '): partial results were written.' + dash, true, 'run');
+  } else note('ok', 'The run ended.' + dash, true, 'run');
+}
+function setRun(running, d){
+  $('runst').textContent = running ? `running (pid ${d.pid}, since ${d.started})` : 'idle';
+  ['runall','runspeed','runevals','runprobe'].forEach(id => $(id).disabled = running); $('stop').disabled = !running;
+  if (running) $('runinfo').textContent = progress(d.status) + (d.log ? 'log: ' + d.log : '');
+}
+function progress(s){                  /* run_status.json: phase, model i of N, dataset, questions done */
+  if (!s || s.state !== 'running') return '';
+  let t = s.phase || '';
+  if (s.model) t += ': ' + (s.model_i && s.models ? `model ${s.model_i} of ${s.models}, ` : '') + s.model;
+  if (s.stage) t += ` [${s.stage}]`;
+  if (s.dataset && s.total) t += `, ${s.dataset} ${s.done || 0}/${s.total}`;
+  return t ? t + '  \u00b7  ' : '';
+}
+async function startRun(mode){
+  if (changed().length && !confirm('There are unsaved changes: the run uses the SAVED .env. Start anyway?')) return;
+  if (S.remote && mode !== 'evals' && !confirm('llama-swap is on another machine: the speed test would record THIS machine\'s GPU, VRAM, power and RAM, and the VRAM budget checks would use this GPU. Start anyway? (Evals only is fine from here.)')) return;
+  const what = mode==='probe' ? 'a batch probe (loads up to 4 models, BATCH_PROBE_MODELS / BATCH_PROBE_LEVELS)' : `a ${mode==='all'?'full':mode+'-only'} benchmark run`;
+  if (!confirm(`Start ${what} now? It runs on this machine and keeps going if you close the page.`)) return;
+  try { await api('/api/run', {mode}); $('runlog').textContent = ''; logOff = 0; curLog = null; $('runcard').classList.remove('hidden');
+    setTimeout(pollRun, 800); if (!logTimer) logTimer = setInterval(pollRun, 2000); } catch(e){ note('errc', esc(e.message)); }
+}
+$('runall').onclick = () => startRun('all'); $('runprobe').onclick = () => startRun('probe'); $('runspeed').onclick = () => startRun('speed'); $('runevals').onclick = () => startRun('evals');
+$('stop').onclick = async () => { if (!confirm('Stop the run? It finishes the current step and writes partial results (dashboard, CSV, JSON).')) return;
+  try { await api('/api/stop', {}); note('warn', 'Stopping: the run writes its partial results first.'); } catch(e){ note('errc', esc(e.message)); } };
+
+/* help */
+$('helpbtn').onclick = e => { e.stopPropagation(); const p = $('helppop'); p.hidden = !p.hidden; if (!p.hidden) p.innerHTML = `
+  <h3 style="margin-top:0">This page</h3><div class="sub">Edits <code>${esc(S.env)}</code> for <b>v${esc(S.version)}</b>. Nothing changes until you press <b>Save</b>: it checks every value first (the same checks as a run), then writes .env in the .env.example layout and keeps the old file as <code>.env.bak</code>. Editing .env by hand and running from the command line / Unraid User Scripts work exactly as before.</div>
+  <h3>Favourites</h3><div class="sub"><code>configs/&lt;name&gt;.env</code> holds only the settings that differ from the shipped .env.example, never tokens or keys. Loading one starts from this version's defaults and puts the favourite on top: renamed settings follow along, removed ones are listed, and where the shipped value changed and your favourite changed it too, you choose. The first visit saves your current .env as <code>main</code>.</div>
+  <h3>Buttons</h3><div class="sub"><b>Estimate</b> uses the settings on this page, saved or not. <b>Reload dashboard</b> rebuilds the newest run's dashboard with this version's code. <b>Compare</b> combines finished runs. <b>Full run / Speed only / Evals only</b> start the benchmark with the saved .env (one run at a time; it keeps going if you close the page, and the page re-attaches to it). <b>Stop</b> is Ctrl+C for the run: it writes partial results.</div>
+  <h3>Security</h3><div class="sub">Every button runs a fixed command of this tool; nothing here can run anything else. Localhost only unless <code>UI_HOST</code> is set; on the LAN a token is required (<code>UI_TOKEN</code>). The page is plain HTTP: on the LAN the token and any secret you reveal travel unencrypted. Tokens and keys are masked; <b>show</b> fetches one when you ask.</div>`; };
+document.addEventListener('click', e => { const p = $('helppop'); if (!p.hidden && !e.target.closest('#helppop')) p.hidden = true; });
+document.addEventListener('keydown', e => { if (e.key==='Escape') $('helppop').hidden = true; });
+window.addEventListener('beforeunload', e => { if (changed().length){ e.preventDefault(); e.returnValue = ''; } });
+
+async function load(){
+  S = await api('/api/state');
+  V = {...S.values}; SEC = {}; REP = S.report;
+  Object.entries(S.legacy || {}).forEach(([o, n]) => { if (o in V){ if (!(n in V) || V[n]==='') V[n] = V[o]; delete V[o]; } });   /* saving writes the new name */
+  ORIG = {...V};
+  $('hdr').innerHTML = `v${esc(S.version)} &middot; <code>${esc(S.env)}</code>${S.env_exists?'':' (not created yet)'} &middot; ${S.lan?'<span style="color:var(--amber)">open on the LAN (token required, plain HTTP)</span>':'<span title="No token is needed here. To open this page from another PC, set UI_HOST=0.0.0.0 (PART 3) on this machine and restart --ui: it prints a link with a token.">only this PC can open this page</span>'}`;
+  $('remote').innerHTML = S.remote ? `<b>&#9888; Speed tests from here would measure the wrong machine.</b> ${esc(S.remote)}` : '';
+  $('remote').classList.toggle('hidden', !S.remote);
+  if (S.created_main) note('ok', 'Saved your current .env as the favourite <b>main</b> (<code>configs/main.env</code>).');
+  renderFavs(); renderReport(); renderSettings(); markDirty();
+  $('runs').innerHTML = S.outputs.runs.length ? S.outputs.runs.map(f=>`<label class="sw"><input type="checkbox" value="${esc(f)}"> <span class="mono">${esc(f)}</span></label>`).join('') : '<span class="sub">No finished runs in the output folder yet.</span>';
+  $('openlatest').disabled = !S.outputs.latest;
+  setRun(S.run.running, S.run);
+  if (S.run.running && !logTimer){ logTimer = setInterval(pollRun, 2000); pollRun(); }
+}
+load().then(() => {                                   /* on load (plan 5.3): the server's models, and --check once per session */
+  $('models').click();
+  let done = false; try { done = sessionStorage.getItem('llmbench.ui.checked') === '1'; sessionStorage.setItem('llmbench.ui.checked', '1'); } catch(e){}
+  if (!done) runCheck(); else $('checkst').textContent = '(ran earlier in this browser session: press Run --check again)';
+}).catch(e => note('errc', 'Could not load the settings: ' + esc(e.message), true));
+</script></body></html>

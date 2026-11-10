@@ -4,10 +4,18 @@
 <title>llama-swap Benchmark Dashboard</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
-:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--text:#e6edf3;--mute:#8b949e}
+:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--text:#e6edf3;--mute:#8b949e;--link:#58a6ff;--chip:#21262d;--chipon:#1f3a5f;
+  --hover:#1c2128;--sel:#1f2a3d;--frz:#484f58;--warnbg:#3a1d1f;--tipbg:#1f2430;--tipline:#3d444d;--tipstrong:#fff;--colx:#6e7681;
+  --red:#f85149;--green:#3fb950;--amber:#d29922;--hl:#ff4d4d;--shadow:rgba(0,0,0,.35);
+  --t0:#f85149;--t1:#f778ba;--t2:#d29922;--t3:#3fb950;--t4:#58a6ff;--t5:#a371f7}
+/* v2.3 light theme: inverted surfaces; tier colours darkened so they read as text on white (all >= 4.5:1) */
+:root[data-theme="light"]{--bg:#f6f8fa;--card:#ffffff;--line:#d0d7de;--text:#1f2328;--mute:#59636e;--link:#0969da;--chip:#f6f8fa;
+  --chipon:#ddf4ff;--hover:#f3f6f9;--sel:#ddf4ff;--frz:#afb8c1;--warnbg:#ffebe9;--tipbg:#ffffff;--tipline:#d0d7de;--tipstrong:#1f2328;
+  --colx:#8c959f;--red:#cf222e;--green:#1a7f37;--amber:#9a6700;--hl:#d1242f;--shadow:rgba(31,35,40,.15);
+  --t0:#cf222e;--t1:#bf3989;--t2:#9a6700;--t3:#1a7f37;--t4:#0969da;--t5:#8250df}
 *{box-sizing:border-box}
 body{margin:0 auto;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;padding:24px;max-width:1600px}
-a{color:#58a6ff}
+a{color:var(--link)}
 h1{margin:0 0 4px}h2{margin:36px 0 12px;border-bottom:1px solid var(--line);padding-bottom:6px}
 .sub{color:var(--mute)}
 .grid{display:grid;gap:16px;align-items:start}.podium{grid-template-columns:repeat(auto-fit,minmax(270px,1fr))}
@@ -23,8 +31,8 @@ h1{margin:0 0 4px}h2{margin:36px 0 12px;border-bottom:1px solid var(--line);padd
 /* filter bar */
 .filters{position:sticky;top:0;z-index:30;margin:16px 0;padding:10px 14px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
 .fg{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.fg>span{color:var(--mute);font-size:12px;margin-right:2px}
-.tog{background:#21262d;color:var(--text);border:1px solid var(--line);border-radius:14px;padding:3px 11px;font:inherit;font-size:12px;cursor:pointer}
-.tog:hover{border-color:#58a6ff}.tog.on{background:#1f3a5f;border-color:#58a6ff}
+.tog{background:var(--chip);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:3px 11px;font:inherit;font-size:12px;cursor:pointer}
+.tog:hover{border-color:var(--link)}.tog.on{background:var(--chipon);border-color:var(--link)}
 /* table: vertical scroll, frozen header and first five columns */
 #tblwrap{max-height:72vh;overflow:auto;position:relative;border:1px solid var(--line);border-radius:10px;background:var(--card)}
 table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%}
@@ -32,28 +40,28 @@ th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:right;whit
 th{position:sticky;top:0;z-index:3;cursor:pointer;color:var(--mute);user-select:none}
 th:hover{color:var(--text)}
 th:first-child,td:first-child{text-align:left}
-.fz{position:sticky;z-index:2}th.fz{z-index:5}.fz.last{border-right:2px solid #484f58}
-td.warn{background:#3a1d1f}
-tr[data-m]{cursor:pointer}tr[data-m]:hover td{background:#1c2128}tr.sel td{background:#1f2a3d}
-.hl{color:#ff4d4d!important;font-weight:700}
+.fz{position:sticky;z-index:2}th.fz{z-index:5}.fz.last{border-right:2px solid var(--frz)}
+td.warn{background:var(--warnbg)}
+tr[data-m]{cursor:pointer}tr[data-m]:hover td{background:var(--hover)}tr.sel td{background:var(--sel)}
+.hl{color:var(--hl)!important;font-weight:700}
 .mn{cursor:pointer}.mn:hover{text-decoration:underline}
 #charts canvas:not(#c_quant),#evcharts canvas{cursor:pointer}
-.hint-ok{color:#3fb950}.hint-room{color:#d29922}.hint-tight{color:#f85149}
+.hint-ok{color:var(--green)}.hint-room{color:var(--amber)}.hint-tight{color:var(--red)}
 [data-tip]{cursor:help}.tipd{border-bottom:1px dotted var(--mute)}
-#tipbox{position:fixed;z-index:50;max-width:340px;padding:8px 10px;border-radius:8px;background:#1f2430;color:#e6edf3;border:1px solid #3d444d;font-size:12.5px;line-height:1.45;box-shadow:0 6px 18px rgba(0,0,0,.35);pointer-events:none;display:none;white-space:normal;text-align:left}
-#tipbox b{color:#fff}
+#tipbox{position:fixed;z-index:50;max-width:340px;padding:8px 10px;border-radius:8px;background:var(--tipbg);color:var(--text);border:1px solid var(--tipline);font-size:12.5px;line-height:1.45;box-shadow:0 6px 18px var(--shadow);pointer-events:none;display:none;white-space:normal;text-align:left}
+#tipbox b{color:var(--tipstrong)}
 .clip{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.bar{display:inline-block;width:70px;height:8px;background:#21262d;border-radius:4px;vertical-align:middle;margin:0 6px;overflow:hidden}
+.bar{display:inline-block;width:70px;height:8px;background:var(--chip);border-radius:4px;vertical-align:middle;margin:0 6px;overflow:hidden}
 .bar i{display:block;height:100%}
-.err{color:#f85149;font-weight:600}
-small.d{font-size:11px;margin-left:4px}.good{color:#3fb950}.bad{color:#f85149}.dn{color:var(--mute)}
+.err{color:var(--red);font-weight:600}
+small.d{font-size:11px;margin-left:4px}.good{color:var(--green)}.bad{color:var(--red)}.dn{color:var(--mute)}
 .toolbar{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;margin-bottom:10px;min-height:28px}
 .tablewrap2{overflow-x:auto}
 .qt th,.qt td{background:transparent}.qt th{position:static}
 summary{cursor:pointer}
 /* column chooser + per-header hide button */
-th .colx{display:inline-block;margin-left:5px;padding:0 4px;border-radius:4px;color:#6e7681;font-weight:700;opacity:.35}
-th:hover .colx{opacity:1}th .colx:hover{color:#ff7b72;background:#3a1d1f}
+th .colx{display:inline-block;margin-left:5px;padding:0 4px;border-radius:4px;color:var(--colx);font-weight:700;opacity:.35}
+th:hover .colx{opacity:1}th .colx:hover{color:var(--red);background:var(--warnbg)}
 th[data-k="model"] .colx{display:none}
 #colpanel{margin-bottom:10px}
 #colpanel>summary{display:inline-flex;gap:10px;align-items:center}
@@ -61,12 +69,28 @@ th[data-k="model"] .colx{display:none}
 #colpanel .cgrp>button.gname{min-width:150px;text-align:left;font-weight:600}
 #colpanel .tog.off{opacity:.45;text-decoration:line-through}
 #colpanel .tog.part{border-style:dashed}
-.tlink{color:#58a6ff;text-decoration:none;border-bottom:1px dotted #58a6ff}.tlink:hover{border-bottom-style:solid}
+.tlink{color:var(--link);text-decoration:none;border-bottom:1px dotted var(--link)}.tlink:hover{border-bottom-style:solid}
+/* v2.3: view bar (theme, colours, scale, help), family pattern box, help popover, tier swatches */
+.topline{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:8px 20px}
+.viewbar{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;font-size:12px}
+.viewbar .fg>span{font-size:12px}
+.viewbar button.helpb{font-weight:700}
+#fampat{background:var(--chip);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:3px 10px;font:inherit;font-size:12px;width:190px}
+#fampat:focus{outline:none;border-color:var(--link)}#fampat.on{border-color:var(--link);background:var(--chipon)}
+#helppop{position:fixed;z-index:60;top:60px;right:24px;width:min(760px,calc(100vw - 32px));max-height:calc(100vh - 90px);overflow:auto;box-shadow:0 10px 30px var(--shadow)}
+#helppop h3{margin:14px 0 6px}#helppop h3:first-of-type{margin-top:0}
+#helppop table{border-collapse:collapse;width:100%;font-size:12.5px}
+#helppop th,#helppop td{position:static;background:transparent;padding:4px 8px;text-align:left;border-bottom:1px solid var(--line);white-space:normal;cursor:default;color:var(--text)}
+#helppop th{color:var(--mute);font-weight:600}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:4px}
+.tierkey{display:flex;flex-wrap:wrap;gap:4px 14px;margin:4px 0 8px}
+.bline{color:var(--amber);font-size:11px;margin-left:3px;cursor:help}
 footer{margin-top:40px}
 @media(max-width:900px){body{padding:12px}.charts{grid-template-columns:1fr}.fz{position:static}}
 </style></head><body>
-<h1>llama-swap Benchmark</h1>
+<div class="topline"><h1>llama-swap Benchmark</h1><div class="viewbar" id="viewbar"></div></div>
 <div class="sub" id="hdr"></div>
+<div class="card" id="helppop" hidden></div>
 
 <div id="sdetails" style="margin-top:12px"></div>
 
@@ -119,37 +143,135 @@ const EVM = META.evals, EV = EVM ? EVM.datasets : [];
 const evPct = (m,e) => m['eval_'+e.key+'_pct'];
 const evN = (m,e) => m['eval_'+e.key+'_n'];
 const EVPAL = ['#58a6ff','#3fb950','#f0883e','#a371f7','#f778ba'];
-const accColor = p => p>=75?'#3fb950':p>=50?'#58a6ff':p>=25?'#d29922':'#f778ba';
 const EVKINDS = [['qa','Accuracy \u2014 knowledge &amp; reasoning (%)'],['code','Pass rate \u2014 coding, pass@1 (%)'],['math','Accuracy \u2014 math &amp; reasoning (%)'],['tool','Tool calling \u2014 function-call accuracy (%)']].filter(([k])=>EV.some(e=>e.kind===k));
 const MOE = EVM ? EVM.margin : null;                         // 95% margin of error per dataset and for the average
 const LC = META.longctx, LCL = LC ? LC.lengths : [];
 const PFL = META.prefill_lengths || [];
 const BUD = META.budget, BRULES = BUD ? Object.keys(ALL.find(m=>m.budget)?.budget || {}) : [];
 const retryTxt = m => m.eval_retry_n==null ? null : `${m.eval_retry_n} (${m.eval_retry_pct.toFixed(0)}%)`;
-const RETRY_WARN = 20;                                       // % of questions retried that points to a template/thinking problem
+let RETRY_WARN = 25;                                         // % retried that points to a template/thinking problem (v2.3: the RETRY scale's red tier)
 
-// Chart.js cannot resolve CSS var(): every chart colour below is a literal hex value.
-function tpsColor(t){return t>100?'#a371f7':t>80?'#58a6ff':t>50?'#3fb950':t>30?'#d29922':'#f778ba';}
-function vramColor(p){return p>90?'#f85149':p>70?'#db6d28':'#3fb950';}
-const HLRED = '#ff4d4d';                                   // highlighted (clicked) model: red text everywhere
+/* ---------- v2.3: view settings (theme, colour style, scale mode), remembered in this browser ---------- */
+const VIEWSTORE = 'llmbench.view.v1';
+const VIEW = (() => { let v = {}; try { v = JSON.parse(localStorage.getItem(VIEWSTORE) || '{}') || {}; } catch(e){}
+  const C = META.colours || {};
+  return {theme: ['auto','light','dark'].includes(v.theme) ? v.theme : 'auto',
+          tstyle: ['bands','smooth'].includes(v.tstyle) ? v.tstyle : (C.style || 'bands'),
+          cstyle: ['bands','smooth'].includes(v.cstyle) ? v.cstyle : (C.style || 'bands'),
+          mode: ['absolute','relative'].includes(v.mode) ? v.mode : (C.mode || 'absolute'),
+          pattern: typeof v.pattern === 'string' ? v.pattern : ''}; })();
+const saveView = () => { try { localStorage.setItem(VIEWSTORE, JSON.stringify(VIEW)); } catch(e){} };
+const OSDARK = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+const themeNow = () => VIEW.theme==='auto' ? (OSDARK && !OSDARK.matches ? 'light' : 'dark') : VIEW.theme;
+// Chart.js cannot resolve CSS var(): chart colours come from this palette (same values as the CSS variables).
+const PALETTES = {
+  dark:  {text:'#e6edf3', mute:'#8b949e', grid:'#30363d', hl:'#ff4d4d', idle:'#6e7681', radar:'#58a6ff',
+          tiers:['#f85149','#f778ba','#d29922','#3fb950','#58a6ff','#a371f7']},
+  light: {text:'#1f2328', mute:'#59636e', grid:'#d0d7de', hl:'#d1242f', idle:'#8c959f', radar:'#0969da',
+          tiers:['#cf222e','#bf3989','#9a6700','#1a7f37','#0969da','#8250df']}};
+let TH = PALETTES[themeNow()];
+const TIERNAMES = ['red ⚠','pink','amber','green','blue','purple'];
+function applyTheme(){
+  TH = PALETTES[themeNow()];
+  document.documentElement.setAttribute('data-theme', themeNow());
+  Chart.defaults.color = TH.text; Chart.defaults.borderColor = TH.grid;
+}
+
+/* ---------- v2.3: six colour tiers. Display only: colours never change a score. ----------
+   A scale has 5 thresholds -> 6 tiers (0 = red, with a hazard sign so colour is never the only signal ... 5 = purple).
+   'high' scales: tier = thresholds reached (value at or above); 'low' scales (times, retries, power): at or below.
+   Relative mode spreads the thresholds evenly over this run's own range (log scale for speeds and times). */
+const SC = (META.colours && META.colours.scales) || {};
+const REL = {};                                  // metric -> thresholds over the run's range (filled by relScales)
+RETRY_WARN = (SC.RETRY && SC.RETRY.t[0]) || 25;
+function relScales(){
+  const vals = {};
+  ALLCOLS.forEach(c => { if (!c.sc || !SC[c.sc]) return; ALL.forEach(m => { if (m.status!=='ok') return;
+    const v = val(m,c); if (v!=null && isFinite(v) && (!SC[c.sc].log || v>0)) (vals[c.sc] = vals[c.sc]||[]).push(v); }); });
+  Object.entries(vals).forEach(([k,vs]) => {
+    const s = SC[k], lo = Math.min(...vs), hi = Math.max(...vs); if (!(hi > lo)) return;
+    const f = s.log ? Math.log : (x=>x), g = s.log ? Math.exp : (x=>x), a = f(lo), b = f(hi);
+    const up = Array.from({length:5}, (_,i) => g(a + (b-a)*(i+1)/6));
+    REL[k] = s.dir==='high' ? up : up.reverse();
+  });
+}
+const thr = k => (VIEW.mode==='relative' && REL[k]) ? REL[k] : (SC[k] ? SC[k].t : null);
+function tierOf(k, v){
+  const s = SC[k], t = thr(k); if (!s || !t || v==null || !isFinite(v)) return null;
+  let n = 0; t.forEach(x => { if (s.dir==='high' ? v >= x : v <= x) n++; }); return n;
+}
+const hexRgb = h => [1,3,5].map(i => parseInt(h.slice(i,i+2),16));
+const mix = (a,b,f) => { const x = hexRgb(a), y = hexRgb(b); return '#' + x.map((c,i)=>Math.round(c+(y[i]-c)*f).toString(16).padStart(2,'0')).join(''); };
+function smoothColor(k, v){
+  const s = SC[k], t = thr(k), P = TH.tiers, up = s.dir==='high', lg = s.log && v > 0 && t.every(x => x > 0);
+  const f = x => lg ? Math.log(x) : x;
+  let pos = [lg ? f(up ? t[0]*0.67 : t[0]/0.67) : t[0] - (t[1]-t[0]), ...t.map(f)], x = f(v);
+  if (!up){ pos = pos.map(p => -p); x = -x; }
+  if (x <= pos[0]) return P[0]; if (x >= pos[5]) return P[5];
+  for (let i = 0; i < 5; i++) if (x <= pos[i+1]) return mix(P[i], P[i+1], (x - pos[i]) / ((pos[i+1] - pos[i]) || 1));
+  return P[5];
+}
+// where: 'table' or 'chart' (each has its own bands/smooth toggle)
+function colorFor(k, v, where){
+  const n = tierOf(k, v); if (n==null) return null;
+  return (where==='chart' ? VIEW.cstyle : VIEW.tstyle)==='smooth' ? smoothColor(k, v) : TH.tiers[n];
+}
+const tpsColor = t => colorFor('GEN', t, 'chart') || TH.mute;          // a model's identity colour in the charts
+const accColor = p => colorFor('ACC', p, 'table') || 'inherit';
+// VRAM % keeps the sweet-spot logic: in VRAM_SWEET_LOW..HIGH best, above it worse, at VRAM_SWEET_MAX or more a hazard
+function vramTier(p){
+  const lo = META.vram_sweet_low, hi = META.vram_sweet_high, mx = META.vram_sweet_max;
+  if (p >= mx) return 0; if (p > hi) return 1; if (p >= lo) return 5; if (p >= lo-10) return 4; if (p >= lo-25) return 3; return 2;
+}
+const vramColor = p => TH.tiers[vramTier(p)];
+const HLRED = () => TH.hl;                                 // highlighted (clicked) model: red text everywhere
 const hlc = name => (state.base!=null && state.base===name) ? ' hl' : '';
 const isHlLabel = (chart, i) => state.base!=null && !!chart.data.labels && chart.data.labels[i]===state.base;
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = (v,d=1) => v==null ? '&ndash;' : Number(v).toFixed(d);
 const ctxFmt = v => v==null ? '&ndash;' : (v>=1024 ? Math.round(v/1024)+'k' : String(v));
 
-Chart.defaults.color = '#e6edf3';
-Chart.defaults.borderColor = '#30363d';
 Chart.defaults.maintainAspectRatio = false;
+applyTheme();
 
-const state = {filters:{quant:new Set(), arch:new Set(), size:new Set(), vram95:false, hideErr:false, noSpill:false, ctxOk:false, budOk:false},
+const state = {filters:{quant:new Set(), arch:new Set(), size:new Set(), source:new Set(), family:new Set(), vram95:false, hideErr:false, noSpill:false, ctxOk:false, budOk:false},
                sk:'avg_tps', sd:-1, base:null, rate:'peak'};
 
 /* ---------- filters ---------- */
 const BUCKETS = [['lt10','<10B',p=>p<10],['10-20','10\u201320B',p=>p>=10&&p<20],['20-40','20\u201340B',p=>p>=20&&p<40],['gt40','\u226540B',p=>p>=40]];
 const bucket = p => p==null ? 'unk' : BUCKETS.find(b=>b[2](p))[0];
+/* v2.3 model families: DASH_FAMILIES (named, first) + automatic ones from the name's leading word (shown when 2+
+   models share it), plus a live pattern box. * and ? are wildcards over the whole name; a pattern without them
+   matches anywhere in the name. Case-insensitive. Same rules as llmbench/reporting/colours.py. */
+function wildRe(p){
+  p = p.trim(); const q = p.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  return /[*?]/.test(p) ? new RegExp('^' + q.replace(/\*/g,'.*').replace(/\?/g,'.') + '$', 'i') : new RegExp(q, 'i');
+}
+const autoFamily = name => (String(name).trim().split(/[-_.]/)[0] || '').replace(/[^A-Za-z]/g, '');
+const famMatch = (f, m) => f.auto ? autoFamily(m.model).toLowerCase()===f.auto : f.res.some(r => r.test(m.model));
+const FAMILIES = (() => {
+  const out = (META.families || []).map(f => ({id:'u:'+f.name, label:f.name, tip:f.patterns.join(' | '), res:f.patterns.map(wildRe)}));
+  const groups = {};
+  ALL.forEach(m => { const w = autoFamily(m.model); if (w) (groups[w.toLowerCase()] = groups[w.toLowerCase()] || {label:w, n:0}).n++; });
+  Object.entries(groups).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([k,g]) => {
+    if (g.n < 2 || out.some(f => f.label.toLowerCase()===k)) return;
+    out.push({id:'a:'+k, label:g.label, tip:`automatic: names starting with ${g.label}`, auto:k});
+  });
+  // an automatic family with exactly the members of a named one adds nothing (e.g. endless-frontier_BigBang...)
+  const members = f => ALL.filter(m => famMatch(f, m)).map(m => m.model).join('\n');
+  const named = out.filter(f => !f.auto).map(members);
+  return out.filter(f => !f.auto || !named.includes(members(f)));
+})();
+const patList = () => VIEW.pattern.split(',').map(x=>x.trim()).filter(Boolean).map(wildRe);
+function famPass(m){
+  const sel = FAMILIES.filter(f => state.filters.family.has(f.id)), pats = patList();
+  if (!sel.length && !pats.length) return true;                   // OR within the group, AND with the others
+  return sel.some(f => famMatch(f, m)) || pats.some(r => r.test(m.model));
+}
 function pass(m){
   const f = state.filters;
+  if (!famPass(m)) return false;
+  if (f.source.size && !f.source.has(m.source)) return false;
   if (f.quant.size && !f.quant.has(m.quant)) return false;
   if (f.arch.size && !f.arch.has(m.arch)) return false;
   if (f.size.size && !f.size.has(bucket(m.params_b))) return false;
@@ -162,14 +284,19 @@ function pass(m){
 }
 function buildFilters(){
   const quants = [...new Set(ALL.map(m=>m.quant))].sort();
+  const sources = [...new Set(ALL.map(m=>m.source).filter(Boolean))];
   const archs = [...new Set(ALL.map(m=>m.arch).filter(Boolean))].sort();
   const sizes = BUCKETS.filter(b=>ALL.some(m=>m.params_b!=null && b[2](m.params_b))).map(b=>[b[0],b[1]]);
   if (ALL.some(m=>m.params_b==null)) sizes.push(['unk','unknown']);
   const grp = (label,g,items) => `<div class="fg"><span>${label}</span>${items.map(([v,t])=>`<button class="tog" data-g="${g}" data-v="${esc(v)}">${esc(t)}</button>`).join('')}</div>`;
   $('filters').innerHTML =
+    (sources.length>1 ? grp('Run','source',sources.map(x=>[x,x])) : '') +
     grp('Quant','quant',quants.map(q=>[q,q])) +
     (archs.length>1 ? grp('Type','arch',archs.map(a=>[a,a])) : '') +
     grp('Size','size',sizes) +
+    `<div class="fg"><span data-tip="${esc('<b>Family</b><br>Named families from DASH_FAMILIES in .env, then automatic ones from the first word of the model name (shown when 2+ models share it). The box takes patterns, comma-separated, * and ? as wildcards, case-insensitive: <code>*gemma-4*</code> also finds <code>agent-gemma-4-26B</code>. Chips and patterns combine with OR; with the other groups with AND.')}" class="tipd">Family</span>`
+      + FAMILIES.map(f=>`<button class="tog" data-g="family" data-v="${esc(f.id)}" data-tip="${esc(f.tip)}">${esc(f.label)}</button>`).join('')
+      + `<input id="fampat" type="search" placeholder="pattern, e.g. *gemma-4*, Ornith*" value="${esc(VIEW.pattern)}" aria-label="Model name pattern"></div>` +
     grp('Show','x',[['vram95','Hide VRAM \u226595%'],['noSpill','VRAM-only (hide RAM spill)'],['hideErr','Hide failed']]
       .concat(META.min_ctx && ALL.some(m=>m.ctx_ok===false) ? [['ctxOk','Hide ctx < '+ctxFmt(META.min_ctx)]] : [])
       .concat(BUD ? [['budOk','Budget pass only ('+esc(BUD.name)+')']] : [])) +
@@ -178,12 +305,16 @@ function buildFilters(){
     const b = e.target.closest('button'); if(!b) return;
     if (b.dataset.clearhl){ state.base = null; return refreshHighlight(); }
     if (b.dataset.reset){ state.base = null; Object.values(state.filters).forEach(v=>v instanceof Set?v.clear():0); state.filters.vram95=state.filters.hideErr=state.filters.noSpill=state.filters.ctxOk=state.filters.budOk=false;
+      VIEW.pattern = ''; saveView(); const pb = $('fampat'); if (pb){ pb.value = ''; pb.classList.remove('on'); }
       document.querySelectorAll('#filters .tog').forEach(x=>x.classList.remove('on')); return render(); }
     const g=b.dataset.g, v=b.dataset.v; if(!g) return;
     if (g==='x') state.filters[v] = !state.filters[v];
     else { const s=state.filters[g]; s.has(v)?s.delete(v):s.add(v); }
     b.classList.toggle('on'); render();
   };
+  const pb = $('fampat');
+  pb.classList.toggle('on', !!VIEW.pattern);
+  pb.oninput = () => { VIEW.pattern = pb.value; saveView(); pb.classList.toggle('on', !!pb.value.trim()); render(); };
 }
 
 /* ---------- charts ---------- */
@@ -200,19 +331,19 @@ const rowsH = n => Math.max(340, n*26+90);
 const valueLabels = {id:'valueLabels', afterDatasetsDraw(chart){
   if (chart.data.datasets.length!==1) return;
   const c = chart.ctx, horiz = chart.options.indexAxis === 'y';
-  c.save(); c.fillStyle = '#e6edf3'; c.font = '12px sans-serif'; c.textBaseline = 'middle';
+  c.save(); c.fillStyle = TH.text; c.font = '12px sans-serif'; c.textBaseline = 'middle';
   c.textAlign = horiz ? 'left' : 'center';
   chart.getDatasetMeta(0).data.forEach((bar,i)=>{
     const v = chart.data.datasets[0].data[i]; if (v==null) return;
-    const hl = isHlLabel(chart,i); c.fillStyle = hl ? HLRED : '#e6edf3'; c.font = (hl?'700 ':'')+'12px sans-serif';
+    const hl = isHlLabel(chart,i); c.fillStyle = hl ? HLRED() : TH.text; c.font = (hl?'700 ':'')+'12px sans-serif';
     c.fillText(v.toFixed(v<10?2:1), horiz ? bar.x+6 : bar.x, horiz ? bar.y : bar.y-10);
   }); c.restore();
 }};
-const yTicks = {autoSkip:false, font:ctx=>({size:11, weight:isHlLabel(ctx.chart,ctx.index)?'700':'400'}), color:ctx=>isHlLabel(ctx.chart,ctx.index)?HLRED:'#e6edf3'};
-const axTitle = t => ({display:!!t, text:t||'', color:'#e6edf3'});
-function hbar(key, items, valFn, xTitle){
+const yTicks = {autoSkip:false, font:ctx=>({size:11, weight:isHlLabel(ctx.chart,ctx.index)?'700':'400'}), color:ctx=>isHlLabel(ctx.chart,ctx.index)?HLRED():TH.text};
+const axTitle = t => ({display:!!t, text:t||'', color:TH.text});
+function hbar(key, items, valFn, xTitle, colFn){
   if(!box(key, items, rowsH(items.length))) return;
-  const colors = items.map(m=>tpsColor(m.avg_tps));
+  const colors = items.map(m=>(colFn ? colFn(m) : null) || tpsColor(m.avg_tps));
   mk('c_'+key, {type:'bar', plugins:[valueLabels],
     data:{labels:items.map(m=>m.model), datasets:[{data:items.map(valFn), backgroundColor:colors, borderColor:colors, borderWidth:1}]},
     options:{indexAxis:'y', plugins:{legend:{display:false}}, scales:{x:{grace:'12%', beginAtZero:true, title:axTitle(xTitle)}, y:{ticks:yTicks}}}});
@@ -223,7 +354,7 @@ const hlPoints = {id:'hlPoints', afterDatasetsDraw(chart){
   const i = ds.data.findIndex(d=>d && d.name===state.base); if (i<0) return;
   const el = chart.getDatasetMeta(0).data[i]; if (!el || el.skip) return;
   const c = chart.ctx, rad = ((el.options && el.options.radius) || 8) + 5, ca = chart.chartArea;
-  c.save(); c.strokeStyle = HLRED; c.fillStyle = HLRED; c.lineWidth = 2.5; c.beginPath(); c.arc(el.x, el.y, rad, 0, Math.PI*2); c.stroke();
+  c.save(); c.strokeStyle = HLRED(); c.fillStyle = HLRED(); c.lineWidth = 2.5; c.beginPath(); c.arc(el.x, el.y, rad, 0, Math.PI*2); c.stroke();
   c.font = '700 12px sans-serif'; c.textBaseline = 'middle';
   const right = el.x + rad + 6 + c.measureText(state.base).width < ca.right;
   c.textAlign = right ? 'left' : 'right'; c.fillText(state.base, right ? el.x+rad+6 : el.x-rad-6, el.y); c.restore();
@@ -248,15 +379,15 @@ function renderCharts(OKR){
 
   hbar('eff', OKR.filter(m=>m.tps_per_watt!=null).sort((a,b)=>b.tps_per_watt-a.tps_per_watt), m=>m.tps_per_watt, 'tok/s per W');
   hbar('jt', OKR.filter(m=>m.j_per_token!=null).sort((a,b)=>a.j_per_token-b.j_per_token), m=>m.j_per_token, 'joules per token');
-  hbar('ttft', OKR.filter(m=>m.ttft_ms!=null).sort((a,b)=>a.ttft_ms-b.ttft_ms), m=>m.ttft_ms, 'milliseconds');
+  hbar('ttft', OKR.filter(m=>m.ttft_ms!=null).sort((a,b)=>a.ttft_ms-b.ttft_ms), m=>m.ttft_ms, 'milliseconds', m=>colorFor('TTFT_MS', m.ttft_ms, 'chart'));
 
   const lp = OKR.filter(m=>m.ttft_ms!=null);
   if (box('lat', lp, 420)){
     mk('c_lat', {type:'scatter', plugins:[hlPoints],
       data:{datasets:[{data:lp.map(m=>pt(m,m.ttft_ms,m.avg_tps)), pointRadius:7, pointHoverRadius:10,
         backgroundColor:lp.map(m=>tpsColor(m.avg_tps)+'cc'), borderColor:lp.map(m=>tpsColor(m.avg_tps))}]},
-      options:{plugins:{legend:{display:false}, tooltip:{callbacks:{label:c=>`${c.raw.name}: TTFT ${c.raw.x.toFixed(0)} ms, ${c.raw.y.toFixed(1)} tok/s`}}},
-        scales:{x:{min:0, title:axTitle('TTFT (ms) \u2014 lower is more responsive')}, y:{min:0, title:axTitle('Avg tok/s \u2014 higher is more throughput')}}}});
+      options:{plugins:{legend:{display:false}, tooltip:{callbacks:{label:c=>`${c.raw.name}: prompt ${c.raw.x.toFixed(0)} ms, ${c.raw.y.toFixed(1)} tok/s`}}},
+        scales:{x:{min:0, title:axTitle('Prompt processing (ms) \u2014 lower is more responsive')}, y:{min:0, title:axTitle('Avg tok/s \u2014 higher is more throughput')}}}});
   }
 
   const pg = OKR.filter(m=>m.prefill_tps!=null).sort((a,b)=>b.prefill_tps-a.prefill_tps);
@@ -268,7 +399,7 @@ function renderCharts(OKR){
       options:{indexAxis:'y', plugins:{legend:{display:true}}, scales:{x:{type:'logarithmic', min:1, title:axTitle('tokens/sec (log scale)')}, y:{ticks:yTicks}}}});
   }
 
-  const PFCOL = ['#58a6ff','#3fb950','#d29922','#f0883e','#f85149'];
+  const PFCOL = ['#58a6ff','#3fb950','#d29922','#f0883e','#db61a2','#8b949e'];
   const pl = OKR.filter(m=>PFL.some(l=>m['prefill_'+l+'_tps']!=null)).sort((a,b)=>(bestPf(b)||0)-(bestPf(a)||0));
   if (PFL.length && box('pctx', pl, Math.max(380, pl.length*(PFL.length*12+16)+100))){
     const sets = [{label:'~'+Math.round((ALLOK.find(m=>m.prefill_tokens)?.prefill_tokens||1400)/100)/10+'k (short test)', k:'prefill_tps'}]
@@ -283,7 +414,7 @@ function renderCharts(OKR){
   if (box('pwr', pw, Math.max(380, pw.length*30+100))){
     mk('c_pwr', {type:'bar',
       data:{labels:pw.map(m=>m.model), datasets:[
-        {label:'Idle (baseline)', data:pw.map(m=>m.idle_gpu_w??0), backgroundColor:'#6e7681', borderColor:'#6e7681', borderWidth:1},
+        {label:'Idle (baseline)', data:pw.map(m=>m.idle_gpu_w??0), backgroundColor:TH.idle, borderColor:TH.idle, borderWidth:1},
         {label:'Active increase', data:pw.map(m=>Math.max(0,m.gpu_w-(m.idle_gpu_w??0))), backgroundColor:'#f0883e', borderColor:'#f0883e', borderWidth:1}]},
       options:{indexAxis:'y', plugins:{legend:{display:true}, tooltip:{callbacks:{footer:c=>'Active total: '+c.reduce((s,x)=>s+x.parsed.x,0).toFixed(0)+' W'}}},
         scales:{x:{stacked:true, title:axTitle('GPU watts')}, y:{stacked:true, ticks:yTicks}}}});
@@ -310,9 +441,9 @@ function renderCharts(OKR){
 
 /* ---------- evaluations: accuracy (QA) and pass rate (code) ---------- */
 const evLabels = {id:'evLabels', afterDatasetsDraw(chart){
-  const c = chart.ctx; c.save(); c.fillStyle = '#e6edf3'; c.font = '11px sans-serif'; c.textBaseline = 'middle'; c.textAlign = 'left';
+  const c = chart.ctx; c.save(); c.fillStyle = TH.text; c.font = '11px sans-serif'; c.textBaseline = 'middle'; c.textAlign = 'left';
   chart.data.datasets.forEach((d,di)=>chart.getDatasetMeta(di).data.forEach((bar,i)=>{
-    const v = d.data[i]; if (v==null) return; const hl = isHlLabel(chart,i); c.fillStyle = hl ? HLRED : '#e6edf3'; c.font = (hl?'700 ':'')+'11px sans-serif';
+    const v = d.data[i]; if (v==null) return; const hl = isHlLabel(chart,i); c.fillStyle = hl ? HLRED() : TH.text; c.font = (hl?'700 ':'')+'11px sans-serif';
     c.fillText(v.toFixed(1)+'%', bar.x+5, bar.y); }));
   c.restore();
 }};
@@ -391,9 +522,9 @@ function renderPodium(OKR){
     : '<div class="card sub">No eligible models for the current filters (need parsable params and a speed result).</div>';
   radars.forEach((m,i)=>mk('rad'+i, {type:'radar',
     data:{labels:['Speed','Efficiency','Reasoning (params)','VRAM economy'],
-      datasets:[{data:radarVals(m), borderColor:'#58a6ff', backgroundColor:'rgba(88,166,255,0.25)', pointBackgroundColor:'#58a6ff', borderWidth:2}]},
+      datasets:[{data:radarVals(m), borderColor:TH.radar, backgroundColor:TH.radar+'40', pointBackgroundColor:TH.radar, borderWidth:2}]},
     options:{plugins:{legend:{display:false}},
-      scales:{r:{min:0, max:1, ticks:{display:false, stepSize:0.25}, grid:{color:'#30363d'}, angleLines:{color:'#30363d'}, pointLabels:{color:'#e6edf3', font:{size:10}}}}}}));
+      scales:{r:{min:0, max:1, ticks:{display:false, stepSize:0.25}, grid:{color:TH.grid}, angleLines:{color:TH.grid}, pointLabels:{color:TH.text, font:{size:10}}}}}}));
 }
 
 /* ---------- quantization table ---------- */
@@ -418,6 +549,7 @@ const ALLCOLS = [
  {k:'quant',l:'Quant',nodelta:1},
  {k:'load_s',l:'Load s',dec:1,better:'low'},
  {k:'vram_gb',l:'VRAM',better:'low'},
+ {k:'source',l:'Run',nodelta:1},
  {k:'vram_fit',l:'VRAM fit %',dec:0,better:'high',get:m=>m.vram_fit==null?null:m.vram_fit*100},
  {k:'ctx_size',l:'Ctx',f:ctxFmt,nodelta:1},
  {k:'max_ctx_vram',l:'Max ctx @'+META.max_ctx_pct+'%',f:ctxFmt,better:'high'},
@@ -441,48 +573,61 @@ const ALLCOLS = [
  {k:'ram_used_gb',l:'System RAM',better:'low'},
  {k:'ram_spill_gb',l:'RAM spill GB',dec:1,better:'low'},
  {k:'ram_proc_gb',l:'Server RAM GB',dec:1,better:'low'},
- {k:'gpu_w',l:'GPU W',dec:0,better:'low'},
+ {k:'gpu_w',l:'GPU W',dec:0,better:'low',sc:'POWER'},
  {k:'idle_gpu_w',l:'Idle W',dec:0,better:'low'},
  {k:'gpu_peak_w',l:'Peak W',dec:0,better:'low'},
  {k:'cpu_w',l:'CPU W',dec:0,better:'low'},
  {k:'gpu_util',l:'GPU %',dec:0},
  {k:'gpu_temp',l:'Temp \u00b0C',dec:0,better:'low'},
- {k:'ttft_ms',l:'TTFT ms',dec:0,better:'low'},
+ {k:'ttft_ms',l:'Prompt ms',dec:0,better:'low',sc:'TTFT_MS'},
+ {k:'tps_spread_pct',l:'TPS spread %',dec:1,better:'low'},
+ {k:'tps_change_pct',l:'TPS vs last %',dec:1,better:'high'},
  {k:'latency_s',l:'Latency s',dec:1,better:'low'},
  {k:'energy_wh',l:'Energy Wh',dec:3,better:'low'},
  {k:'j_per_token',l:'J/token',dec:2,better:'low'},
  {k:'cost1m',l:cur+'/1M tok',dec:3,better:'low',cost:1,get:m=>m['cost_1m_'+rateKey()]},
  {k:'cost1kq',l:cur+'/1k queries',dec:4,better:'low',cost:1,get:m=>m['cost_1kq_'+rateKey()]},
- {k:'prefill_tps',l:'Prefill t/s',dec:0,better:'high'},
+ {k:'prefill_tps',l:'Prefill t/s',dec:0,better:'high',sc:'PREFILL'},
  {k:'prefill_tokens',l:'Prefill tok',dec:0,nodelta:1},
- ...PFL.map(l=>({k:'prefill_'+l+'_tps',l:'Prefill '+l+' t/s',dec:0,better:'high'})),
- {k:'agent_ttft_s',l:'Agent TTFT s',dec:1,better:'low'},
+ ...PFL.map(l=>({k:'prefill_'+l+'_tps',l:'Prefill '+l+' t/s',dec:0,better:'high',sc:'PREFILL'})),
+ {k:'agent_ttft_s',l:'Agent TTFT s',dec:1,better:'low',sc:'AGENT_TTFT'},
  {k:'agent_ttft_warm_s',l:'Next-turn TTFT s',dec:2,better:'low'},
+ {k:'prefill_depth_tps',l:'Prefill @depth t/s',dec:0,better:'high',sc:'PREFILL'},
+ {k:'prefill_depth_tokens',l:'Depth',f:v=>v?Math.round(v/1024)+'k':'',better:'high'},
+ {k:'prefill_depth_ttft_s',l:'Depth TTFT s',dec:1,better:'low',sc:'DEPTH_TTFT'},
  {k:'cache_hit_pct',l:'Cache hit %',dec:0,better:'high'},
  {k:'cache_speedup',l:'Cache \u00d7',dec:1,better:'high'},
- {k:'tech_tps',l:'Tech TPS',tps:1,better:'high'},
- {k:'logic_tps',l:'Logic TPS',tps:1,better:'high'},
- {k:'avg_tps',l:'Avg TPS',tps:1,better:'high'},
- ...EV.flatMap(e=>[{k:'eval_'+e.key+'_pct',l:e.short+' %',dec:1,better:'high',acc:1,tip:`<b>${e.label}</b><br>${e.desc||''}<br>Score: % answered correctly (${e.rows??'?'} questions).`},
-                   {k:'eval_'+e.key+'_sec',l:e.short+' s/q',dec:1,better:'low',tip:`<b>${e.label}: seconds per question</b><br>Mean time to answer one question, including retries and grading (never the model load).`}]),
- ...(EV.length>1?[{k:'eval_avg_pct',l:'Eval avg %',dec:1,better:'high',acc:1,tip:'<b>Eval average</b><br>Mean of the dataset scores. Only for a model with a score on every dataset of the run; otherwise it is not ranked.'},{k:'eval_avg_sec',l:'Avg s/q',dec:1,better:'low',tip:'<b>Average seconds per question</b> over the datasets. With several questions in flight the Agent score uses the single-stream estimate instead.'}]:[]),
+ {k:'tech_tps',l:'Tech TPS',sc:'GEN',better:'high'},
+ {k:'logic_tps',l:'Logic TPS',sc:'GEN',better:'high'},
+ {k:'avg_tps',l:'Avg TPS',sc:'GEN',better:'high'},
+ ...EV.flatMap(e=>[{k:'eval_'+e.key+'_pct',l:e.short+' %',dec:1,better:'high',sc:'ACC',tip:`<b>${e.label}</b><br>${e.desc||''}<br>Score: % answered correctly (${e.rows??'?'} questions).`},
+                   {k:'eval_'+e.key+'_sec',l:e.short+' s/q',dec:1,better:'low',sc:'SQ',tip:`<b>${e.label}: seconds per question</b><br>Mean time to answer one question, including retries and grading (never the model load).`}]),
+ ...(EV.length>1?[{k:'eval_avg_pct',l:'Eval avg %',dec:1,better:'high',sc:'ACC',tip:'<b>Eval average</b><br>Mean of the dataset scores. Only for a model with a score on every dataset of the run; otherwise it is not ranked.'},{k:'eval_avg_sec',l:'Avg s/q',dec:1,better:'low',sc:'SQ',tip:'<b>Average seconds per question</b> over the datasets. With several questions in flight the Agent score uses the single-stream estimate instead.'}]:[]),
  {k:'eval_stage',l:'Funnel stage',nodelta:1},
- {k:'eval_stage1_avg_pct',l:'First-stage avg %',dec:1,better:'high',acc:1},
+ {k:'eval_stage1_avg_pct',l:'First-stage avg %',dec:1,better:'high',sc:'ACC'},
  {k:'eval_inflight',l:'In flight',dec:0,nodelta:1,get:m=>EVM&&EVM.concurrency>1?m.eval_inflight:null},
  {k:'time_total_s',l:'Time min',dec:1,better:'low',get:m=>m.time_total_s==null?null:m.time_total_s/60},
- {k:'eval_retry_pct',l:'Retries',better:'low',retry:1},
- {k:'eval_quality',l:'Eval \u2212 retry penalty %',dec:1,better:'high',acc:1},
- ...LCL.map(l=>({k:'longctx_'+l+'_pct',l:'Long-ctx '+l+' %',dec:0,better:'high',acc:1,tip:`<b>Long-context retrieval at ${l} tokens</b><br>Vault codes hidden at different depths of one ${l}-token document, plus as many decoy vaults; the model is asked for several codes at once. Shows whether it can still find and keep apart facts deep in a long context at the KV-cache precision it is deployed with. Not a reasoning test.`})),
+ {k:'eval_retry_pct',l:'Retries',better:'low',retry:1,sc:'RETRY'},
+ {k:'eval_quality',l:'Eval \u2212 retry penalty %',dec:1,better:'high',sc:'ACC'},
+ {k:'eval_sampling',l:'Sampling',nodelta:1},
+ {k:'eval_sanity',l:'Sanity diff',sanity:1,better:'low',nodelta:1,get:m=>m.eval_sanity_n?100*(m.eval_sanity_diff||0)/m.eval_sanity_n:null},
+ ...LCL.map(l=>({k:'longctx_'+l+'_pct',l:'Long-ctx '+l+' %',dec:0,better:'high',sc:'ACC',tip:`<b>Long-context retrieval at ${l} tokens</b><br>Vault codes hidden at different depths of one ${l}-token document, plus as many decoy vaults; the model is asked for several codes at once. Shows whether it can still find and keep apart facts deep in a long context at the KV-cache precision it is deployed with. Not a reasoning test.`})),
  ...BRULES.map(rk=>({k:'bud_'+rk,l:rk.replace(/_/g,' ').toLowerCase().replace(/^\w/,c=>c.toUpperCase()),nodelta:1,bud:rk,get:m=>m.budget&&m.budget[rk]?m.budget[rk].ok:null})),
  ...(BUD?[{k:'budget_pass',l:'Budget ('+BUD.name+')',nodelta:1,bud:'*'}]:[]),
  {k:'goldilocks',l:'Goldilocks',dec:0,better:'high'},
  {k:'score_chat',l:'Chat score',dec:0,better:'high'},
- {k:'score_agent',l:'Agent score',dec:0,better:'high'},
- {k:'agent_quality',l:'Agent quality',dec:0,better:'high'},
- {k:'score_sweet',l:'Sweet spot',dec:0,better:'high'}
+ {k:'score_agent',l:'Agent score',dec:0,better:'high',sc:'SCORE'},
+ {k:'agent_quality',l:'Agent quality',dec:0,better:'high',sc:'SCORE'},
+ {k:'agent_composite_pct',l:'Agent composite %',dec:1,better:'high',sc:'ACC'},
+ {k:'agent_longctx_pct',l:'Agent long-ctx %',dec:0,better:'high',sc:'ACC'},
+ {k:'agent_ctx_usable',l:'Usable ctx',f:v=>v===0?'none':ctxFmt(v),better:'high'},
+ {k:'agent_ctx_factor',l:'Ctx factor',dec:2,better:'high'},
+ {k:'score_sweet',l:'Sweet spot',dec:0,better:'high',sc:'SCORE'}
 ];
 /* Header tooltips and column groups (for the column chooser). Columns that already set c.tip keep it. */
 const LOW = ' Lower is better.', HIGH = ' Higher is better.';
+const AGENT_BASIS = (ALL.find(m=>m.agent_basis)||{}).agent_basis || null;
+function agentWeights(){ return AGENT_BASIS ? esc(AGENT_BASIS) : 'evals 45% / tools 30% / long-ctx 25%'; }
 const COLINFO = {
  model:['Model','<b>Model</b><br>Name as served by llama-swap. Click a row to make it the baseline (other rows show % change).'],
  params_b:['Model','<b>Parameters</b><br>Total parameters in billions (GGUF header, else the file name). For a MoE this is all experts, not the active ones.'],
@@ -522,27 +667,39 @@ const COLINFO = {
  cost1m:['Power & cost','<b>Cost per 1M tokens</b><br>GPU + CPU energy only, at the selected electricity rate.'+LOW],
  cost1kq:['Power & cost','<b>Cost per 1k queries</b><br>Average of the Technical and Logic requests, at the selected electricity rate. Scales with max_tokens.'+LOW],
  load_s:['Speed','<b>Load s</b><br>Cold load time: from request to first reply with nothing loaded. Depends on disk speed and file size.'+LOW],
- ttft_ms:['Speed','<b>TTFT ms</b><br>Time to first token on the short speed prompts (<code>timings.prompt_ms</code>).'+LOW],
+ ttft_ms:['Speed','<b>Prompt ms</b><br>Time llama-server spent processing the short speed prompts before generating (<code>timings.prompt_ms</code>). Server-side only: it leaves out llama-swap, the network and, for a reasoning model, the thinking before the first visible token. Called &ldquo;TTFT ms&rdquo; before v2.3.1. The waiting time a client sees is in results.json per dataset (<code>ttft</code>, <code>ttfa</code>, <code>ttfa95</code>).'+LOW],
+ tps_spread_pct:['Speed','<b>TPS spread %</b><br>How far apart the single speed runs of a prompt were: (fastest &minus; slowest) / median, the larger of the two prompts. Two models whose Avg TPS differ by less than their spread are not really ranked by it.'+LOW],
+ tps_change_pct:['Speed','<b>TPS vs last %</b><br>Avg TPS against the previous run of the same model file at the same context and offload. A drop after a llama.cpp or driver update shows here; the builds are in results.json (<code>build_info</code>, <code>build_prev</code>).'],
  latency_s:['Speed','<b>Latency s</b><br>Mean wall time of the Technical and Logic requests (prompt + full reply).'+LOW],
  prefill_tps:['Speed','<b>Prefill t/s</b><br>Prompt-processing speed on the short prefill test (size in Prefill tok).'+HIGH],
  prefill_tokens:['Speed','<b>Prefill tok</b><br>Size of the short prefill prompt, in tokens.'],
- agent_ttft_s:['Speed','<b>Agent TTFT s</b><br>Time to first token for a ~'+Math.round((META.agent_prompt_tokens||0)/1000)+'k-token agent-style request (system prompt, tool catalogue, history), cold. 40% of the Agent speed factor.'+LOW],
+ agent_ttft_s:['Speed','<b>Agent TTFT s</b><br>Time to first token for a ~'+Math.round((META.agent_prompt_tokens||0)/1000)+'k-token agent-style request (system prompt, tool catalogue, history), cold: llama-server&rsquo;s prompt-processing time, which is nearly all of the wait at this length. 40% of the Agent score&rsquo;s prompt part (all of it when prefill at depth was not measured).'+LOW],
+ prefill_depth_tps:['Speed','<b>Prefill at depth t/s</b><br>Prompt-processing speed of ~4k new tokens (a tool result) added on top of a cached '+(META.prefill_depth_auto?'8k&ndash;64k (see Depth)':Math.round((META.prefill_depth||65536)/1024)+'k')+'-token context: what an agent waits for every turn. Slower than a short prompt because attention reads the whole context. Needs llama-server prompt-cache reuse; blank when the prefix was not reused or the context is too small. 60% of the Agent score&rsquo;s prompt part.'+HIGH],
+ prefill_depth_tokens:['Speed','<b>Depth</b><br>How many cached tokens the prefill-at-depth test sat on for this model (PREFILL_DEPTH; <code>auto</code> = the largest of 8k/16k/32k/64k that fits the loaded context with the 4k turn). Prefill is slower deeper in, so the Agent score only compares models measured at the same depth (the one most models had); the others count their cold agent TTFT instead.'],
+ prefill_depth_ttft_s:['Speed','<b>Depth TTFT s</b><br>Time to process the ~4k new tokens at depth (llama-server <code>timings.prompt_ms</code>), i.e. the wait before the first token of an agent turn at that context.'+LOW],
  agent_ttft_warm_s:['Speed','<b>Next-turn TTFT s</b><br>Time to first token for the following agent turn, with the shared prefix already in the KV cache.'+LOW],
  cache_hit_pct:['Speed','<b>Cache hit %</b><br>Share of a follow-up prompt reused from the KV cache (<code>cache_n</code>). Low = multi-turn chats re-process the whole history.'+HIGH],
  cache_speedup:['Speed','<b>Cache &times;</b><br>How much faster the cached follow-up prompt was processed than the cold one.'+HIGH],
  tech_tps:['Speed','<b>Tech TPS</b><br>Generation speed on the Technical prompt (median of runs).'+HIGH],
  logic_tps:['Speed','<b>Logic TPS</b><br>Generation speed on the Logic prompt (median of runs).'+HIGH],
- avg_tps:['Speed','<b>Avg TPS</b><br>Mean of Tech and Logic generation speed, one request at a time. 25% of the Agent speed factor.'+HIGH],
+ avg_tps:['Speed','<b>Avg TPS</b><br>Mean of Tech and Logic generation speed, one request at a time. 20% of the Agent speed factor.'+HIGH],
  eval_stage:['Evals','<b>Funnel stage</b><br>Last funnel stage the model reached. Models screened out earlier are not ranked against the finalists.'],
  eval_stage1_avg_pct:['Evals','<b>First-stage avg %</b><br>Eval average over the first funnel stage only: the same questions for every model, so it compares screened-out models and finalists like for like.'+HIGH],
  eval_inflight:['Evals','<b>In flight</b><br>Most questions this model answered at the same time, capped by its slots and KV pool.'],
  time_total_s:['Evals','<b>Time min</b><br>Total benchmark time for this model across all phases (speed tests, loads, evals, long-ctx). See &ldquo;Where the time went&rdquo;.'],
  eval_retry_pct:['Evals','<b>Retries</b><br>Questions that needed the No-Thinking retry (cut off, loop, thinking cap or timeout), count and %. &#9888; above '+RETRY_WARN+'% usually means a template or reasoning-format problem.'+LOW],
- eval_quality:['Evals','<b>Eval &minus; retry penalty</b><br>Eval average after the retry penalty, in points: what the Agent score&rsquo;s quality part sees.'+HIGH],
+ eval_sampling:['Evals','<b>Sampling</b><br>How this model\'s eval answers were generated. <code>temp 0</code> = the benchmark\'s fixed greedy decoding (EVAL_TEMPERATURE). <code>server: ...</code> = the model\'s own sampling from its llama-swap command (EVAL_TEMPERATURE=server or EVAL_SERVER_SAMPLING_MODELS), with a fixed seed. Compare scores between models with the same kind of sampling when you can.'],
+ eval_sanity:['Evals','<b>Sanity diff</b><br>Cached answers re-asked this run (EVAL_SANITY_PCT) that came out different, of those re-asked. The new answer is scored. Different answers under identical settings usually mean non-deterministic decoding (batched requests, temperature &gt; 0).'+LOW],
+ source:['Model','<b>Run</b><br>Which benchmark run this model comes from (shown when runs are combined with <code>--compare</code>). Use the Run filter to show or hide a run.'],
+ eval_quality:['Evals','<b>Eval &minus; retry penalty</b><br>Eval average after the retry penalty, in points (the same penalty the Agent score applies, there as a factor after the tie zone).'+HIGH],
  goldilocks:['Scores','<b>Goldilocks</b><br>'+(META.goldilocks_mode==='log'?'ln(params)':'params')+' &times; avg TPS, for models at &le; '+META.max_vram_pct+'% VRAM. Ranks the Overall-balance podium.'+HIGH],
  score_chat:['Scores','<b>Chat score</b><br>Avg TPS &times; (100 &minus; VRAM%): fast models that leave GPU memory free.'+HIGH],
- score_agent:['Scores','<b>Agent score (0&ndash;100)</b><br>Quality first: eval credit vs the best model (ties within the noise count as 100), minus a retry penalty, then up to '+Math.round(META.agent_speed_weight*100)+'% off for speed (agent TTFT, s/q, TPS). Speed never lifts a clearly weaker model.'+HIGH],
- agent_quality:['Scores','<b>Agent quality</b><br>The quality part of the Agent score alone (0&ndash;100), before the speed factor.'+HIGH],
+ score_agent:['Scores','<b>Agent score (0&ndash;100)</b><br>Quality first: the composite (evals / tool calling / long-ctx over the lengths every ranked model ran) vs the best model, ties within its noise count as 100; then &times; the retry penalty and the context factor (AGENT_CTX_CURVE at the usable context); then up to '+Math.round(META.agent_speed_weight*100)+'% off for speed (prefill at depth + agent TTFT, s/q, TPS). None below AGENT_CTX_MIN or MIN_TOOLCALL_PCT. &asymp; = tool calling borderline. Speed never lifts a clearly weaker model.'+HIGH],
+ agent_quality:['Scores','<b>Agent quality</b><br>The quality part of the Agent score alone (0&ndash;100), before the speed factor: composite credit &times; retry penalty &times; context factor.'+HIGH],
+ agent_composite_pct:['Scores','<b>Agent composite %</b><br>What the Agent score ranks on: evals (all datasets except tool calling) / tool calling / long-ctx, weighted '+agentWeights()+'. Long-ctx counts only the lengths every ranked model ran, so a model that skipped the 128k test is compared on the same questions as the rest.'+HIGH],
+ agent_longctx_pct:['Long-ctx','<b>Agent long-ctx %</b><br>Long-context retrieval over the lengths every ranked model ran (the part used in the Agent composite). The per-length columns show every length a model ran.'+HIGH],
+ agent_ctx_usable:['Scores','<b>Usable context</b><br>The context this model can actually work with: its loaded context, or less when a long-ctx length that fits scored below AGENT_CTX_PASS_PCT (75%) &ndash; then the longest length it passed. A length with no result does not count as passed. Below AGENT_CTX_MIN there is no Agent score.'+HIGH],
+ agent_ctx_factor:['Scores','<b>Context factor</b><br>From AGENT_CTX_CURVE at the usable context (1.0 at 128k+, 0.97 at 77k, 0.95 at 64k by default: a mild preference). Multiplies the Agent quality after the tie zone.'+HIGH],
  score_sweet:['Scores','<b>Sweet spot</b><br>Agent score &times; VRAM fit: the best model that also sits in the VRAM band.'+HIGH],
  budget_pass:['Budget','<b>Budget'+(BUD?' ('+esc(BUD.name)+')':'')+'</b><br>&#10003; when every rule of the budget profile passes. Hover a cell for the failing rules.'],
 };
@@ -602,19 +759,42 @@ function deltaHtml(m, c, v, base){
   const cl = small || good==null ? 'dn' : (good ? 'good' : 'bad');
   return `<small class="d ${cl}">${pct>0?'+':''}${pct.toFixed(0)}%</small>`;
 }
+// v2.3: a value in its colour tier; the worst tier carries a hazard sign, so colour is never the only signal.
+const fmtT = (k, x) => (SC[k] && SC[k].unit==='%' ? Math.round(x)+'%' : (x>=100 ? Math.round(x).toLocaleString() : +x.toPrecision(2)));
+function tierTip(k, n){
+  const s = SC[k], t = thr(k); if (!s || !t) return '';
+  return `${TIERNAMES[n]} tier (${n+1} of 6) for ${s.label}: ${s.dir==='high'?'at or above':'at or below'} `
+    + t.map(x=>fmtT(k,x)).join(' / ') + ` ${s.unit}` + (VIEW.mode==='relative' && REL[k] ? ' (relative: spread over this run)' : '');
+}
+const bline = m => {
+  const n = m.eval_toolcall_n, mo = n ? Math.round(98/Math.sqrt(n)) : null;
+  return `<span class="bline" title="borderline: tool calling ${fmt(m.eval_toolcall_pct,1)}% is within the &plusmn;${mo} margin of error of MIN_TOOLCALL_PCT ${META.min_toolcall_pct}% (${n} cases): one or two cases either way could change it">&asymp;</span>`;
+};
+function tierCell(m, c, v, text){
+  let extra = '', tip = '';
+  if (c.k==='eval_toolcall_pct' && m.agent_borderline) extra = bline(m);
+  if (c.k==='score_agent' && m.agent_borderline) extra = bline(m);
+  if (!c.sc) return text + extra;
+  let n = tierOf(c.sc, v), col = colorFor(c.sc, v, 'table');
+  if (c.k==='eval_toolcall_pct' && META.min_toolcall_pct && v < META.min_toolcall_pct){
+    n = 0; col = TH.tiers[0]; tip = `below MIN_TOOLCALL_PCT ${META.min_toolcall_pct}%: no Agent score`; }
+  if (n==null) return text + extra;
+  return `<span style="color:${col}" title="${esc(tip || tierTip(c.sc, n))}">${n===0?'\u26A0 ':''}${text}</span>${extra}`;
+}
 function cell(m, c, base){
   const v = val(m,c), st = fzStyle(c);
   let cls = fzClass(c), inner;
   const dl = deltaHtml(m,c,v,base);
   if (c.k==='model'){
     const star = base && base.model===m.model ? '\u2605 ' : '';
-    inner = `<div class="clip${hlc(m.model)}" title="${esc(v)}${m.error?' \u2014 '+esc(m.error):''}${m.score_note?' \u2014 Agent score: '+esc(m.score_note):''}">${star}${esc(v)}${m.status==='skipped'?` <span class="hint-room">SKIPPED: ${esc(m.error)}</span>`:m.status!=='ok'?` <span class="err">ERR: ${esc(m.error)}</span>`:''}${m.score_note&&m.score_note.startsWith('no eval')?` <span class="err" title="${esc(m.score_note)}">no eval score</span>`:''}${m.score_note&&m.score_note.startsWith('not ranked')?` <span class="hint-room" title="${esc(m.score_note)}">not ranked</span>`:''}${m.score_note&&m.score_note.startsWith('evals skipped')?` <span class="hint-room" title="${esc(m.score_note)}">evals skipped</span>`:''}</div>`;
+    inner = `<div class="clip${hlc(m.model)}" title="${esc(v)}${m.error?' \u2014 '+esc(m.error):''}${m.score_note?' \u2014 Agent score: '+esc(m.score_note):''}">${star}${esc(v)}${m.status==='skipped'?` <span class="hint-room">SKIPPED: ${esc(m.error)}</span>`:m.status!=='ok'?(String(m.error||'').startsWith('Failed to load')?` <span class="err" title="${esc(m.error)}">\u26A0 ${esc(String(m.error).split(':')[0])}</span>`:` <span class="err">ERR: ${esc(m.error)}</span>`):''}${m.score_note&&m.score_note.startsWith('no eval')?` <span class="err" title="${esc(m.score_note)}">no eval score</span>`:''}${m.score_note&&m.score_note.startsWith('not ranked')?` <span class="hint-room" title="${esc(m.score_note)}">not ranked</span>`:''}${m.score_note&&m.score_note.startsWith('evals skipped')?` <span class="hint-room" title="${esc(m.score_note)}">evals skipped</span>`:''}${m.score_note&&m.score_note.startsWith('no Agent score')?` <span class="err" title="${esc(m.score_note)}">\u26A0 no Agent score</span>`:''}</div>`;
   } else if (c.k==='vram_gb' || c.k==='ram_used_gb'){
     if (v==null) inner = '&ndash;';
     else {
-      const raw = (c.k==='vram_gb' ? m.vram_pct : m.ram_pct) ?? 0, p = Math.min(raw,100), warn = raw >= 95;
+      const raw = (c.k==='vram_gb' ? m.vram_pct : m.ram_pct) ?? 0, p = Math.min(raw,100);
+      const warn = c.k==='vram_gb' ? vramTier(raw)===0 : raw >= 95;      // VRAM: at or above VRAM_SWEET_MAX
       if (warn) cls += ' warn';
-      inner = `<div class="clip">${v.toFixed(1)} GB<span class="bar"><i style="width:${p}%;background:${warn?'#f85149':vramColor(p)}"></i></span><span class="${warn?'err':''}">${warn?'\u26A0 ':''}${raw.toFixed(0)}%</span>${dl}</div>`;
+      inner = `<div class="clip">${v.toFixed(1)} GB<span class="bar"><i style="width:${p}%;background:${c.k==='vram_gb' ? vramColor(raw) : (warn ? TH.tiers[0] : TH.tiers[3])}"></i></span><span class="${warn?'err':''}">${warn?'\u26A0 ':''}${raw.toFixed(0)}%</span>${dl}</div>`;
     }
   } else if (c.k==='ram_spill_gb'){
     inner = (v==null ? '&ndash;' : (v>0 ? `<span class="err">\u26A0 ${v.toFixed(1)}</span>` : '0')) + dl;
@@ -624,9 +804,12 @@ function cell(m, c, base){
   } else if (c.k==='max_ctx_vram'){
     const low = v!=null && m.ctx_size && v < m.ctx_size, under = v!=null && META.min_ctx && v < META.min_ctx;
     inner = v==null ? '&ndash;' : `<span class="${under?'err':low?'hint-room':''}" title="context that fits with VRAM at ${META.max_ctx_pct}% (KV ${m.kv_type||'f16?'}${m.kv_approx?', approximate':''})">${ctxFmt(v)}${m.kv_approx?'*':''}</span>` + dl;
+  } else if (c.sanity){
+    const bad = (m.eval_sanity_diff||0) > 0;
+    inner = v==null ? '&ndash;' : `<span class="${bad?'hint-room':''}" title="${m.eval_sanity_diff||0} of ${m.eval_sanity_n} re-asked cached answers came out different">${m.eval_sanity_diff||0}/${m.eval_sanity_n}</span>`;
   } else if (c.retry){
-    const t = retryTxt(m), warn = (m.eval_retry_pct||0) > RETRY_WARN;
-    inner = t==null ? '&ndash;' : `<span class="${warn?'err':''}" title="${warn?'many retries: check the chat template / --jinja / reasoning settings':''}">${warn?'\u26A0 ':''}${t}</span>`;
+    const t = retryTxt(m), warn = (m.eval_retry_pct||0) > RETRY_WARN, col = colorFor('RETRY', m.eval_retry_pct, 'table');
+    inner = t==null ? '&ndash;' : `<span style="${col?'color:'+col:''}" title="${warn?'many retries: check the chat template / --jinja / reasoning settings':esc(tierTip('RETRY', tierOf('RETRY', m.eval_retry_pct)))}">${warn?'\u26A0 ':''}${t}</span>`;
   } else if (c.bud){
     const ok = c.bud==='*' ? m.budget_pass : v, rule = c.bud==='*' ? null : (m.budget||{})[c.bud];
     const tip = c.bud==='*' ? (m.budget_fails||'all rules pass') : (rule ? rule.text : '');
@@ -636,14 +819,10 @@ function cell(m, c, base){
     inner = v==null ? '&ndash;' : `<span class="${below?'hint-room':''}" title="${below?'below LONGCTX_KV_MIN '+LC.kv_min:''}">${esc(v)}</span>`;
   } else if (c.k==='vram_hint'){
     inner = v==null ? '&ndash;' : `<span class="${hintCls(v)}">${esc(v)}</span>`;
-  } else if (['quant','arch','offload','flash_attn','mmproj','attn_type','ubb','experts','layers'].includes(c.k)) inner = esc(v ?? '\u2013');
+  } else if (['source','eval_sampling','quant','arch','offload','flash_attn','mmproj','attn_type','ubb','experts','layers'].includes(c.k)) inner = esc(v ?? '\u2013');
   else if (v==null) inner = '&ndash;';
   else if (c.f) inner = c.f(v);
-  else {
-    const t = (c.cost ? cur : '') + Number(v).toFixed(c.dec ?? 1);
-    const colr = c.tps ? tpsColor(v) : (c.acc ? accColor(v) : null);
-    inner = (colr ? `<span style="color:${colr}">${t}</span>` : t) + dl;
-  }
+  else inner = tierCell(m, c, v, (c.cost ? cur : '') + Number(v).toFixed(c.dec ?? 1)) + dl;
   return `<td class="${cls}"${st}>${inner}</td>`;
 }
 function renderTable(){
@@ -656,7 +835,7 @@ function renderTable(){
     return (typeof x==='string' ? x.localeCompare(y) : x-y) * state.sd;
   });
   $('tbl').innerHTML = '<thead><tr>' + VIS.map(c=>{
-      const tip = (c.tip || `<b>${esc(c.l)}</b>`) + '<br><span style="color:#8b949e">Click to sort &middot; &times; to hide this column</span>';
+      const tip = (c.tip || `<b>${esc(c.l)}</b>`) + '<br><span style="color:var(--mute)">Click to sort &middot; &times; to hide this column</span>';
       return `<th class="${fzClass(c)}" data-k="${c.k}"${fzStyle(c)} data-tip="${esc(tip)}"><span class="tipd">${c.l}</span>${state.sk===c.k?(state.sd<0?' \u25BC':' \u25B2'):''}<span class="colx" data-hide="${c.k}" data-tip="Hide this column (bring it back with Columns or Show all)">&times;</span></th>`;
     }).join('') + '</tr></thead><tbody>' +
     rows.map(m=>`<tr data-m="${encodeURIComponent(m.model)}"${base&&base.model===m.model?' class="sel"':''}>${VIS.map(c=>cell(m,c,base)).join('')}</tr>`).join('') + '</tbody>';
@@ -767,7 +946,7 @@ function render(){
 }
 
 /* ---------- where the time went (v2.1) ---------- */
-const SPEEDPH = ['settle','load','speed','prefill_ctx','agent_ttft','cooldown'];
+const SPEEDPH = ['settle','load','speed','prefill_ctx','prefill_depth','agent_ttft','cooldown'];
 function timeGroups(m){
   const t = m.timing || {}, g = {};
   const add = (k,v) => { if (v) g[k] = (g[k]||0) + v; };
@@ -804,7 +983,7 @@ function renderTime(rows){
 /* Header test list: each dataset links to the page it is loaded from (Hugging Face, or the source file for built-in sets). */
 const safeUrl = u => /^https:\/\//.test(u||'') ? u : null;
 function testLinks(){
-  const evTip = e => `<b>${esc(e.label)}</b><br>${esc(e.desc||'')}<br><span style="color:#8b949e">${e.repo==='builtin'?'Built into the benchmark':'Loaded from Hugging Face: '+esc(e.repo)+(e.revision?' @ '+esc(e.revision):' (unpinned)')} &middot; ${e.rows??'?'} questions this run. Click to open.</span>`;
+  const evTip = e => `<b>${esc(e.label)}</b><br>${esc(e.desc||'')}<br><span style="color:var(--mute)">${e.repo==='builtin'?'Built into the benchmark':'Loaded from Hugging Face: '+esc(e.repo)+(e.revision?' @ '+esc(e.revision):' (unpinned)')} &middot; ${e.rows??'?'} questions this run. Click to open.</span>`;
   return META.tests.map(t=>{
     const e = EV.find(x=>x.short===t), u = e && safeUrl(e.url);
     if (e) return u ? `<a class="tlink" href="${esc(u)}" target="_blank" rel="noopener noreferrer" data-tip="${esc(evTip(e))}">${esc(t)}</a>` : `<span class="tipd" data-tip="${esc(evTip(e))}">${esc(t)}</span>`;
@@ -813,14 +992,15 @@ function testLinks(){
     return esc(t);
   }).join(', ');
 }
-$('hdr').innerHTML = `${META.count} models` + (META.tests.length ? ` &middot; <b style="color:#e6edf3">Tests:</b> ${testLinks()}${META.evals?` (profile ${esc(META.evals.profile)})`:''}` : '') +
+$('hdr').innerHTML = `${META.count} models` + (META.tests.length ? ` &middot; <b style="color:var(--text)">Tests:</b> ${testLinks()}${META.evals?` (profile ${esc(META.evals.profile)})`:''}` : '') +
   ` &middot; ${esc(META.generated)} &middot; ${esc(META.backend)}<br>` +
-  (META.partial ? '<b style="color:#d29922">Speed test only &mdash; the evaluations had not finished when this dashboard was saved. It is replaced automatically when they complete.</b><br>' : '') +
-  (!META.has_speed ? 'Evaluations only &mdash; speed and hardware telemetry were not measured in this run.' : `<b style="color:#e6edf3">Host:</b> ${META.hardware ? esc(META.hardware) : 'VRAM limit '+META.vram_limit+' GB'} &middot; ` +
-  `<b style="color:#e6edf3">Power:</b> GPU via ${esc(META.gpu_source||'nvidia-smi')} (${META.poll_ms} ms), CPU via ${esc(META.cpu_source)}` +
-  (IDLE!=null ? ` &middot; <b style="color:#e6edf3">Idle RAM baseline:</b> ${IDLE.toFixed(1)} GB` : ''));
+  (META.compare ? `<b style="color:var(--amber)">Combined runs (--compare):</b> ${META.compare.runs.map(r=>esc(r.label)+' ('+r.models+' models)').join(' + ')}. Agent scores are re-computed over all models together; the Run filter only hides rows.${META.compare.warnings.length?' <span class="tipd" data-tip="'+esc(META.compare.warnings.map(esc).join('<br>'))+'">'+META.compare.warnings.length+' note(s)</span>':''}<br>` : '') +
+  (META.partial ? '<b style="color:var(--amber)">Speed test only &mdash; the evaluations had not finished when this dashboard was saved. It is replaced automatically when they complete.</b><br>' : '') +
+  (!META.has_speed ? 'Evaluations only &mdash; speed and hardware telemetry were not measured in this run.' : `<b style="color:var(--text)">Host:</b> ${META.hardware ? esc(META.hardware) : 'VRAM limit '+META.vram_limit+' GB'} &middot; ` +
+  `<b style="color:var(--text)">Power:</b> GPU via ${esc(META.gpu_source||'nvidia-smi')} (${META.poll_ms} ms), CPU via ${esc(META.cpu_source)}` +
+  (IDLE!=null ? ` &middot; <b style="color:var(--text)">Idle RAM baseline:</b> ${IDLE.toFixed(1)} GB` : ''));
 const CH = [['tps','Avg generation speed (tok/s)'],['vram','VRAM vs speed (bubble = params)'],['eff','Power efficiency (tok/s per W, GPU + CPU)'],
-  ['jt','Energy per token (J, lower is better)'],['ttft','TTFT leaderboard (ms, lower is better)'],['lat','Latency vs throughput (top-left is best)'],
+  ['jt','Energy per token (J, lower is better)'],['ttft','Prompt processing time, short prompt (ms, lower is better)'],['lat','Latency vs throughput (top-left is best)'],
   ['pg','Prefill vs generation speed (tok/s, log scale)'],['pwr','Active vs idle GPU power (W)'],['mem','Memory footprint: VRAM vs inference-server RAM (GB)'],['quant','Avg TPS by quantization']]
   .concat(PFL.length ? [['pctx','Prefill speed by prompt length (tok/s) \u2014 offloaded MoEs slow down most']] : []);
 const chartCard = ([id,t])=>`<div class="card"><h3>${t}</h3><div class="chartbox" id="b_${id}"><canvas id="c_${id}"></canvas></div><p class="sub" id="e_${id}" hidden>No data for this chart (telemetry unavailable, or filtered out).</p></div>`;
@@ -841,8 +1021,9 @@ document.addEventListener('scroll', ()=>{ TIPBOX.style.display = 'none'; }, true
 if (EV.length || LCL.length){
   $('evsec').hidden = false;
   const mo = MOE ? ` &middot; margin of error (95%): ${EV.map(e=>MOE.per_dataset[e.key]?`${esc(e.short)} &plusmn;${MOE.per_dataset[e.key].moe.toFixed(0)}`:'').filter(Boolean).join(', ')}, average &plusmn;${MOE.average.moe.toFixed(0)} points` : '';
-  $('evsub').innerHTML = (EV.length ? `${EV.map(e=>`<b class="tipd" data-tip="${esc('<b>'+esc(e.label)+'</b><br>'+esc(e.desc||''))}">${safeUrl(e.url)?`<a class="tlink" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">${esc(e.label)}</a>`:esc(e.label)}</b> (${e.rows??'?'}${e.available?' of '+e.available:''} rows)`).join(' &middot; ')} &mdash; Test profile <b>${esc(EVM.profile)}</b>${mo}. Only the tests and models that were actually run are shown.` : 'Long-context retrieval only.')
-    + (MOE && MOE.rough ? `<div class="card" style="margin-top:8px;border-color:#d29922"><b style="color:#d29922">\u26A0 Rough guide only.</b> The <code>${esc(EVM.profile)}</code> profile asks so few questions that gaps smaller than the margin above are noise. Use it to drop clear losers, then re-run the finalists with <code>EVAL_PROFILE=standard</code> (&plusmn;10) or <code>thorough</code> (&plusmn;7) before choosing.</div>` : '')
+  const agentNote = AGENT_BASIS && AGENT_BASIS.includes('; ') ? AGENT_BASIS.split('; ').slice(1).join('; ') : null;
+  $('evsub').innerHTML = (agentNote ? `<div class="card" style="margin:0 0 8px;border-color:var(--amber)"><b style="color:var(--amber)">\u26A0 Agent score:</b> ${esc(agentNote)}. The composite this run: ${esc(AGENT_BASIS.split('; ')[0])}.</div>` : '') + (EV.length ? `${EV.map(e=>`<b class="tipd" data-tip="${esc('<b>'+esc(e.label)+'</b><br>'+esc(e.desc||''))}">${safeUrl(e.url)?`<a class="tlink" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">${esc(e.label)}</a>`:esc(e.label)}</b> (${e.rows??'?'}${e.available?' of '+e.available:''} rows)`).join(' &middot; ')} &mdash; Test profile <b>${esc(EVM.profile)}</b>${mo}. Only the tests and models that were actually run are shown.` : 'Long-context retrieval only.')
+    + (MOE && MOE.rough ? `<div class="card" style="margin-top:8px;border-color:var(--amber)"><b style="color:var(--amber)">\u26A0 Rough guide only.</b> The <code>${esc(EVM.profile)}</code> profile asks so few questions that gaps smaller than the margin above are noise. Use it to drop clear losers, then re-run the finalists with <code>EVAL_PROFILE=standard</code> (&plusmn;10) or <code>thorough</code> (&plusmn;7) before choosing.</div>` : '')
     + (ALL.some(m=>(m.eval_retry_pct||0)>RETRY_WARN) ? `<div class="sub" style="margin-top:6px">\u26A0 = more than ${RETRY_WARN}% of a model's questions needed the No-Thinking retry. That usually points to a chat-template, <code>--jinja</code> / reasoning-format or sampling problem rather than the model itself; check it before judging the scores.</div>` : '');
   $('evcharts').innerHTML = [...EVKINDS.map(([k,t])=>['ev'+k,t]), ...(LCL.length?[['evlong',`Long-context retrieval (${LC.keys} keys per prompt, KV &ge; ${esc(LC.kv_min)})`]]:[]), ['evspeed','Quality vs speed (top-right is best)']].map(chartCard).join('');
 }
@@ -853,7 +1034,52 @@ if (!META.has_speed){      // evals-only run: no speed / hardware data to show
   $('speedtop').hidden = true; $('quantsec').hidden = true;
   document.querySelector('#filters').hidden = true;
 }
-buildFilters(); bindTable(); bindColPanel(); render();
+/* ---------- v2.3: view bar (theme, colour style for tables and charts, scale mode) and the Help / guide ---------- */
+function buildViewbar(){
+  const opt = (label, key, vals, tip) => `<span class="fg"><span class="tipd" data-tip="${esc(tip)}">${label}</span>` +
+    vals.map(([v,t]) => `<button class="tog${VIEW[key]===v?' on':''}" data-view="${key}" data-val="${v}">${t}</button>`).join('') + '</span>';
+  $('viewbar').innerHTML =
+    opt('Theme','theme',[['auto','Auto'],['light','Light'],['dark','Dark']], '<b>Theme</b><br>Auto follows your system setting. Remembered in this browser.') +
+    opt('Table colours','tstyle',[['bands','Bands'],['smooth','Smooth']], '<b>Table colours</b><br>Bands = six flat tiers; Smooth = a gradient between the tier colours. Colours never change a score.') +
+    opt('Charts','cstyle',[['bands','Bands'],['smooth','Smooth']], '<b>Chart colours</b><br>One switch for all charts: bars and dots coloured by tier (bands) or by a gradient (smooth).') +
+    opt('Scale','mode',[['absolute','Absolute'],['relative','Relative']], '<b>Colour scale</b><br>Absolute = the thresholds in the Help (COLOUR_&lt;METRIC&gt; in .env); Relative = tiers spread evenly over this run\'s own slowest to fastest (log scale for speeds and times), handy on small GPUs. VRAM % always uses the sweet spot.') +
+    `<button class="tog helpb" id="helpbtn" data-tip="Colour tiers, thresholds and a rough speed-by-setup guide">? Help</button>`;
+}
+function rerenderAll(){ applyTheme(); render(); if ($('helppop') && !$('helppop').hidden) buildHelp(); }
+document.addEventListener('click', e => {
+  const b = e.target.closest('#viewbar button'); const pop = $('helppop');
+  if (b && b.id==='helpbtn'){ if (pop.hidden){ buildHelp(); pop.hidden = false; } else pop.hidden = true; return; }
+  if (b && b.dataset.view){ VIEW[b.dataset.view] = b.dataset.val; saveView(); buildViewbar(); rerenderAll(); return; }
+  if (pop && !pop.hidden && !e.target.closest('#helppop')) pop.hidden = true;
+});
+document.addEventListener('keydown', e => { if (e.key==='Escape' && $('helppop')) $('helppop').hidden = true; });
+if (OSDARK && OSDARK.addEventListener) OSDARK.addEventListener('change', () => { if (VIEW.theme==='auto') rerenderAll(); });
+const SPEEDBYSETUP = [['4 GB','3&ndash;4B Q4','30&ndash;50'],['8 GB','7&ndash;8B Q4','40&ndash;80'],
+  ['12 GB (e.g. RTX 3060)','12&ndash;14B Q4','30&ndash;40 (MoE A3B 60&ndash;100)'],['16 GB (e.g. RTX 5070 Ti)','14B / 30B-A3B MoE','80&ndash;100 / 150&ndash;250'],
+  ['24 GB (RTX 3090 / 4090)','32B Q4','35&ndash;45'],['32 GB (RTX 5090)','32B Q4','60&ndash;70'],
+  ['128 GB+ unified (Mac Ultra, Strix Halo)','70B dense / 100B+ MoE','5&ndash;15 / 25&ndash;50']];
+function buildHelp(){
+  const sw = n => `<span class="sw" style="background:${TH.tiers[n]}"></span>`;
+  const rows = Object.entries(SC).map(([k,sc]) => { const t = thr(k);
+    return `<tr><td>${esc(sc.label)} <span class="sub">(${esc(sc.unit)}${sc.dir==='low'?', lower is better':''})</span></td>` +
+      t.map((x,i)=>`<td>${sw(i+1)}${sc.dir==='high'?'&ge;':'&le;'} ${fmtT(k,x)}</td>`).join('') +
+      `<td class="sub">COLOUR_${k}</td></tr>`; }).join('');
+  $('helppop').innerHTML = `<h3>Colour tiers <span class="sub" style="font-weight:400">(display only: colours never change a score)</span></h3>
+    <div class="tierkey">${[0,1,2,3,4,5].map(n=>`<span>${sw(n)}${TIERNAMES[n]}</span>`).join('')}</div>
+    <div class="sub">Worst to best. The worst tier always shows &#9888; next to the value, so colour is never the only signal. Higher-is-better scales count a threshold when the value is at or above it, lower-is-better ones (times, retries, power) at or below.
+    ${VIEW.mode==='relative' ? '<b>Relative scale is on:</b> the thresholds below are spread evenly over this run&rsquo;s own range (log scale for speeds and times), not the absolute ones.' : 'Absolute scale: set your own with <code>COLOUR_&lt;METRIC&gt;=a,b,c,d,e</code> in .env, or switch to Relative.'}
+    Tables: <b>${VIEW.tstyle}</b>; charts: <b>${VIEW.cstyle}</b>.</div>
+    <table style="margin-top:8px"><tr><th>Metric</th><th colspan="5">Thresholds (tier reached)</th><th>.env</th></tr>${rows}
+    <tr><td>VRAM %</td><td colspan="5">${sw(5)}${META.vram_sweet_low}&ndash;${META.vram_sweet_high}% (sweet spot) &middot; ${sw(4)}${sw(3)}${sw(2)} further below it &middot; ${sw(1)} above it &middot; ${sw(0)}&#9888; at ${META.vram_sweet_max}% or more</td><td class="sub">VRAM_SWEET_*</td></tr>
+    ${META.min_toolcall_pct?`<tr><td>Tool calling</td><td colspan="5">${sw(0)}&#9888; below ${META.min_toolcall_pct}% (MIN_TOOLCALL_PCT: no Agent score); <span class="bline">&asymp;</span> = borderline, within its margin of error of that minimum</td><td class="sub">MIN_TOOLCALL_PCT</td></tr>`:''}</table>
+    <h3>Rough speed by setup</h3>
+    <div class="sub">To read the generation tiers against your hardware. <b>Estimates</b> from memory bandwidth &divide; the size of the active weights, not measurements; real speed depends on the quant, context, offload and backend.</div>
+    <table style="margin-top:6px"><tr><th>Setup (VRAM)</th><th>Typical model</th><th>Rough generation tok/s</th></tr>
+    ${SPEEDBYSETUP.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join('')}</table>
+    <h3>Families and patterns</h3>
+    <div class="sub">Family chips come from <code>DASH_FAMILIES</code> in .env (e.g. <code>"Gemma 4=*gemma-4*|Air*|Wicked*; BigBang=*BigBang*"</code>), then from the first word of each model name. The pattern box takes comma-separated patterns with * and ? wildcards. Press Esc or click outside to close this.</div>`;
+}
+relScales(); buildViewbar(); buildFilters(); bindTable(); bindColPanel(); render();
 
 $('meth').innerHTML = `<ul>
  ${!META.has_speed?'':`<li><b>Backend:</b> ${esc(META.backend)} (OpenAI-compatible <code>/v1/chat/completions</code>), non-streaming. The prompt cache is disabled for all speed tests.</li>
@@ -872,13 +1098,18 @@ $('meth').innerHTML = `<ul>
  <li><b>Highlight:</b> click a model name anywhere (table row, winner cards, quantization table, chart labels, bars or dots). It turns red everywhere and becomes the table baseline; click it again or press Reset / Clear to remove it.</li>
  <li><b>Table columns:</b> hover a header for what it measures; click it to sort. Hide columns with the &times; in a header or the <b>Columns</b> panel (single columns, whole groups, or <i>Only this group</i>); <b>Show all columns</b> brings the full table back. The choice is remembered in this browser for later dashboards. Test names in the page header link to the dataset each one was loaded from.</li>
  <li><b>Chat score:</b> <code>avg TPS &times; (100 &minus; VRAM%)</code>. Rewards a fast model that also leaves GPU memory free (for context or other apps).</li>
- <li><b>Agent score (0&ndash;100, quality first):</b> <b>1. Quality credit.</b> ${META.evals?`The model's eval average${LCL.length&&META.agent_longctx_weight>0?`, blended ${Math.round(META.agent_longctx_weight*100)}% with long-context retrieval when every model has it`:''}, compared with the best of the run. Anything within the noise margin of the best (default one standard error) counts as a tie at 100; below that the credit falls steeply (quadratic, 0 at ${META.agent_acc_span}&nbsp;points under the tie zone). Then the <b>retry penalty</b>: &times; (1 &minus; ${EVM.fallback_penalty}% &times; share of questions retried), applied after the tie zone so it also separates tied models. A model whose evals produced no score (every request failed) gets <b>no</b> Agent score, rather than a proxy on a different scale.`:`No evaluations ran, so a <b>proxy</b> stands in: dense-equivalent size (a MoE counts as &radic;(total &times; active)) on a log scale, times a mild penalty below ~4.5 bits per weight, relative to the best model of the run. It is a rough guide: run evals to rank for real.`} <b>2. Speed factor</b> (0&ndash;1): prompt processing 40% (agent-prompt TTFT, <code>1 &divide; (1 + TTFT &divide; ${META.agent_ttft_ref}s)</code>, if measured; else the longest prefill test, <code>ln(t/s) &divide; ln(${META.agent_prefill_ref})</code>), seconds per eval question 35% (<code>1 &divide; (1 + s/q &divide; ${META.agent_sec_ref})</code>), generation speed 25% (<code>ln(avg TPS) &divide; ln(${META.agent_tps_ref})</code>); missing parts are left out. It can remove at most ${Math.round(META.agent_speed_weight*100)}% of the credit: <code>score = credit &times; (1 &minus; ${META.agent_speed_weight} + ${META.agent_speed_weight} &times; speed)</code>. Speed ranks models of similar quality but never lifts a clearly weaker one. VRAM is not part of the Agent score (see the sweet spot). Tune with <code>AGENT_*</code> in .env.</li>
+ <li><b>Agent score (0&ndash;100, quality first, v2.3):</b> for an agentic reasoner (many tool calls and turns, long context). <code>score = credit &times; retry keep &times; context factor &times; (1 &minus; ${META.agent_speed_weight} + ${META.agent_speed_weight} &times; speed)</code>.
+   <b>1. Composite quality.</b> ${META.evals?`Evals (every dataset except tool calling) / tool calling / long-context retrieval, weighted ${esc(AGENT_BASIS || ('evals '+Math.round((1-(META.agent_tool_weight||0.3)-META.agent_longctx_weight)*100)+'% / tools '+Math.round((META.agent_tool_weight||0.3)*100)+'% / long-ctx '+Math.round(META.agent_longctx_weight*100)+'%'))} (a part the run does not have gives its weight to the evals). Long-ctx counts only the lengths <i>every</i> ranked model ran, so a 90k model that skipped the 128k test is compared on the same questions as the rest; the context factor carries the context preference instead. A ranked model with no long-ctx result at all leaves long-ctx out for everyone, with a note. The composite is compared with the best of the run: anything within its noise (one standard error of the best composite, from each part's question count: tool calling has only 32 cases) counts as a tie at 100; below that the credit falls steeply (quadratic, 0 at ${META.agent_acc_span}&nbsp;points under the tie zone).`:`No evaluations ran, so a <b>proxy</b> stands in: dense-equivalent size (a MoE counts as &radic;(total &times; active)) on a log scale, times a mild penalty below ~4.5 bits per weight, relative to the best model of the run. It is a rough guide: run evals to rank for real.`}
+   <b>2. After the tie zone</b> (so they also separate tied models): ${META.evals?`the retry penalty &times; (1 &minus; ${EVM.fallback_penalty}% &times; share of questions retried) and `:''}the <b>context factor</b> from <code>AGENT_CTX_CURVE</code> at the <b>usable context</b> (the loaded context, capped at the longest long-ctx length that reached ${META.agent_ctx_pass_pct??75}%; ${(META.agent_ctx_curve||[]).slice().reverse().map(([c,f])=>ctxFmt(c)+' '+f).join(', ')||'off'}, linear between).
+   <b>No Agent score</b> when the evals failed, are incomplete, were skipped or screened out, the usable context is below <code>AGENT_CTX_MIN</code> (${META.agent_ctx_min?ctxFmt(META.agent_ctx_min):'off'})${META.min_toolcall_pct?`, or tool calling is below <code>MIN_TOOLCALL_PCT</code> (${META.min_toolcall_pct}%; &asymp; marks a score within its margin of error of that minimum)`:''}.
+   <b>3. Speed factor</b> (0&ndash;1): prompt processing 50% (prefill at depth 60%: ~4k new tokens on a cached ${META.prefill_depth_auto?'context (the largest of 8k&ndash;64k that fits; only models at the same depth are compared)':Math.round((META.prefill_depth||65536)/1024)+'k context'}, credit halves at ${Math.round(20000/META.agent_ttft_ref).toLocaleString()} tok/s; cold agent-prompt TTFT 40%: <code>1 &divide; (1 + TTFT &divide; ${META.agent_ttft_ref}s)</code>; whichever exist, else the longest prefill test, <code>ln(t/s) &divide; ln(${META.agent_prefill_ref})</code>), seconds per eval question 30% (<code>1 &divide; (1 + s/q &divide; ${META.agent_sec_ref})</code>), generation speed 20% (<code>ln(avg TPS) &divide; ln(${META.agent_tps_ref})</code>); missing parts are left out. It can remove at most ${Math.round(META.agent_speed_weight*100)}% of the score, so speed ranks models of similar quality but never lifts a clearly weaker one. VRAM is not part of the Agent score (see the sweet spot). Tune with <code>AGENT_*</code> in .env.</li>
+ <li><b>Colours</b> (display only, never part of a score): six tiers from red with &#9888; to purple, per metric (generation tok/s ${(SC.GEN||{t:[]}).t.join(' / ')}, prefill ${(SC.PREFILL||{t:[]}).t.join(' / ')}, ...; VRAM by the sweet spot). Bands or smooth, absolute or relative, light or dark: switch at the top right; <b>? Help</b> lists every threshold.</li>
  <li><b>Limits:</b> max_tokens ${META.max_tokens.join(' / ')}; timeouts ${META.timeouts.join('s / ')}s.</li>
  <li><b>What was loaded:</b> <b>KV type</b>, <b>FA</b>, <b>-ub / -b</b>, <b>Slots</b> (<code>--parallel</code>), <b>mmproj</b> and CPU offload are read from the llama-server command line (<code>/proc</code>, else llama-swap's <code>/running</code>); KV defaults to f16 when no <code>-ctk/-ctv</code> is given. <b>GGUF GB</b>, <b>BPW</b> (file bits &divide; parameters), <b>Type</b>, <b>Experts</b>, <b>Attention</b> (GQA / MLA / SWA / hybrid SSM) and <b>Full-attn layers</b> come from the GGUF header, so a MoE without "A3B" in its name is still reported as MoE. <b>KV KiB/tok</b> = KV cache per token of context over the full-attention layers at that KV type (sliding-window layers are a fixed cost). <b>Max ctx @${META.max_ctx_pct}%</b> = loaded ctx + (${META.max_ctx_pct}% of VRAM &minus; measured VRAM) &divide; KV per token, capped at the training context; * = approximate (layout or KV type assumed).</li>
  ${META.min_ctx?`<li><b>Minimum context:</b> ${ctxFmt(META.min_ctx)} tokens (<code>MIN_CTX</code> / budget profile). Models loaded with less are ${META.min_ctx_action==='refuse'?'not benchmarked (SKIPPED)':'marked &#9888; in the Ctx column and kept off the podium'}: VRAM and speed at a smaller context flatter them.</li>`:''}
  ${PFL.length||META.agent_prompt_tokens?`<li><b>Deployed-context speed:</b> ${PFL.length?`prefill at ${PFL.join(', ')} prompt tokens (one cold, unique prompt each; lengths above the loaded context are skipped) &mdash; offloaded MoEs that look fine at 1.4k often slow down sharply here. `:''}${META.agent_prompt_tokens?`<b>Agent TTFT</b>: time to first token for a ~${Math.round(META.agent_prompt_tokens/1000)}k-token agent-style request (system prompt with tool catalogue + history); <b>Next-turn TTFT</b> = the following turn with the prefix cached.`:''}</li>`:''}
  ${BUD?`<li><b>Budget profile <code>${esc(BUD.name)}</code>:</b> ${Object.entries(BUD.rules).map(([k,v])=>`<code>${k}=${v}</code>`).join(', ')}. One pass/fail column per rule (hover for the numbers; ? = not measured, never a fail). VRAM rule: model VRAM (increase over idle) + reserve &le; GPU total &times; MAX_VRAM_PCT. ${META.budget_pass_only?'Models that fail a rule are kept off the podium.':''}</li>`:''}`}
- ${EVM?`<li><b>Evaluations</b> (run after all speed tests, one model at a time): ${EV.map(e=>esc(e.label)+' ('+(e.rows??'?')+' rows)').join(', ')}. Profile <code>${esc(EVM.profile)}</code>; rows are sampled with seed ${EVM.seed}, so every model gets the same questions. Temperature ${EVM.temperature}, max_tokens ${EVM.max_tokens_qa} (QA) / ${EVM.max_tokens_code} (code)${EVM.max_tokens_qa==='dynamic'||EVM.max_tokens_code==='dynamic'?' (dynamic = model context minus prompt)':''}. Reasoning blocks are stripped before grading. ${EVM.retry_nothink?`A reply that is cut off or times out is retried once with thinking disabled (No Thinking). `:''}${EVM.stream?`Replies are streamed: a reply that falls into a repetition loop is stopped early (<b>Fail: Degradation</b>), and thinking is capped at ${EVM.think_budget?EVM.think_budget.toLocaleString()+' tokens':'no limit'} per question (<b>Fail: Think cap</b>)${EVM.salvage?'; a stopped reply whose visible answer is already complete is graded as it is':''}. `:''}A reply that is still cut off with no usable answer counts as wrong, but is tracked separately as N/A (shown in the chart tooltips and the CSV). <b>s/q</b> = mean seconds to answer one question, including retries, timeouts and grading (never the model load). Compare it between models that scored about the same.</li>
+ ${EVM?`<li><b>Evaluations</b> (run after all speed tests, one model at a time): ${EV.map(e=>esc(e.label)+' ('+(e.rows??'?')+' rows)').join(', ')}. Profile <code>${esc(EVM.profile)}</code>; rows are sampled with seed ${EVM.seed}, so every model gets the same questions. Sampling: ${esc(String(EVM.temperature))} (each model's is in the <b>Sampling</b> column), max_tokens ${EVM.max_tokens_qa} (QA) / ${EVM.max_tokens_code} (code)${EVM.max_tokens_qa==='dynamic'||EVM.max_tokens_code==='dynamic'?' (dynamic = model context minus prompt)':''}. Reasoning blocks are stripped before grading. ${EVM.retry_nothink?`A reply that is cut off or times out is retried once with thinking disabled (No Thinking). `:''}${EVM.stream?`Replies are streamed: a reply that falls into a repetition loop is stopped early (<b>Fail: Degradation</b>), and thinking is capped at ${EVM.think_budget?EVM.think_budget.toLocaleString()+' tokens':'no limit'} per question (<b>Fail: Think cap</b>)${EVM.salvage?'; a stopped reply whose visible answer is already complete is graded as it is':''}. `:''}A reply that is still cut off with no usable answer counts as wrong, but is tracked separately as N/A (shown in the chart tooltips and the CSV). <b>s/q</b> = mean seconds to answer one question, including retries, timeouts and grading (never the model load). Compare it between models that scored about the same.</li>
  ${EV.some(e=>e.kind==='qa')?'<li><b>QA grading:</b> the model is told to end with <code>Answer: X</code>; the last <i>Answer:</i> / <i>the answer is</i> / <code>\\boxed{}</code> letter (else a final line that is just a letter) is compared with the dataset\'s answer. API failures count as wrong; a model that returned nothing at all gets no score.</li>':''}
  ${EV.some(e=>e.kind==='math')?'<li><b>Math grading:</b> the model is told to end with <code>Answer: &lt;answer&gt;</code>; the last <i>Answer:</i> line (else the last <code>\\boxed{}</code>; for GSM8K also the last number of a finished reply) is normalised (units, <code>\\dfrac</code>, thousands separators, <code>x=</code> prefixes) and compared with the reference: equal strings, or numerically equal to 1e-6 (fractions and decimals). Purely symbolic equivalents count as wrong, so scores are a slight lower bound.</li>':''}
  ${EV.some(e=>e.kind==='code')?`<li><b>Code grading (pass@1):</b> the last python block of the reply is executed in a <code>${esc(EVM.code_sandbox)}</code> sandbox, ${EVM.code_timeout}s per run, no network where available. <b>HumanEval:</b> the task's own <code>check()</code>. <b>MBPP:</b> the <code>test_list</code> asserts (also shown in the prompt, the standard MBPP protocol). <b>LCB:</b> public tests plus up to ${EVM.lcb_max_tests||'all'} tests per problem (stdin/stdout or starter-code function).</li>`:''}

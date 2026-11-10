@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import os
 import random
+import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
 
+from .common import now
 from .client import make_session
 from .config import BUDGET_DEFAULTS, EVAL_SPECS
 from .evals.sandbox import resolve_sandbox
@@ -44,6 +46,8 @@ def demo_results(cfg):
                  tok_per_word=1.2, ctx_ok=r["ctx_size"] >= 65536,
                  prefill_8k_tps=tps * 12, prefill_32k_tps=tps * 9, prefill_64k_tps=tps * 6,
                  agent_prompt_tokens=20000, agent_ttft_s=20000 / (tps * 10), agent_ttft_warm_s=0.3,
+                 prefill_depth_tps=tps * 4, prefill_depth_ttft_s=4100 / (tps * 4), prefill_depth_tokens=63500,
+                 prefill_depth_new=4100,
                  longctx_64k_pct=rng.choice([100, 87.5, 75, 62.5]), longctx_kv_ok=kvt != "q4_0",
                  longctx_128k_pct=rng.choice([87.5, 62.5, 50]) if r["ctx_size"] >= 131072 else None,
                  longctx_note=None if r["ctx_size"] >= 131072 else "128k: ctx 64k too small")
@@ -61,7 +65,8 @@ def demo_results(cfg):
         # v2.1: where the time went (seconds per phase) and eval tokens, so the timing section has something to show
         think = rng.choice([0.0, 0.6, 0.8])
         r["timing"] = {"settle": 5.0, "load": r["load_s"], "speed": 900 / tps * 3, "prefill_ctx": 80000 / (tps * 9),
-                       "agent_ttft": r["agent_ttft_s"] + 1, "cooldown": 5.0, "eval_load": r["load_s"],
+                       "prefill_depth": 4100 / (tps * 4) + 1, "agent_ttft": r["agent_ttft_s"] + 1, "cooldown": 5.0,
+                       "eval_load": r["load_s"],
                        "longctx": 2 * 65536 / (tps * 6)}
         for key in ("gpqa", "mmlu_pro", "humaneval", "mbpp", "livecodebench", "gsm8k", "math"):
             r["timing"][f"eval:{key}"] = r[f"eval_{key}_sec"] * 50
@@ -88,6 +93,10 @@ def demo_results(cfg):
 def _check_servers(cfg):
     print(f"Hardware: {detect_hardware(cfg) or 'not detected'}")
     print(f"llama-swap: {cfg.base_url}")
+    from .locality import remote_warning
+    far = remote_warning(cfg.base_url)
+    if far:
+        print(f"  [warn] {far}")
     ls_ok = False
     try:
         n = len(make_session(cfg, "llama-swap").get(cfg.models_url, timeout=5).json().get("data", []))
@@ -119,7 +128,7 @@ def _check_gpu(cfg):
         ok = mon.start()
         time.sleep(1.5)
         if ok:
-            s = mon.window(time.time() - 1.5, time.time())
+            s = mon.window(now() - 1.5, now())
             print(f"GPU ({label}): OK, {len(s)} samples in 1.5s; latest = "
                   + ", ".join(f"{k}={v:.1f}" for k, v in s[-1].items() if v is not None))
             if cls is NvmlGpuMonitor and cfg.gpu_energy_counter:
@@ -137,6 +146,14 @@ def _check_eval_client(cfg):
         print(f"Async eval client: aiohttp {aiohttp.__version__} (EVAL_CONCURRENCY={cfg.eval_concurrency})")
     except ImportError:
         print("Async eval client: aiohttp not installed -> evals use a thread pool (pip install aiohttp for the native client)")
+    wants = [EVAL_SPECS[k]["label"] for k in cfg.eval_datasets if not EVAL_SPECS[k].get("builtin")]
+    if wants:                                   # a full run stops at once without it: say so before the run, not in it
+        try:
+            import datasets
+            print(f"Hugging Face datasets: {datasets.__version__}")
+        except ImportError:
+            print(f"Hugging Face datasets: NOT AVAILABLE - the evals ({', '.join(wants)}) cannot load and a full run or "
+                  f"evals-only run stops at once. Run: {sys.executable} -m pip install -r requirements.txt")
     if cfg.eval_stream:
         print(f"Eval streaming: ON  (thinking budget {cfg.eval_think_budget or 'unlimited'}"
               f"{' tokens' if cfg.eval_think_budget else ''}, loop abort {'on' if cfg.eval_loop_abort else 'off'}, "

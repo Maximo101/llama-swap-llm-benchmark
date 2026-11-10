@@ -102,6 +102,8 @@ def collect(cfg, session, host, model, r, strata, warned):
     """Fill r with launch flags, /props and GGUF facts. `warned` is a per-run dict so each warning prints once."""
     props = get_props(cfg, session, model)
     r["ctx_size"] = props_ctx(props) or (cfg.strata_ctx or cfg.strata_ctx_detected if strata else None)
+    if props.get("build_info"):
+        r["build_info"] = str(props["build_info"])[:80]     # v2.3.1: which llama.cpp build produced these speeds
     if props.get("total_slots"):
         r["parallel"] = props["total_slots"]
     info, source = _launch(cfg, session, host, model, strata)

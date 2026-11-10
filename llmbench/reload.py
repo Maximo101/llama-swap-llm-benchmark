@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import shutil
 import sys
 import typing
 from pathlib import Path
@@ -27,7 +26,8 @@ _EVAL_RUN = {"eval_avg_pct": "avg_pct", "eval_avg_sec": "avg_sec", "eval_retry_n
              "eval_incomplete": "incomplete", "eval_skipped": "skipped", "eval_screened": "screened",
              "eval_stage": "stage", "eval_stage1_avg_pct": "stage1_avg_pct", "eval_inflight": "in_flight",
              "eval_sec_basis": "sec_basis", "eval_cached_n": "cached", "eval_tok_think": "tokens_think",
-             "eval_tok_answer": "tokens_answer"}
+             "eval_tok_answer": "tokens_answer", "eval_sanity_n": "sanity_checked",
+             "eval_sanity_diff": "sanity_different", "eval_sampling": "sampling"}
 _SKIP_GROUPS = {"model", "status", "error", "timestamp", "evaluation", "timing", "other"}
 
 
@@ -95,6 +95,8 @@ def config_from_json(cfg, doc):
     for f in dataclasses.fields(cfg):
         if f.name in snap and f.name not in ("output_dir", "eval_cache_dir"):
             setattr(cfg, f.name, _coerce(snap[f.name], getattr(cfg, f.name), hints.get(f.name)))
+    if snap.get("eval_temperature") == "server" or (doc.get("evaluation") or {}).get("temperature") == "server":
+        cfg.eval_temperature = None
     host = doc.get("host") or {}
     cfg.gpu_backend_used = host.get("gpu_backend") or snap.get("gpu_backend_used") or "none"
     ev = doc.get("evaluation") or {}
@@ -130,8 +132,8 @@ def reload_dashboard(cfg, arg=None):
     out = cfg.output_dir / f"benchmark_dashboard_{run_id}_reload.html"
     render_dashboard(rows, cfg, out, host.get("cpu_power_source") or "none", host.get("hardware") or "",
                      partial=run.get("status") not in (None, "complete"))
-    latest = SCRIPT_DIR / "benchmark_dashboard.html"
-    shutil.copy2(out, latest)
+    from .reporting.dashboard import copy_latest
+    latest = copy_latest(out, SCRIPT_DIR / "benchmark_dashboard.html")
     made_by = (doc.get("tool") or {}).get("version")
     print(f"Reloaded run {run_id} ({run.get('status') or 'unknown status'}, {len(rows)} models"
           + (f", written by v{made_by}" if made_by else "") + f") from {src}")

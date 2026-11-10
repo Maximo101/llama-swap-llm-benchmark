@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import threading
 from pathlib import Path
 
-GRADER_VERSION = "2.1.0"        # bump when answer extraction / grading / the question prompts change
+GRADER_VERSION = "2.1.0"        # NOT the tool version; bump only when answer extraction / grading / the question prompts change
 
 _DROP_FLAGS = {"--port", "--host", "-t", "--threads", "-tb", "--threads-batch", "--api-key", "--api-key-file",
                "--log-file", "--metrics", "--slots", "--props", "--alias", "-a", "--timeout", "-to", "--verbose",
@@ -139,3 +140,52 @@ class ResultCache:
     def count(self, model, fp):
         with self._lock:
             return len(self._load(model, fp))
+
+
+def same_answer(kind, fresh, cached):
+    """Does a re-asked question give the same result as its cached answer? Code and tool calls: same pass/fail (the
+    code text itself may differ harmlessly). Multiple choice and math: same extracted answer and same verdict."""
+    if bool(fresh.get("correct")) != bool(cached.get("correct")):
+        return False
+    if kind in ("code", "tool"):
+        return True
+    norm = lambda a: re.sub(r"\s+", "", str(a)).lower() if a is not None else None
+    return norm(fresh.get("answer")) == norm(cached.get("answer"))
+
+
+class SanityCheck:
+    """EVAL_SANITY_PCT: re-ask a random share of the answers that would come from the cache, to check they still hold.
+
+    Each model starts at EVAL_SANITY_PCT. With EVAL_SANITY_ADAPTIVE, every re-asked answer that matches the cached one
+    halves that model's rate, rounded down to a whole percent, and below 2% it becomes 0 (no more checks of that model
+    in this run; the next run starts again at EVAL_SANITY_PCT). A different answer puts it back to EVAL_SANITY_PCT:
+    a model that keeps answering the same is checked less and less, one that changes keeps being checked at the full
+    rate. Example from 20%: 20 -> 10 -> 5 -> 2 -> 0. The fresh answer is the one
+    scored and stored (it is the newest measurement under identical settings). The random picks differ per run, so
+    repeated runs check different questions."""
+
+    def __init__(self, pct, adaptive=True, seed=None):
+        self.base = max(0.0, min(100.0, pct)) / 100
+        self.adaptive = adaptive
+        self.seed = seed if seed is not None else int.from_bytes(os.urandom(4), "little")
+        self._rng = __import__("random").Random(self.seed)
+        self.rate: dict = {}                # model -> current probability
+        self.stats: dict = {}               # model -> {"checked", "different"}
+
+    def pick(self, model):
+        rate = self.rate.setdefault(model, self.base)
+        return rate > 0 and self._rng.random() < rate
+
+    def result(self, model, same):
+        st = self.stats.setdefault(model, {"checked": 0, "different": 0})
+        st["checked"] += 1
+        st["different"] += not same
+        if self.adaptive:
+            if same:
+                pct = math.floor(100 * self.rate.get(model, self.base) / 2 + 1e-9)
+                self.rate[model] = pct / 100 if pct >= 2 else 0.0
+            else:
+                self.rate[model] = self.base
+
+    def current_pct(self, model):
+        return 100 * self.rate.get(model, self.base)

@@ -16,27 +16,33 @@ SCRIPT_DIR = Path(__file__).resolve().parent.parent
 # Configuration
 # --------------------------------------------------------------------------- #
 
+ENV_FILE: Path | None = None        # --env FILE (v2.3): read this settings file instead of <script folder>/.env
+
+
+def env_path() -> Path:
+    return ENV_FILE or SCRIPT_DIR / ".env"
+
+
 def _load_dotenv():
     """python-dotenv if installed, otherwise a minimal built-in .env reader."""
+    from .envspec import read_env_file
     try:
-        from dotenv import load_dotenv
-        load_dotenv(SCRIPT_DIR / ".env")
+        from dotenv import dotenv_values, load_dotenv
+        before = dict(os.environ)
+        load_dotenv(env_path())
+        # python-dotenv reads 'KEY=   # comment' as the text '# comment'; the line means "empty" (a real case: UI_TOKEN)
+        raw = dotenv_values(env_path())
+        for k, v, _ in read_env_file(env_path(), blank_comments=True):
+            if v == "" and (raw.get(k) or "").startswith("#") and os.environ.get(k) == raw.get(k) and k not in before:
+                os.environ[k] = ""
         return
     except ImportError:
         pass
-    p = SCRIPT_DIR / ".env"
-    if p.exists():
-        for line in p.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                v = v.strip()
-                if v and v[0] in "\"'":                       # quoted value: take what is inside the quotes
-                    end = v.find(v[0], 1)
-                    v = v[1:end] if end > 0 else v[1:]
-                else:                                    # unquoted: "3   # comment" -> "3" (same as python-dotenv)
-                    v = re.split(r"\s+#", v, maxsplit=1)[0].strip()
-                os.environ.setdefault(k.strip(), v)
+    values = {}
+    for k, v, _ in read_env_file(env_path(), blank_comments=True):  # "3   # comment" -> "3"; quoted values keep their inside
+        values[k] = v                                     # a key set twice: the last line wins, as in python-dotenv
+    for k, v in values.items():
+        os.environ.setdefault(k, v)                       # the shell environment wins over .env, as in python-dotenv
 
 
 def _export_hf_token():
@@ -201,7 +207,10 @@ EVAL_SPECS = {
     # Built into the tool (llmbench/evals/toolcall_cases.py), nothing to download. BFCL-style: native OpenAI `tools`
     # requests, graded by matching the function name and arguments (AST-style), including "should not call" cases.
     "toolcall":      {"desc": "32 built-in function-calling cases sent as OpenAI 'tools' requests: pick the right tool, fill its arguments, call several tools at once, or correctly call none. Graded on the function name and arguments. Tests agent readiness.", "label": "Tool calling",  "short": "Tools",     "kind": "tool", "env": "EVAL_TOOLCALL",
-                      "repo": "builtin",                              "split": "test", "builtin": True},
+                      "repo": "builtin",                              "split": "test", "builtin": True,
+                      # v2.3: always every case, at every profile and funnel stage (cheap: ~130 tokens a case), so
+                      # MIN_TOOLCALL_PCT and the Agent composite's tool part always see all 32 cases
+                      "full": True},
 }
 # Rows per active dataset. Sizes come from n = 0.9604 / E^2 (95% confidence, worst-case variance), where E is the
 # margin of error shown in brackets. A dataset smaller than the profile is used in full (e.g. GPQA has 198 rows).
@@ -217,6 +226,50 @@ PROFILE_ROWS = {"test": 6,          # about +/-40%
 # EVAL_PROFILE=funnel (v2.1): every model answers the first stage, then confidence-interval gates drop the models that
 # are clearly below the leaders, and the survivors answer the next (nested) stage, up to EVAL_FUNNEL_FINAL.
 FUNNEL_CHAIN = ("quick", "basic", "moderate", "standard", "thorough", "deep")
+
+
+DEPTH_NEW_TOKENS = 4096          # prefill at depth: the new block (a tool result) sent on top of the cached prompt
+DEPTH_AUTO_CAP = 65536           # PREFILL_DEPTH=auto never goes deeper than this, so 64k..128k+ models compare alike
+
+
+def _prefill_depth(raw):
+    """PREFILL_DEPTH -> (depth or cap in tokens, auto?). auto (default) / empty = per model; 0 / off = no test."""
+    raw = str(raw if raw is not None else "auto").strip().lower().strip('"').strip("'")
+    if raw in ("", "auto"):
+        return DEPTH_AUTO_CAP, True
+    if raw in ("0", "off", "none", "false"):
+        return 0, False
+    try:
+        return int(float(raw.rstrip("k")) * (1024 if raw.endswith("k") else 1)), False
+    except ValueError:
+        sys.exit(f"[config] PREFILL_DEPTH must be auto, 0 or a token count such as 65536 or 32k (got {raw!r})")
+
+
+def depth_for(cfg, ctx):
+    """The prefill-at-depth context for a model loaded with `ctx` tokens (0 = no test). A fixed PREFILL_DEPTH is used
+    when depth + the new block + room for the reply fits; auto takes the largest standard prefill length (8k, 16k,
+    32k, 64k) that fits, so a model loaded at 64k is measured at 32k and every 90k+ model at 64k. Unknown ctx: the
+    configured depth (the server answers with an error if it does not fit)."""
+    if not cfg.prefill_depth:
+        return 0
+    need = DEPTH_NEW_TOKENS + 512
+    if not ctx:
+        return cfg.prefill_depth
+    if not getattr(cfg, "prefill_depth_auto", False):
+        return cfg.prefill_depth if cfg.prefill_depth + need <= ctx else 0
+    fits = [n for n in sorted(PREFILL_SLOTS) if n <= cfg.prefill_depth and n + need <= ctx]
+    return fits[-1] if fits else 0
+
+
+def _speed_temperature(raw):
+    """TEMPERATURE for the speed tests: a number, or server (send none: the model's llama-swap sampling applies)."""
+    raw = str(raw if raw is not None else "server").strip().lower()
+    if raw in ("", "server"):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        sys.exit(f"[config] TEMPERATURE must be a number or 'server' (got {raw!r})")
 
 
 def funnel_stages(cfg):
@@ -235,6 +288,11 @@ def funnel_stages(cfg):
             sys.exit(f"[config] EVAL_FUNNEL_STAGES must grow: {n} ({rows}) does not have more rows than {out[-1][0]}")
         out.append((n, rows))
     return out
+
+
+def rows_for(key, rows):
+    """Rows of dataset `key` at a stage of `rows` rows: datasets marked "full" (tool calling) always run in full."""
+    return None if EVAL_SPECS.get(key, {}).get("full") else rows
 
 
 def stage_rows(cfg):
@@ -259,7 +317,7 @@ class Config:
     timeout_load: float
     max_tokens_tech: int
     max_tokens_logic: int
-    temperature: float
+    temperature: float | None               # TEMPERATURE (speed tests): None = server (llama-swap's sampling)
     runs: int
     retries: int
     cooldown: float
@@ -304,7 +362,8 @@ class Config:
     eval_datasets: tuple = ()               # enabled dataset keys (EVAL_SPECS order)
     eval_profile: str = "quick"
     eval_seed: int = 42
-    eval_temperature: float = 0.0
+    eval_temperature: float | None = 0.0    # EVAL_TEMPERATURE: a number, or None = "server" (each model's own sampling)
+    eval_server_sampling: str = ""          # EVAL_SERVER_SAMPLING_MODELS: regex of models that use their own sampling
     eval_max_tokens_qa: int | None = None       # None = dynamic: model context minus prompt, per question
     eval_max_tokens_code: int | None = None
     eval_timeout: float = 600.0
@@ -316,6 +375,8 @@ class Config:
     eval_code_docker_image: str = "python:3.11-slim"
     eval_lcb_max_tests: int = 20            # 0 = every test
     eval_max_consec_errors: int = 5
+    server_wait: float = 600.0              # SERVER_WAIT_SECONDS: how long to wait for llama-swap to come back (0 = off)
+    notify_url: str | None = None           # NOTIFY_URL: POST a JSON summary there when a run ends
     agent_sec_ref: float = 60.0             # AGENT_SEC_REF: s/q at which the time factor of the Agent score is halved
     agent_acc_tol: float | None = None      # AGENT_ACC_TOL: points below the best eval score still counted as a tie (None = 1 std. error)
     agent_acc_span: float = 40.0            # AGENT_ACC_SPAN: points below the tie zone at which the accuracy credit reaches 0
@@ -352,6 +413,8 @@ class Config:
     min_ctx_action: str = "flag"            # MIN_CTX_ACTION: flag (run, mark, keep off the podium) | refuse (skip model)
     prefill_ctx_tests: tuple = ()           # PREFILL_CTX_TESTS: prompt lengths (tokens) for the prefill-at-length test
     agent_prompt_tokens: int = 0            # AGENT_PROMPT_TOKENS: size of the agent-style prompt for TTFT (0 = off)
+    prefill_depth: int = 65536              # PREFILL_DEPTH (v2.3): context the prefill-at-depth test adds ~4k tokens to (0 = off)
+    prefill_depth_auto: bool = True         # PREFILL_DEPTH=auto: per model the largest 8k-64k slot that fits (depth_for)
     eval_toolcall_strict: bool = True       # EVAL_TOOLCALL_STRICT: only native tool_calls count (not JSON in the text)
     eval_longctx: bool = False              # EVAL_LONGCTX: multi-key retrieval at LONGCTX_LENGTHS
     longctx_lengths: tuple = ()             # LONGCTX_LENGTHS
@@ -363,7 +426,18 @@ class Config:
     agent_fallback_penalty: float = 10.0    # AGENT_FALLBACK_PENALTY: % of the Agent quality lost if EVERY question was retried
     agent_prefill_ref: float = 4000.0       # AGENT_PREFILL_REF: prefill tok/s that earns the full prefill credit
     agent_ttft_ref: float = 15.0            # AGENT_TTFT_REF: agent-prompt TTFT (s) at which its credit halves
-    agent_longctx_weight: float = 0.25      # AGENT_LONGCTX_WEIGHT: share of the quality figure from long-context retrieval
+    agent_longctx_weight: float = 0.25      # AGENT_LONGCTX_WEIGHT: share of the Agent composite from long-context retrieval
+    # --- v2.3: Agent score (see llmbench/agent.py) ---
+    agent_tool_weight: float = 0.30         # AGENT_TOOL_WEIGHT: share of the Agent composite from tool calling
+    agent_ctx_min: int = 65536              # AGENT_CTX_MIN: loaded context below this gets no Agent score (0 = off)
+    agent_ctx_curve: tuple = ()             # AGENT_CTX_CURVE: ((ctx, factor), ...) soft context factor
+    agent_ctx_pass_pct: float = 75.0        # AGENT_CTX_PASS_PCT: long-ctx % a length needs to count as usable
+    min_toolcall_pct: float = 70.0          # MIN_TOOLCALL_PCT: tool-calling score below this gets no Agent score (0 = off)
+    # --- v2.3: dashboard view (display only; see reporting/colours.py) ---
+    colour_style: str = "bands"             # COLOUR_STYLE: bands | smooth (the dashboard's starting colour style)
+    colour_mode: str = "absolute"           # COLOUR_MODE: absolute | relative (tiers over the run's own range)
+    colour_scales: dict | None = None       # COLOUR_<METRIC>: five thresholds per metric (6 tiers)
+    dash_families: tuple = ()               # DASH_FAMILIES: (("Gemma 4", ("*gemma-4*", ...)), ...)
     vram_underuse_floor: float = 0.85       # VRAM_UNDERUSE_FLOOR: VRAM fit of a model that uses almost no VRAM
     budget: dict | None = None              # BUDGET_PROFILE + BUDGET_<PROFILE>_<RULE>
     budget_podium_pass_only: bool = True    # BUDGET_PODIUM_PASS_ONLY: models that fail a budget rule stay off the podium
@@ -374,6 +448,9 @@ class Config:
     eval_leaders: int = 5                   # EVAL_LEADERS: minimum number of models kept at every funnel gate
     eval_funnel_conf: float = 0.95          # EVAL_FUNNEL_CONF: one-sided confidence of each gate's bounds
     eval_result_cache: bool = True          # EVAL_RESULT_CACHE: reuse answers already obtained (resume / reruns)
+    eval_cache_refresh: bool = False        # EVAL_RESULT_CACHE=refresh: ask everything again, store the new answers
+    eval_sanity_pct: float = 0.0            # EVAL_SANITY_PCT: % of cached answers re-asked to check they still hold
+    eval_sanity_adaptive: bool = True       # EVAL_SANITY_ADAPTIVE: halve a model's check rate after each matching answer
     eval_result_cache_dir: Path | None = None   # EVAL_RESULT_CACHE_DIR (default <OUTPUT_DIR>/cache)
     eval_think_budgets: dict | None = None  # EVAL_THINK_BUDGET_<DATASET>: per-dataset thinking budget (opt-in)
     eval_budget_forcing: bool = False       # EVAL_BUDGET_FORCING: at the thinking cap, close the thinking and ask for the answer
@@ -446,7 +523,7 @@ def _eval_extra_body():
 def load_config() -> Config:
     _load_dotenv()
     _export_hf_token()
-    profile = (_env("EVAL_PROFILE", "quick") or "quick").lower()
+    profile = (_env("EVAL_PROFILE", "funnel") or "funnel").lower()
     if profile not in PROFILE_ROWS and profile != "funnel":
         sys.exit(f"[config] EVAL_PROFILE must be one of {', '.join(PROFILE_ROWS)} or funnel (got {profile!r})")
     funnel_final = (_env("EVAL_FUNNEL_FINAL", "standard") or "standard").lower()
@@ -463,6 +540,25 @@ def load_config() -> Config:
         skip_inel = "false"
     if skip_inel not in ("auto", "true", "false"):
         sys.exit(f"[config] EVAL_SKIP_INELIGIBLE must be auto, true or false (got {skip_inel!r})")
+    raw_temp = (_env("EVAL_TEMPERATURE", "server") or "server").strip().lower()
+    if raw_temp == "server":
+        eval_temp = None
+    else:
+        try:
+            eval_temp = float(raw_temp)
+        except ValueError:
+            sys.exit(f"[config] EVAL_TEMPERATURE must be a number or 'server' (got {raw_temp!r})")
+    srv = (_env("EVAL_SERVER_SAMPLING_MODELS", "") or "").strip()
+    if srv:
+        try:
+            re.compile(srv)
+        except re.error as e:
+            sys.exit(f"[config] EVAL_SERVER_SAMPLING_MODELS is not a valid regex: {e}")
+    cache_mode = (_env("EVAL_RESULT_CACHE", "true") or "true").lower()
+    cache_mode = {"1": "true", "yes": "true", "on": "true", "0": "false", "no": "false", "off": "false"}.get(cache_mode,
+                                                                                                         cache_mode)
+    if cache_mode not in ("true", "false", "refresh"):
+        sys.exit(f"[config] EVAL_RESULT_CACHE must be true, refresh or false (got {cache_mode!r})")
     sq_basis = (_env("EVAL_SQ_BASIS", "auto") or "auto").lower()
     if sq_basis not in ("auto", "measured", "single"):
         sys.exit(f"[config] EVAL_SQ_BASIS must be auto, measured or single (got {sq_basis!r})")
@@ -492,7 +588,29 @@ def load_config() -> Config:
     if budget and budget["rules"].get("KV_MIN") and budget["rules"]["KV_MIN"] not in KV_PRECISION:
         sys.exit(f"[config] BUDGET_{budget['name'].upper()}_KV_MIN must be one of {', '.join(KV_PRECISION)}")
     min_ctx = _env_ints("MIN_CTX")
+    agent_ctx_min = (_env_ints("AGENT_CTX_MIN", (65536,)) or (0,))[0]       # "0" / "off" -> () -> 0 = no minimum
+    from .agent import parse_ctx_curve
+    try:
+        agent_ctx_curve = parse_ctx_curve(_env("AGENT_CTX_CURVE", "131072:1.0,78848:0.97,65536:0.95"))
+    except ValueError as e:
+        sys.exit(f"[config] Invalid AGENT_CTX_CURVE: {e}")
     min_ctx = min_ctx[0] if min_ctx else (int(budget["rules"]["MIN_CTX"]) if budget and budget["rules"].get("MIN_CTX") else None)
+    goldilocks_mode = (_env("GOLDILOCKS_MODE", "linear") or "linear").lower()
+    if goldilocks_mode not in ("linear", "log"):
+        sys.exit(f"[config] GOLDILOCKS_MODE must be linear or log (got {goldilocks_mode!r})")
+    from .reporting.colours import MODES, STYLES, parse_families, scales_from_env
+    colour_style = (_env("COLOUR_STYLE", "bands") or "bands").lower()
+    if colour_style not in STYLES:
+        sys.exit(f"[config] COLOUR_STYLE must be {' or '.join(STYLES)} (got {colour_style!r})")
+    colour_mode = (_env("COLOUR_MODE", "absolute") or "absolute").lower()
+    if colour_mode not in MODES:
+        sys.exit(f"[config] COLOUR_MODE must be {' or '.join(MODES)} (got {colour_mode!r})")
+    try:
+        colour_scales = scales_from_env()
+        dash_families = parse_families(_env("DASH_FAMILIES", ""))
+    except ValueError as e:
+        sys.exit(f"[config] {e}")
+    depth_cap, depth_auto = _prefill_depth(_env("PREFILL_DEPTH", "auto"))
     return Config(
         base_url=(_env("LLAMA_SWAP_URL", "http://localhost:8080")).rstrip("/"),
         api_key=_env("LLAMA_SWAP_API_KEY"),
@@ -509,14 +627,14 @@ def load_config() -> Config:
         timeout_load=_env("TIMEOUT_LOAD", 300.0, float),
         max_tokens_tech=_env("MAX_TOKENS_TECH", 300, int),
         max_tokens_logic=_env("MAX_TOKENS_LOGIC", 500, int),
-        temperature=_env("TEMPERATURE", 0.2, float),
+        temperature=_speed_temperature(_env("TEMPERATURE", "server")),
         runs=max(1, _env("RUNS_PER_PROMPT", 3, int)),
         retries=_env("RETRIES", 2, int),
         cooldown=_env("COOLDOWN_SECONDS", 5.0, float),
         settle=_env("SETTLE_SECONDS", 5.0, float),
         prefill_words=_env("PREFILL_WORDS", 1200, int),
         model_filter=_env("MODEL_FILTER"),
-        goldilocks_mode=_env("GOLDILOCKS_MODE", "linear").lower(),
+        goldilocks_mode=goldilocks_mode,
         goldilocks_max_vram_pct=_env("GOLDILOCKS_MAX_VRAM_PCT", 100.0, float),
         output_dir=_output_dir(),
         write_markdown=_env("WRITE_MARKDOWN", True, bool),
@@ -546,10 +664,13 @@ def load_config() -> Config:
         eval_datasets=tuple(k for k, s in EVAL_SPECS.items() if _env(s["env"], False, bool)),
         eval_profile=profile,
         eval_seed=_env("EVAL_SEED", 42, int),
-        eval_temperature=_env("EVAL_TEMPERATURE", 0.0, float),
+        eval_temperature=eval_temp,
+        eval_server_sampling=(_env("EVAL_SERVER_SAMPLING_MODELS", "") or "").strip(),
         eval_max_tokens_qa=_env_tokens("EVAL_MAX_TOKENS_QA"),
         eval_max_tokens_code=_env_tokens("EVAL_MAX_TOKENS_CODE"),
         eval_timeout=_env("EVAL_TIMEOUT", 600.0, float),
+        server_wait=max(0.0, _env("SERVER_WAIT_SECONDS", 600.0, float)),
+        notify_url=(_env("NOTIFY_URL", "") or "").strip() or None,
         eval_extra_body=_eval_extra_body(),
         eval_cache_dir=_eval_cache_dir(),
         eval_code_sandbox=sandbox,
@@ -587,6 +708,8 @@ def load_config() -> Config:
         min_ctx_action=min_ctx_action,
         prefill_ctx_tests=_slots("PREFILL_CTX_TESTS", _env_ints("PREFILL_CTX_TESTS"), PREFILL_SLOTS),
         agent_prompt_tokens=max(0, _env("AGENT_PROMPT_TOKENS", 0, int)),
+        prefill_depth=depth_cap,
+        prefill_depth_auto=depth_auto,
         eval_toolcall_strict=_env("EVAL_TOOLCALL_STRICT", True, bool),
         eval_longctx=_env("EVAL_LONGCTX", False, bool),
         longctx_lengths=_slots("LONGCTX_LENGTHS", _env_ints("LONGCTX_LENGTHS", (65536, 131072)), LONGCTX_SLOTS),
@@ -599,6 +722,15 @@ def load_config() -> Config:
         agent_prefill_ref=max(10.0, _env("AGENT_PREFILL_REF", 4000.0, float)),
         agent_ttft_ref=max(0.5, _env("AGENT_TTFT_REF", 15.0, float)),
         agent_longctx_weight=min(1.0, max(0.0, _env("AGENT_LONGCTX_WEIGHT", 0.25, float))),
+        agent_tool_weight=min(1.0, max(0.0, _env("AGENT_TOOL_WEIGHT", 0.30, float))),
+        agent_ctx_min=agent_ctx_min,
+        agent_ctx_curve=agent_ctx_curve,
+        agent_ctx_pass_pct=min(100.0, max(0.0, _env("AGENT_CTX_PASS_PCT", 75.0, float))),
+        min_toolcall_pct=min(100.0, max(0.0, _env("MIN_TOOLCALL_PCT", 70.0, float))),
+        colour_style=colour_style,
+        colour_mode=colour_mode,
+        colour_scales=colour_scales,
+        dash_families=dash_families,
         vram_underuse_floor=min(1.0, max(0.0, _env("VRAM_UNDERUSE_FLOOR", 0.85, float))),
         budget=budget,
         budget_podium_pass_only=_env("BUDGET_PODIUM_PASS_ONLY", True, bool),
@@ -607,7 +739,10 @@ def load_config() -> Config:
         eval_funnel_stages=funnel_stages_env,
         eval_leaders=max(1, _env("EVAL_LEADERS", 5, int)),
         eval_funnel_conf=min(0.999, max(0.5, _env("EVAL_FUNNEL_CONF", 0.95, float))),
-        eval_result_cache=_env("EVAL_RESULT_CACHE", True, bool),
+        eval_result_cache=cache_mode != "false",
+        eval_cache_refresh=cache_mode == "refresh",
+        eval_sanity_pct=min(100.0, max(0.0, _env("EVAL_SANITY_PCT", 0.0, float))),
+        eval_sanity_adaptive=_env("EVAL_SANITY_ADAPTIVE", True, bool),
         eval_result_cache_dir=_cache_dir(),
         eval_think_budgets=_think_budgets(),
         eval_budget_forcing=_env("EVAL_BUDGET_FORCING", False, bool),
@@ -618,3 +753,47 @@ def load_config() -> Config:
         batch_probe_levels=tuple(sorted(set(max(1, n) for n in _env_ints("BATCH_PROBE_LEVELS", (1, 2, 4, 8))))) or (1, 2, 4, 8),
         batch_probe_questions=max(4, _env("BATCH_PROBE_QUESTIONS", 32, int)),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Eval sampling: the benchmark's fixed temperature, or each model's own (llama-swap launch flags)
+# --------------------------------------------------------------------------- #
+SAMPLING_FLAGS = {"--temp": "temp", "--top-k": "top-k", "--top-p": "top-p", "--min-p": "min-p",
+                  "--repeat-penalty": "repeat-penalty", "--presence-penalty": "presence-penalty"}
+
+
+def uses_server_sampling(cfg, model):
+    """True when this model's eval requests leave sampling to the server (EVAL_TEMPERATURE=server, or the model
+    matches EVAL_SERVER_SAMPLING_MODELS)."""
+    if cfg.eval_temperature is None:
+        return True
+    return bool(cfg.eval_server_sampling) and re.search(cfg.eval_server_sampling, model, re.I) is not None
+
+
+def eval_temperature_for(cfg, model):
+    """The temperature to send with this model's eval requests, or None to send none (server sampling)."""
+    return None if uses_server_sampling(cfg, model) else cfg.eval_temperature
+
+
+def sampling_label(cfg, model, argv=None):
+    """Human-readable sampling a model was evaluated with, e.g. 'temp 0' or 'server: temp 1.0, top-k 64'."""
+    if not uses_server_sampling(cfg, model):
+        return f"temp {cfg.eval_temperature:g}"
+    found = []
+    args = list(argv or [])
+    for i, a in enumerate(args):
+        key, val = (a.split("=", 1) + [None])[:2] if a.startswith("--") and "=" in a else (a, None)
+        if key in SAMPLING_FLAGS:
+            val = val if val is not None else (args[i + 1] if i + 1 < len(args) else "?")
+            found.append(f"{SAMPLING_FLAGS[key]} {val}")
+    if found:
+        return "server: " + ", ".join(found)
+    return "server: llama-server defaults" if argv else "server (launch flags not readable)"
+
+
+def temperature_label(cfg):
+    """Run-level description for logs, reports and the dashboard."""
+    if cfg.eval_temperature is None:
+        return "each model's own sampling (EVAL_TEMPERATURE=server)"
+    base = f"temperature {cfg.eval_temperature:g}"
+    return base + (f"; own sampling for models matching {cfg.eval_server_sampling!r}" if cfg.eval_server_sampling else "")

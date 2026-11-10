@@ -22,7 +22,7 @@ import subprocess
 import threading
 import time
 
-from ..common import TimeSeries
+from ..common import TimeSeries, now
 
 
 class _Monitor:
@@ -175,6 +175,8 @@ class NvmlGpuMonitor(_Monitor):
 
     def stop(self):
         super().stop()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=2)         # v2.3.1: let the poll finish before NVML is shut down under it
         if self._nv is not None:
             try:
                 self._nv.nvmlShutdown()
@@ -209,8 +211,8 @@ class SmiGpuMonitor(_Monitor):
             return False
         self._thread = threading.Thread(target=self._read, daemon=True, name="smi-read")
         self._thread.start()
-        deadline = time.time() + 6
-        while time.time() < deadline:
+        deadline = now() + 6
+        while now() < deadline:
             if len(self.series):
                 self.ok = True
                 return True

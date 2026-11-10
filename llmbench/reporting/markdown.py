@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..common import avg
-from ..config import EVAL_SPECS, LONGCTX_SLOTS
+from ..config import EVAL_SPECS, LONGCTX_SLOTS, temperature_label
 from .margin import margin_of_error
 
 def _emoji(t):
@@ -130,7 +130,7 @@ def _md_methodology(cfg, speed, evk):
               f"- Goldilocks = {'ln(params B)' if cfg.goldilocks_mode == 'log' else 'params B'} × avg TPS (total params)."]
     if evk:
         L.append(f"- Evals (run after the speed tests): {', '.join(EVAL_SPECS[k]['label'] for k in evk)}; profile "
-                 f"`{cfg.eval_profile}`, seed {cfg.eval_seed}, temperature {cfg.eval_temperature:g}. QA is string-matched "
+                 f"`{cfg.eval_profile}`, seed {cfg.eval_seed}, {temperature_label(cfg)}. QA is string-matched "
                  "on the parsed final letter; math answers are normalised and compared numerically/textually with the reference; "
                  "code is executed against the dataset's tests in a sandbox.")
     return L
@@ -148,9 +148,9 @@ def _md_deploy(results, cfg):
     L = ["", "## Deployment fit", "",
          f"_Max ctx = context that fits at {cfg.max_ctx_vram_pct:g}% VRAM (from the measured VRAM and the KV cost per "
          "token)._" + (f" _Budget profile `{budget['name']}`._" if budget else ""), "",
-         "| Model | Arch | Attention | KV | Ctx | Max ctx | KV KiB/tok | BPW | Prefill 32k/64k | Agent TTFT | "
+         "| Model | Arch | Attention | KV | Ctx | Max ctx | KV KiB/tok | BPW | Prefill 32k/64k | Prefill @depth | Agent TTFT | "
          + " | ".join(f"Long-ctx {v}" for v in LONGCTX_SLOTS.values()) + (" | Budget |" if budget else " |"),
-         "|---" * (10 + len(LONGCTX_SLOTS) + (1 if budget else 0)) + "|"]
+         "|---" * (11 + len(LONGCTX_SLOTS) + (1 if budget else 0)) + "|"]
     for r in ok:
         pf = "/".join(_f(r.get(f"prefill_{v}_tps"), 0) for v in ("32k", "64k"))
         flag = " ⚠" if r.get("ctx_ok") is False else ""
@@ -159,7 +159,7 @@ def _md_deploy(results, cfg):
         b = ("" if not budget else " | " + ("✅" if r.get("budget_pass") else "❌ " + (r.get("budget_fails") or "")))
         L.append(f"| {r['model']} | {r.get('arch') or '–'} | {r.get('attn_type') or '–'} | {r.get('kv_type') or '–'} | "
                  f"{_k(r.get('ctx_size'))}{flag} | {_k(r.get('max_ctx_vram'))} | {_f(r.get('kv_kib_token'), 0)} | "
-                 f"{_f(r.get('bpw'), 2)} | {pf} | {_f(r.get('agent_ttft_s'))}{' s' if r.get('agent_ttft_s') is not None else ''} | " + " | ".join(lc) + b + " |")
+                 f"{_f(r.get('bpw'), 2)} | {pf} | {_f(r.get('prefill_depth_tps'), 0)} | {_f(r.get('agent_ttft_s'))}{' s' if r.get('agent_ttft_s') is not None else ''} | " + " | ".join(lc) + b + " |")
     return L
 
 

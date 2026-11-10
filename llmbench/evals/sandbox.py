@@ -42,11 +42,37 @@ def _can_unshare():
     if _NETLESS is None:
         _NETLESS = False
         if sys.platform.startswith("linux") and shutil.which("unshare"):
-            try:
-                _NETLESS = subprocess.run(["unshare", "-rn", "true"], capture_output=True, timeout=10).returncode == 0
+            try:                                  # probed as the user the programs will run as
+                _NETLESS = subprocess.run(["unshare", "-rn", "true"], capture_output=True, timeout=10,
+                                          **drop_privileges()).returncode == 0
             except (OSError, subprocess.SubprocessError):
                 _NETLESS = False
     return _NETLESS
+
+
+NOBODY = 65534
+_DROP = None             # cached: Popen arguments that run the child as an unprivileged user (when we are root)
+
+
+def drop_privileges():
+    """v2.3.1, subprocess sandbox: when the benchmark runs as root (Unraid User Scripts, a root shell), code written
+    by a model must not. -> Popen keyword arguments that start the child as user/group 65534 ("nobody"), or {} when
+    we are not root or cannot change user (then a warning is printed once: the code runs as root)."""
+    global _DROP
+    if _DROP is None:
+        _DROP = {}
+        if os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0:
+            kw = {"user": NOBODY, "group": NOBODY, "extra_groups": []}
+            try:
+                if subprocess.run([sys.executable, "-I", "-c", "pass"], capture_output=True, timeout=20,
+                                  **kw).returncode == 0:
+                    _DROP = kw
+            except (OSError, ValueError, subprocess.SubprocessError):
+                pass
+            if not _DROP:
+                print("  [warn] code sandbox: running as root and could not switch to an unprivileged user, so "
+                      "model-written code runs AS ROOT. Use EVAL_CODE_SANDBOX=docker.")
+    return _DROP
 
 
 def sandbox_workers(cfg):
@@ -84,7 +110,10 @@ def _docker_ready(cfg):
         print(f"  [eval] pulling {cfg.eval_code_docker_image} for the code sandbox ...")
         if subprocess.run(["docker", "pull", cfg.eval_code_docker_image], timeout=600).returncode == 0:
             return True, ""
-        return False, "could not pull the sandbox image"
+        img = cfg.eval_code_docker_image
+        tip = "" if img == "python:3.11-slim" else ", or remove the line for the default python:3.11-slim"
+        return False, (f"could not pull the sandbox image {img}: check EVAL_CODE_DOCKER_IMAGE in .env "
+                       f"(a locally built image must exist on this machine: docker image ls{tip})")
     except (OSError, subprocess.SubprocessError) as e:
         return False, str(e)
 
@@ -142,12 +171,19 @@ def run_in_sandbox(cfg, program, mode, tests, per_test_timeout):
                 fh.write(text)
             os.chmod(fp, 0o644)
         name = f"llmbench-{uuid.uuid4().hex[:12]}"
+        drop = {}
         if docker:
             cmd, env = _docker_cmd(cfg, name, td), None
         else:
             cmd, env = _subprocess_cmd(cfg, td)
+            drop = drop_privileges()
+            if drop:                                      # its scratch folder must be writable by that user
+                try:
+                    os.chown(os.path.join(td, "tmp"), NOBODY, NOBODY)
+                except OSError:
+                    pass
         proc = subprocess.Popen(cmd, cwd=td, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, start_new_session=(os.name == "posix"))
+                                stderr=subprocess.PIPE, start_new_session=(os.name == "posix"), **drop)
         try:
             out, err = proc.communicate(input=payload, timeout=total)
         except subprocess.TimeoutExpired:
@@ -224,7 +260,19 @@ def resolve_sandbox(cfg, run_selftest=True):
         cleanup_orphans()
         atexit.register(cleanup_orphans)
         print("  [eval] code sandbox: Docker (no network, read-only, non-root, memory/CPU/pid limits)")
+        try:                                              # which image exactly: a tag such as python:3.11-slim moves
+            img = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", cfg.eval_code_docker_image],
+                                 capture_output=True, text=True, timeout=30).stdout.strip()
+            if img:
+                cfg.eval_sandbox_image_id = img
+                print(f"  [eval] sandbox image {cfg.eval_code_docker_image} = {img[:19]}"
+                      + ("" if "@sha256:" in cfg.eval_code_docker_image else
+                         " (a tag can change: pin it with EVAL_CODE_DOCKER_IMAGE=<image>@sha256:<digest>)"))
+        except (OSError, subprocess.SubprocessError):
+            pass
     elif want == "subprocess":
+        if drop_privileges():
+            print("  [eval] code sandbox: this run is root, so generated code runs as the unprivileged user 'nobody'")
         print("  [eval] code sandbox: subprocess (timeout + rlimits" + (", no network" if _can_unshare() else "")
               + "); not a security boundary against hostile code - use EVAL_CODE_SANDBOX=docker for that")
     if run_selftest:

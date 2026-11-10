@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 
 from ..common import BenchError
@@ -188,6 +189,8 @@ class StreamResult:
     seconds: float
     timings: dict | None = None
     prompt_tokens: int | None = None    # from the final usage event (None when the server did not report it)
+    ttft: float | None = None           # v2.3.1: seconds from sending the request to the first token of any kind
+    ttfa: float | None = None           # ... and to the first VISIBLE answer token (after the thinking, if any)
 
     @property
     def tail(self):
@@ -215,6 +218,15 @@ class StreamGuard:
         self._in_reasoning = False
         self._inline_think = False
         self._tag_tail = ""
+        # v2.3.1: what the client sees, through llama-swap: time to the first token and to the first answer token.
+        # The clock starts when the guard is made (right before the request is sent) and restarts with restart().
+        self._t0 = time.monotonic()
+        self.ttft = self.ttfa = None
+
+    def restart(self):
+        """A retry is being sent: time the attempt that answers, not the failed one and its backoff."""
+        if self.chunks == 0:
+            self._t0 = time.monotonic()
 
     # -- state -----------------------------------------------------------
     @property
@@ -279,6 +291,10 @@ class StreamGuard:
         self.events += 1
         self.chars += len(text)
         thinking = self.thinking
+        if self.ttft is None:
+            self.ttft = time.monotonic() - self._t0
+        if self.ttfa is None and c.strip() and not thinking:
+            self.ttfa = time.monotonic() - self._t0
         if thinking:
             self.think_events += 1
             self.think_chars += len(text)
@@ -295,4 +311,4 @@ class StreamGuard:
                             finish=None if abort else self.finish, abort=abort, loop=self.loop,
                             tokens=self.tokens, think_tokens=self.think_tokens, seconds=seconds,
                             timings=self.timings if isinstance(self.timings, dict) else None,
-                            prompt_tokens=usage.get("prompt_tokens"))
+                            prompt_tokens=usage.get("prompt_tokens"), ttft=self.ttft, ttfa=self.ttfa)

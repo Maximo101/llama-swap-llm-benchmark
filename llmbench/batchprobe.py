@@ -29,7 +29,7 @@ import sys
 
 from . import modelinfo
 from .client import detect_backend, get_props, post_chat
-from .common import BenchError, avg
+from .common import BenchError, avg, now
 from .config import EVAL_SPECS
 from .evals.datasets import prepare_eval_data
 from .evals.runner import DatasetRun, ModelEval, per_request_tokens
@@ -44,7 +44,7 @@ class _Phase:
     differ between levels can be inspected."""
 
     def __init__(self, cfg, transport, pool, sink=None):
-        self.cfg, self.transport, self.pool, self.cache = cfg, transport, pool, None
+        self.cfg, self.transport, self.pool, self.cache, self.sanity = cfg, transport, pool, None, None
         self.sink = sink or (lambda rec: None)
 
 
@@ -140,12 +140,12 @@ async def _probe_model(cfg, session, transport, pool, model, data, gpu, host, si
             print(f"  [warn] llama-swap is also serving {', '.join(others)}: another client is using the server, so "
                   "these timings are not valid. Stop it and probe again.")
         recs, wall = [], 0.0
-        t0 = time.time()
+        t0 = now()
         for key, items in data.items():
             got, w = await DatasetRun(me, key, items, f"probe-x{level}", level).run()
             recs += got
             wall += w
-        vram = [s.get("vram_gb") for s in gpu.window(t0, time.time())] if gpu and gpu.ok else []
+        vram = [s.get("vram_gb") for s in gpu.window(t0, now())] if gpu and gpu.ok else []
         vram = [v for v in vram if v is not None]
         tok = sum(x.get("tokens") or 0 for x in recs)
         ans = {(x["dataset"], x["id"]): (bool(x["correct"]), x.get("answer")) for x in recs}

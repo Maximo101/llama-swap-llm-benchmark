@@ -10,8 +10,19 @@ import threading
 import time
 from datetime import datetime
 
-__version__ = "2.1.0"
+__version__ = "2.3.1"
 SCHEMA_VERSION = 1          # version of the results.json layout (bump when keys are renamed/removed)
+
+
+_CLOCK0 = time.time() - time.monotonic()
+
+
+def now():
+    """Seconds since the epoch as of process start, advanced by the MONOTONIC clock (v2.3.1). Reads like time.time()
+    but never jumps when NTP steps the system clock, so durations, telemetry windows and TimeSeries (which bisects
+    on its timestamps) stay correct over a run of many hours. Use it for every interval; datetime.now() is still
+    the source of the timestamps shown to people."""
+    return _CLOCK0 + time.monotonic()
 
 
 class BenchError(Exception):
@@ -67,11 +78,11 @@ class Clock:
         self.r, self.phase = r, phase
 
     def __enter__(self):
-        self.t0 = time.time()
+        self.t0 = now()
         return self
 
     def __exit__(self, *exc):
-        add_time(self.r, self.phase, time.time() - self.t0)
+        add_time(self.r, self.phase, now() - self.t0)
         return False
 
 
@@ -120,7 +131,7 @@ class TimeSeries:
 
     def append(self, value, t: float | None = None):
         with self._lock:
-            self._t.append(time.time() if t is None else t)
+            self._t.append(now() if t is None else t)
             self._v.append(value)
 
     def window(self, t0: float, t1: float) -> list:

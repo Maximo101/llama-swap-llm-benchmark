@@ -6,7 +6,8 @@ Sources, best first, per model:
      dataset the seconds and tokens per question.
   2. a batch-probe result (results/batch_probe_*.json) for the gain of EVAL_CONCURRENCY > 1.
   3. otherwise a rough model: generation tok/s from the model's size and quantisation (parsed from its name) on a
-     card with ESTIMATE_GPU_BW_GBS of memory bandwidth (default 900, about an RTX 5070 Ti), and typical tokens per
+     card with ESTIMATE_GPU_BW_GBS of memory bandwidth (default auto: the detected GPU in gpubw.GPU_TABLE, else 670
+     GB/s), and typical tokens per
      question for each dataset (thinking models write 4-10x more than non-thinking ones).
 Every line says which source it used. Nothing is sent to the models; only GET /v1/models is used, if reachable.
 """
@@ -19,8 +20,9 @@ import math
 import os
 from pathlib import Path
 
+from . import gpubw
 from .common import fmt_hr_m_s, median
-from .config import EVAL_SPECS, LONGCTX_SLOTS, PREFILL_SLOTS, PROFILE_ROWS, funnel_stages, stage_rows
+from .config import EVAL_SPECS, LONGCTX_SLOTS, PREFILL_SLOTS, PROFILE_ROWS, depth_for, funnel_stages, rows_for, stage_rows
 from .scoring import parse_active, parse_params, parse_quant, _QUANT_BPW
 
 # typical tokens generated per question (all attempts): (thinking model, non-thinking model).
@@ -169,6 +171,12 @@ def estimate_model(cfg, model, h, bw, gains, history_all=None):
                     sp += _prefill_s(n, h, tps)
             if cfg.agent_prompt_tokens:
                 sp += _prefill_s(cfg.agent_prompt_tokens, h, tps) + 1
+            ctx = h.get("ctx_size")
+            depth = depth_for(cfg, ctx)
+            if depth:                                                                       # prefill at depth (v2.3)
+                if depth not in cfg.prefill_ctx_tests or depth in cfg.defer_prefill:
+                    sp += _prefill_s(depth, h, tps)                                         # its own cold prompt
+                sp += _prefill_s(4096, h, tps) * 1.3 + 1                                     # the new block, at depth
             out["speed"] = sp
     skip = _skipped(cfg, h) if cfg.run_eval_tests else None
     if skip:
@@ -189,17 +197,86 @@ def estimate_model(cfg, model, h, bw, gains, history_all=None):
         rows = stage_rows(cfg)
         ev = 0.0
         notes = set()
+        out["_ev"] = []
         for key in cfg.eval_datasets:
-            k = AVAILABLE.get(key, 500) if rows is None else min(rows, AVAILABLE.get(key, rows))
+            kr = rows_for(key, rows)                # tool calling: every case at every stage (v2.3)
+            k = AVAILABLE.get(key, 500) if kr is None else min(kr, AVAILABLE.get(key, kr))
             spq, how = _eval_secs(cfg, h, key, tps, gain)
             notes.add(how)
             ev += k * spq
+            out["_ev"].append((key, k, spq))
             if EVAL_SPECS[key]["kind"] == "code" and conc <= 1:
                 ev += 0.0               # pipelined grading hides the sandbox behind generation
         out["evals_full"] = ev + 15.0   # + the eval-phase model load
         out["_notes"] = f"tok/s {tps:.0f} ({src}); evals: {', '.join(sorted(notes)) or '-'}" + \
                         (f"; x{conc} gain {gain:.1f} ({gsrc})" if conc > 1 else "")
     return out
+
+
+def cache_mode(cfg):
+    if not cfg.eval_result_cache:
+        return "false"
+    return "refresh" if cfg.eval_cache_refresh else "true"
+
+
+def cached_answers(cfg):
+    """{model: {dataset: number of questions with a cached answer}} from the result cache. Per model only its newest
+    cache file counts: a new file means the model's fingerprint changed (file, launch flags, llama.cpp build, ...), and
+    then the older answers are not reused. Whether the CURRENT fingerprint matches cannot be known without loading
+    the model, so this is what a rerun with unchanged models and settings would reuse."""
+    root = cfg.eval_result_cache_dir
+    if cache_mode(cfg) != "true" or not root or not Path(root).is_dir():
+        return {}
+    newest = {}
+    for f in Path(root).glob("*.jsonl"):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                first = json.loads(fh.readline() or "{}")
+        except (OSError, ValueError):
+            continue
+        model = (first.get("rec") or {}).get("model")
+        if model and (model not in newest or f.stat().st_mtime > newest[model].stat().st_mtime):
+            newest[model] = f
+    out = {}
+    for model, f in newest.items():
+        ids = {}
+        try:
+            with open(f, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        rec = json.loads(line)["rec"]
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                    if not rec.get("api_error"):
+                        ids.setdefault(rec.get("dataset"), set()).add(rec.get("id"))
+        except OSError:
+            continue
+        out[model] = {k: len(v) for k, v in ids.items()}
+    return out
+
+
+def _stage_shape(cfg, n_models):
+    """[(cumulative share of the final rows, expected share of models still in)] per stage."""
+    if cfg.eval_profile != "funnel":
+        return [(1.0, 1.0)]
+    stages = funnel_stages(cfg)
+    final = stages[-1][1] if stages[-1][1] is not None else 500
+    alive, out = float(n_models), []
+    for _, r in stages:
+        out.append(((r if r is not None else 500) / final, alive / max(1, n_models)))
+        alive = max(min(cfg.eval_leaders, n_models), alive * FUNNEL_SURVIVE)
+    return out
+
+
+def _uncached_work(shape, cached_share):
+    """Expected share of a dataset's final rows this model will be asked, with the first `cached_share` of the rows
+    already answered (nested sampling: every profile is a prefix of one question order, so cached answers from
+    earlier runs with the same EVAL_SEED are the first questions)."""
+    work, prev = 0.0, 0.0
+    for f, alive in shape:
+        work += alive * max(0.0, f - max(prev, cached_share))
+        prev = f
+    return work
 
 
 def _models(cfg, history):
@@ -221,9 +298,9 @@ def estimate(cfg, brief=False):
     cfg = copy(cfg)                              # never change the settings of the run that asked
     history = _history(cfg)
     gains = _probe(cfg)
-    bw = float(os.getenv("ESTIMATE_GPU_BW_GBS") or 900)
+    bw, bw_src = gpubw.resolve(os.getenv("ESTIMATE_GPU_BW_GBS"))
     if cfg.run_eval_tests and cfg.eval_longctx:
-        cfg.defer_prefill = tuple(n for n in cfg.prefill_ctx_tests if n in cfg.longctx_lengths)
+        cfg.defer_prefill = tuple(n for n in cfg.prefill_ctx_tests if n in cfg.longctx_lengths and n != cfg.prefill_depth)
     models, where = _models(cfg, history)
     if not models:
         if not brief:
@@ -233,25 +310,38 @@ def estimate(cfg, brief=False):
     per = {m: estimate_model(cfg, m, history.get(m, {}), bw, gains, history) for m in models}
     funnel = cfg.eval_profile == "funnel" and cfg.run_eval_tests
     total_full = sum(sum(v for k, v in e.items() if not k.startswith("_")) for e in per.values())
-    total = total_full
-    if funnel:
-        stages = funnel_stages(cfg)
-        final = stages[-1][1]
-        fr = [(r if r is not None else 500) / (final if final is not None else 500) for _, r in stages]
-        n = max(1, sum(1 for m in models if not per[m].get("_skip")))
-        work = 0.0
-        alive = float(n)
-        prev = 0.0
-        for i, f in enumerate(fr):
-            work += alive * (f - prev)
-            prev = f
-            alive = max(min(cfg.eval_leaders, n), alive * FUNNEL_SURVIVE)
-        share = work / n
-        ev_full = sum(e.get("evals_full", 0) for e in per.values())
-        total = total_full - ev_full + ev_full * share
+    mode = cache_mode(cfg) if cfg.run_eval_tests else "false"
+    cache = cached_answers(cfg) if cfg.run_eval_tests else {}
+    shape = _stage_shape(cfg, max(1, sum(1 for m in models if not per[m].get("_skip"))))
+    sanity = cfg.eval_sanity_pct / 100 if mode == "true" else 0.0
+    total = 0.0
+    for m, e in per.items():
+        ev, cached_n, planned_n, recheck = 0.0, 0, 0, 0.0
+        for key, k, spq in e.get("_ev") or []:
+            c = min(k, (cache.get(m) or {}).get(key, 0))
+            sh = [(1.0, 1.0)] if EVAL_SPECS[key].get("full") else shape     # asked in full at the first stage
+            share = _uncached_work(sh, c / k if k else 0.0)
+            ev += k * spq * share
+            exp_rows = k * _uncached_work(sh, 0.0)               # expected rows asked with an empty cache
+            cached_n += round(exp_rows - k * share)
+            planned_n += round(exp_rows)
+            if sanity and c:
+                reused = exp_rows - k * share
+                # adaptive: each matching answer halves the rate, so a stable model is checked only a few times
+                n_chk = sanity * reused if not cfg.eval_sanity_adaptive else min(sanity * reused, 2 + math.log2(1 + sanity * reused))
+                recheck += n_chk
+                ev += n_chk * spq
+        if e.get("_ev"):
+            e["evals"] = ev + 15.0 * len(shape)
+            e["_cached"] = (cached_n, planned_n, recheck)
+        total += sum(v for k, v in e.items() if not k.startswith("_") and k != "evals_full")
     if brief:
+        reused = sum((e.get("_cached") or (0, 0, 0))[0] for e in per.values())
         print(f"Estimated run time: ~{fmt_hr_m_s(total)} for {len(models)} model(s)"
               + (" (funnel: assumes half the models pass each gate)" if funnel else "")
+              + (f"; ~{reused} answers from the result cache" if reused else
+                 "; full re-run (EVAL_RESULT_CACHE=refresh)" if mode == "refresh" else
+                 "; full re-run (result cache off)" if mode == "false" and cfg.run_eval_tests else "")
               + (f"; {sum(1 for m in models if m in history)} with earlier results" if history else "; no earlier "
                  "results, rough guess"))
         return total
@@ -259,15 +349,34 @@ def estimate(cfg, brief=False):
           + (f" (final {cfg.eval_funnel_final})" if funnel else "")
           + f", datasets {', '.join(EVAL_SPECS[k]['short'] for k in cfg.eval_datasets) or 'none'}"
           + f", concurrency {cfg.eval_concurrency}\n")
+    if cfg.run_eval_tests:
+        print("  Result cache: " + {
+            "true": "on: answers already in the cache are reused (counted below from each model's newest cache file)"
+                    + (f"; sanity check re-asks {cfg.eval_sanity_pct:g}% of them"
+                       + (", halving per model while answers match" if cfg.eval_sanity_adaptive else "")
+                       if sanity else ""),
+            "refresh": "refresh: FULL re-run, every question is asked again and replaces the cached answer",
+            "false": "off: FULL re-run, nothing is reused or stored"}[mode] + "\n")
     w = max(len(m) for m in models)
-    print(f"  {'model':<{w}}  {'speed':>8}  {'long-ctx':>8}  {'evals':>8}  source")
+    show_c = mode == "true" and cfg.run_eval_tests
+    print(f"  {'model':<{w}}  {'speed':>8}  {'long-ctx':>8}  {'evals':>8}" + (f"  {'cached':>11}" if show_c else "")
+          + "  source")
     for m in models:
         e = per[m]
         f = lambda k: fmt_hr_m_s(e[k]).replace(" hr ", "h").replace(" m ", "m").replace(" s", "s") if e.get(k) else "-"
-        print(f"  {m:<{w}}  {f('speed'):>8}  {f('longctx'):>8}  {f('evals_full'):>8}  {e.get('_notes', '')}")
-    print(f"\n  Total: ~{fmt_hr_m_s(total)}" + (f"  (without the funnel: ~{fmt_hr_m_s(total_full)}; the funnel line "
-                                               f"assumes {int(FUNNEL_SURVIVE * 100)}% of models pass each gate, never "
-                                               f"fewer than EVAL_LEADERS={cfg.eval_leaders})" if funnel else ""))
+        c = e.get("_cached")
+        cs = (f"{c[0]}/{c[1]}" + (f" +{c[2]:.0f}?" if c[2] >= 0.5 else "") if c else "-") if show_c else None
+        print(f"  {m:<{w}}  {f('speed'):>8}  {f('longctx'):>8}  {f('evals'):>8}" + (f"  {cs:>11}" if show_c else "")
+              + f"  {e.get('_notes', '')}")
+    reused = sum((e.get("_cached") or (0, 0, 0))[0] for e in per.values())
+    print(f"\n  Total: ~{fmt_hr_m_s(total)}" + (f"  (the funnel assumes {int(FUNNEL_SURVIVE * 100)}% of models pass each "
+                                               f"gate, never fewer than EVAL_LEADERS={cfg.eval_leaders})" if funnel else ""))
+    if show_c:
+        print(f"  cached = answers expected to be reused / questions expected to be asked"
+              + (" (+ ~sanity re-asks)" if sanity else "") + (f"; {reused} reused in all" if reused else "; nothing "
+              "cached yet") + ". Reuse needs the same model file, launch flags, llama.cpp build, context, hardware, "
+              "EVAL_SEED and eval settings as the cached run; anything changed is asked again. Speed tests and "
+              "long context are always measured.")
     if cfg.eval_concurrency > 1 and not gains:
         print("  EVAL_CONCURRENCY > 1 but no batch-probe result: no speed-up assumed. Run --batch-probe to measure it.")
     skipped = [m for m in models if per[m].get("_skip")]
@@ -276,9 +385,7 @@ def estimate(cfg, brief=False):
               "results): " + ", ".join(skipped))
     missing = [m for m in models if m not in history]
     if missing:
-        print(f"  {len(missing)} model(s) without earlier results use a rough guess (GPU bandwidth {bw:g} GB/s, "
+        print(f"  {len(missing)} model(s) without earlier results use a rough guess (GPU bandwidth {bw:g} GB/s from {bw_src}; "
+              "ESTIMATE_GPU_BW_GBS sets it, "
               f"{int(THINKING_SHARE * 100)}% thinking models); a run records the real figures.")
-    if cfg.eval_result_cache and cfg.eval_result_cache_dir and Path(cfg.eval_result_cache_dir).exists():
-        print("  The result cache may hold answers from earlier runs: questions already answered with identical "
-              "settings are not asked again, so the real run can be much shorter.")
     return total

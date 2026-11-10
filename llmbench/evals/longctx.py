@@ -30,7 +30,7 @@ import re
 import time
 
 from ..client import post_chat
-from ..common import BenchError, add_time, avg
+from ..common import BenchError, add_time, avg, now
 from ..config import LONGCTX_SLOTS, PREFILL_SLOTS
 from ..modelinfo import kv_at_least
 from .answers import strip_think
@@ -111,7 +111,8 @@ def _ask(cfg, session, model, prompt, timeout, max_tokens=None):
     text, used, timings, finish, reasoning = _ask_once(cfg, session, model, prompt, timeout, max_tokens)
     if not strip_think(text).strip() and (reasoning or finish == "length") and (max_tokens or 0) < THINKING_RETRY_TOKENS:
         text, used2, timings2, finish, reasoning = _ask_once(cfg, session, model, prompt, timeout, THINKING_RETRY_TOKENS)
-        timings = {**timings2, "first_prompt_per_second": timings.get("prompt_per_second"), "thinking_retry": True}
+        timings = {**timings2, "first_prompt_per_second": timings.get("prompt_per_second"),
+                   "first_cache_n": timings.get("cache_n"), "thinking_retry": True}
         used = used or used2
     return text, used, timings
 
@@ -146,7 +147,7 @@ def run_longctx(cfg, session, r, ctx, sink=None):
             return
         notes.append(msg)
     tpw = r.get("tok_per_word") or 1.25
-    t_all = time.time()
+    t_all = now()
     for n in cfg.longctx_lengths:
         label = LONGCTX_SLOTS[n]
         if ctx and n > ctx:
@@ -160,7 +161,7 @@ def run_longctx(cfg, session, r, ctx, sink=None):
             target = ctx - max(1024, int(0.03 * ctx))
         trials, keys = cfg.longctx_trials, cfg.longctx_keys
         timeout = max(cfg.eval_timeout, n / 100 + 120)
-        scores, toks, cached, t0 = [], [], [], time.time()
+        scores, toks, cached, t0 = [], [], [], now()
         first, retried = None, False
         for attempt in range(2):            # one rebuild if the server still says the prompt is too long
             doc, needles, decoys = build_haystack(target, tpw, trials * keys, f"{cfg.eval_seed}:{n}")
@@ -193,8 +194,17 @@ def run_longctx(cfg, session, r, ctx, sink=None):
             if trial == 0:
                 slot = PREFILL_SLOTS.get(n)
                 pps = timings.get("first_prompt_per_second") or timings.get("prompt_per_second")
+                # v2.3.1: only when the prompt really was cold. The document is the same in every run (seeded), so a
+                # model still loaded from an earlier run would answer from its prompt cache and report a prefill
+                # speed over a handful of tokens.
+                reused = timings.get("first_cache_n") if timings.get("thinking_retry") else timings.get("cache_n")
+                cold = not reused or not used or reused < 0.05 * used
                 if slot and pps and n in cfg.defer_prefill and r.get(f"prefill_{slot}_tps") is None:
-                    r[f"prefill_{slot}_tps"] = pps          # this cold prompt IS the prefill-at-length test
+                    if cold:
+                        r[f"prefill_{slot}_tps"] = pps      # this cold prompt IS the prefill-at-length test
+                    else:
+                        notes.append(f"{label}: prefill speed not recorded (the server reused {reused:,} cached "
+                                     "prompt tokens, so the prompt was not cold)")
             if timings.get("cache_n") is not None:
                 cached.append(timings["cache_n"])
             if timings.get("thinking_retry"):
@@ -213,8 +223,8 @@ def run_longctx(cfg, session, r, ctx, sink=None):
             k = f"{avg(toks) / 1024:.0f}k tok" if toks else "? tok"
             reuse = f", prefix reused {max(cached) / 1024:.0f}k" if cached and max(cached) > 1024 else ""
             print(f"    Long-ctx   {label:<4} {100 * avg(scores):5.1f}%  ({len(scores)} x {keys} keys, {k}, "
-                  f"{time.time() - t0:.0f}s, KV {r.get('kv_type') or '?'}{reuse})")
-    add_time(r, "longctx", time.time() - t_all)
+                  f"{now() - t0:.0f}s, KV {r.get('kv_type') or '?'}{reuse})")
+    add_time(r, "longctx", now() - t_all)
     r["longctx_note"] = "; ".join(notes) or None
     if notes:
         print("    Long-ctx   note: " + "; ".join(notes))

@@ -1,6 +1,7 @@
 """Host-side telemetry: CPU power (RAPL / Home Assistant), CPU util, RAM, inference-server process."""
 from __future__ import annotations
 
+import collections
 import os
 import re
 import threading
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import requests
 
-from ..common import TimeSeries, avg
+from ..common import TimeSeries, avg, now
 
 class HostMeter:
     """CPU package power (RAPL energy counters), CPU utilisation (/proc/stat), RAM (/proc/meminfo).
@@ -61,7 +62,7 @@ class HostMeter:
                 energy.append((int(path.read_text()), mx))
             except (OSError, ValueError):
                 energy.append(None)
-        return {"t": time.time(), "energy": energy, "stat": self._stat()}
+        return {"t": now(), "energy": energy, "stat": self._stat()}
 
     def diff(self, a, b) -> dict:
         out, dt = {}, b["t"] - a["t"]
@@ -245,7 +246,7 @@ class RamSampler(threading.Thread):
     def rescan(self):
         found = self.find_processes()
         with self._lock:
-            self.pids, self._scanned = found, time.time()
+            self.pids, self._scanned = found, now()
 
     def rss_gb(self, pids=None):
         with self._lock:
@@ -262,7 +263,7 @@ class RamSampler(threading.Thread):
 
     def run(self):
         while not self._halt.is_set():
-            if time.time() - self._scanned > 3:
+            if now() - self._scanned > 3:
                 self.rescan()
             self.series.append({"ram_gb": HostMeter._mem_gb(), "proc_gb": self.rss_gb()})
             self._halt.wait(self.interval)
@@ -279,7 +280,8 @@ class HaCpuPoller(threading.Thread):
 
     def __init__(self, cfg):
         super().__init__(daemon=True)
-        self.cfg, self.samples, self._halt = cfg, [], threading.Event()
+        # bounded (v2.3.1): a plain list grew for the whole run and was scanned from the start on every request
+        self.cfg, self.samples, self._halt = cfg, collections.deque(maxlen=2048), threading.Event()
         self.headers = {"Authorization": f"Bearer {cfg.ha_token}"}
 
     def run(self):
@@ -288,13 +290,14 @@ class HaCpuPoller(threading.Thread):
             try:
                 r = requests.get(url, headers=self.headers, timeout=3)
                 if r.ok:
-                    self.samples.append((time.time(), float(r.json().get("state"))))
+                    self.samples.append((now(), float(r.json().get("state"))))
             except (requests.RequestException, ValueError, TypeError):
                 pass
             self._halt.wait(self.cfg.ha_interval)
 
     def window_avg(self, t0, t1):
-        xs = [w for t, w in self.samples if t0 - self.cfg.ha_interval * 2 <= t <= t1]
-        return avg(xs) if xs else (self.samples[-1][1] if self.samples else None)
+        samples = list(self.samples)                 # a snapshot: the poller thread appends while we read
+        xs = [w for t, w in samples if t0 - self.cfg.ha_interval * 2 <= t <= t1]
+        return avg(xs) if xs else (samples[-1][1] if samples else None)
 
     def stop(self): self._halt.set()

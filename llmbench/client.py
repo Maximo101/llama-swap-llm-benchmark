@@ -44,11 +44,13 @@ def auth_headers(cfg, backend):
     return h
 
 
-def post_chat(cfg, session, payload, timeout):
+def post_chat(cfg, session, payload, timeout, on_attempt=None):
     """Synchronous chat completion with retries (502/503/504 and connection errors, exponential backoff).
     Timeouts are NOT retried: a request that already ran for `timeout` seconds would only burn the same time again."""
     last = "server busy"
     for attempt in range(cfg.retries + 1):
+        if on_attempt is not None:
+            on_attempt(attempt)                  # the caller re-reads its clocks: a retry starts a new measurement
         try:
             resp = session.post(cfg.chat_url, json=payload, timeout=timeout)
         except requests.Timeout:
@@ -72,6 +74,42 @@ def post_chat(cfg, session, payload, timeout):
         except ValueError:
             raise BenchError("response was not valid JSON")
     raise BenchError(last)
+
+
+def is_outage(msg):
+    """Did this request fail because the SERVER was not there (refused, reset, dropped, 5xx), rather than because
+    of the model (a timeout, a bad request)? Those are worth asking again once the server is back (v2.3.1)."""
+    m = str(msg or "").lower()
+    if "timeout" in m:
+        return False
+    return "connection error" in m or bool(re.search(r"http 5\d\d", m))
+
+
+def wait_ready(cfg, session=None, deadline_s=None, quiet=False):
+    """v2.3.1: True as soon as the server lists its models again, False after SERVER_WAIT_SECONDS (0 = do not wait).
+    Called when requests fail with connection errors mid-run: a restart of llama-swap (a config reload, a Docker
+    restart, a crash) used to cost every model tested in that window its result."""
+    limit = cfg.server_wait if deadline_s is None else deadline_s
+    if limit <= 0:
+        return False
+    session = session or make_session(cfg, cfg.backend)
+    url = cfg.models_url if cfg.backend != "strata" else cfg.base_url + "/v1/models"
+    end, said = time.monotonic() + limit, False
+    while True:
+        try:
+            if session.get(url, timeout=5).status_code < 500:
+                if said and not quiet:
+                    print("    [info] the server is answering again", flush=True)
+                return True
+        except requests.RequestException:
+            pass
+        if time.monotonic() >= end:
+            return False
+        if not said and not quiet:
+            said = True
+            print(f"    [wait] the server at {cfg.base_url} is not answering: waiting up to {limit:.0f}s for it "
+                  "(SERVER_WAIT_SECONDS)", flush=True)
+        time.sleep(min(5.0, max(0.2, end - time.monotonic())))
 
 
 def unload_all(cfg, session) -> bool:

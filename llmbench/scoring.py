@@ -13,6 +13,9 @@ from .config import EVAL_SPECS, LONGCTX_SLOTS, PREFILL_SLOTS
 # --------------------------------------------------------------------------- #
 
 _PARAMS_RE = re.compile(r"(?<![A-Za-z0-9.])(\d+(?:\.\d+)?)[Bb](?![A-Za-z])")
+# v2.3.1: "E4B" = effective parameters (Gemma 3n style names, e.g. Nemotron-3.5-Bolt-E4B): the size the model runs
+# at, used as its parameter count when the name carries no plain "<n>B". "A3B" (active, MoE) is never read as this.
+_EFFECTIVE_RE = re.compile(r"(?<![A-Za-z0-9])E(\d+(?:\.\d+)?)[Bb](?![A-Za-z])")
 _QUANT_RE = re.compile(
     r"(?<![A-Za-z])(IQ\d_[A-Z]+|Q\d_K_[A-Z]+|Q\d_K|Q\d_\d|Q\d|BF16|F16|F32)(?![A-Za-z0-9])", re.I)
 _ACTIVE_RE = re.compile(r"(?<![A-Za-z0-9])A(\d+(?:\.\d+)?)B(?![A-Za-z])")
@@ -20,7 +23,7 @@ _ACTIVE_RE = re.compile(r"(?<![A-Za-z0-9])A(\d+(?:\.\d+)?)B(?![A-Za-z])")
 
 def parse_params(name):
     """Total parameters in billions; 'A3B' (active params) is skipped by the lookbehind."""
-    m = _PARAMS_RE.search(name)
+    m = _PARAMS_RE.search(name) or _EFFECTIVE_RE.search(name)
     return float(m.group(1)) if m else None
 
 
@@ -56,8 +59,13 @@ GGUF_FIELDS = ["gguf_gb", "mmproj_gb", "bpw", "gguf_arch", "attn_type", "n_layer
                "max_ctx_vram", "tok_per_word"]
 CTX_FIELDS = ["ctx_ok"] + [f"prefill_{v}_tps" for v in PREFILL_SLOTS.values()] \
     + ["agent_prompt_tokens", "agent_ttft_s", "agent_ttft_warm_s"] \
+    + ["prefill_depth_tps", "prefill_depth_ttft_s", "prefill_depth_tokens", "prefill_depth_new"] \
     + [f"longctx_{v}_pct" for v in LONGCTX_SLOTS.values()] + ["longctx_avg_pct", "longctx_kv_ok", "longctx_note"]
 BUDGET_FIELDS = ["budget_profile", "budget_pass", "budget_fails", "score_note"]
+# v2.3: the Agent score's parts (agent.py): composite quality, long-ctx over the common lengths, context factor,
+# tool calling near MIN_TOOLCALL_PCT, and what the composite was made of this run
+AGENT_FIELDS = ["agent_composite_pct", "agent_longctx_pct", "agent_ctx_usable", "agent_ctx_factor", "agent_borderline",
+                "agent_basis"]
 FIELDS = ["timestamp", "model", "status", "error", "params_b", "active_b", "arch", "offload", "quant", "ctx_size", "load_s",
           "tech_tps", "logic_tps", "avg_tps", "prefill_tps", "prefill_tokens", "cache_hit_pct", "cache_speedup",
           "ttft_ms", "gen_ms", "latency_s", "gpu_w", "gpu_peak_w", "idle_gpu_w", "gpu_util", "gpu_temp",
@@ -65,7 +73,7 @@ FIELDS = ["timestamp", "model", "status", "error", "params_b", "active_b", "arch
           "ram_total_gb", "ram_used_gb", "ram_pct", "ram_idle_gb", "ram_delta_gb", "ram_proc_gb", "ram_spill_gb", "ram_overhead_gb",
           "energy_wh", "j_per_token", "cost_1m_peak", "cost_1m_off", "cost_1kq_peak", "cost_1kq_off",
           "tps_per_watt", "goldilocks", "score_chat", "score_agent", "vram_fit", "score_sweet", "eligible"] + EVAL_FIELDS \
-    + LAUNCH_FIELDS + GGUF_FIELDS + CTX_FIELDS + BUDGET_FIELDS + TIMING_FIELDS
+    + LAUNCH_FIELDS + GGUF_FIELDS + CTX_FIELDS + BUDGET_FIELDS + TIMING_FIELDS + AGENT_FIELDS
 
 
 def blank(name):
@@ -132,6 +140,10 @@ def _fill_eval_averages(r, cfg, planned=None):
     # template or thinking problem, not a weak model; they cost time and are penalised: eval_quality = average minus
     # AGENT_FALLBACK_PENALTY x share of questions retried.
     n = sum(r.get(f"eval_{k}_n") or 0 for k in EVAL_SPECS if r.get(f"eval_{k}_pct") is not None)
+    # finalize() also runs on rows read back from an older JSON (--compare, rescoring): never keep a stale value
+    r["eval_quality"] = None
+    if not n:
+        r["eval_retry_n"] = r["eval_retry_pct"] = None
     if n:
         retried = sum(r.get(f"eval_{k}_fallback") or 0 for k in EVAL_SPECS if r.get(f"eval_{k}_pct") is not None)
         r["eval_retry_n"], r["eval_retry_pct"] = retried, 100 * retried / n
@@ -165,8 +177,9 @@ def _apply_sq_basis(results, cfg):
     if basis == "auto":
         basis = "single" if any((r.get("eval_inflight") or 1) > 1 for r in ev) else "measured"
     if basis == "single":
+        answered = lambda r, k: (r.get(f"eval_{k}_n") or 0) - (r.get(f"eval_{k}_err") or 0) > 0
         complete = all(r.get(f"eval_{k}_sec1") is not None for r in ev for k in EVAL_SPECS
-                       if r.get(f"eval_{k}_sec") is not None)
+                       if r.get(f"eval_{k}_sec") is not None and answered(r, k))
         if not complete:
             basis = "measured"            # no speed test (evals-only): nothing to estimate from
     for r in ev:
@@ -176,7 +189,7 @@ def _apply_sq_basis(results, cfg):
     return basis
 
 
-_SPEED_PHASES = ("settle", "load", "speed", "prefill_ctx", "agent_ttft", "cooldown")
+_SPEED_PHASES = ("settle", "load", "speed", "prefill_ctx", "prefill_depth", "agent_ttft", "cooldown")
 
 
 def _fill_timing(r):
@@ -241,15 +254,12 @@ def _fill_scores(r, cfg):
 
 
 def agent_tolerance(best, cfg):
-    """Eval-score difference (percentage points) that is just noise: AGENT_ACC_TOL, or 1 standard error of the best
-    model's score over all the questions it answered (a 1-question gap is ~1.4 points with the 'basic' profile)."""
+    """Composite-score difference (points) that is just noise: AGENT_ACC_TOL, or 1 standard error of the best
+    model's composite (v2.3: the weighted error of its parts, see agent.composite; set as best["_se"])."""
     if cfg.agent_acc_tol is not None:
         return cfg.agent_acc_tol
-    n = sum(best.get(f"eval_{k}_n") or 0 for k in EVAL_SPECS if best.get(f"eval_{k}_pct") is not None)
-    if not n:
-        return 4.0
-    p = min(0.95, max(0.05, best["_q"] / 100))
-    return 100 * math.sqrt(p * (1 - p) / n)
+    se = best.get("_se")
+    return 4.0 if se is None else se
 
 
 # Typical bits per weight by quant name, for the no-eval proxy when the GGUF header could not be read.
@@ -280,63 +290,132 @@ def best_prefill(r):
     return r.get("prefill_tps")
 
 
-def speed_factor(r, cfg):
-    """0-1 speed figure for the Agent score. Parts (weights): prompt processing 0.4 (agent-prompt TTFT if measured,
-    else the longest prefill test), seconds per eval question 0.35, generation tokens/s 0.25. Missing parts are left
-    out and the rest re-weighted. Prefill weighs most because an agent re-reads a 10-60k token context every turn."""
-    parts = []
+DEPTH_REF_TOKENS = 20000     # the at-depth credit halves at 20000 / AGENT_TTFT_REF tok/s (same scale as the cold TTFT)
+
+
+def depth_ref_tps(cfg):
+    """Prefill speed at which the prefill-at-depth credit halves: the speed at which a 20k-token cold agent prompt
+    takes AGENT_TTFT_REF seconds (1,333 tok/s at the default 15 s), so both prompt parts use the same scale."""
+    return DEPTH_REF_TOKENS / cfg.agent_ttft_ref
+
+
+def depth_slot(r):
+    """The standard depth (8k ... 128k) a model's prefill-at-depth was measured at, from the cached tokens."""
+    n = r.get("prefill_depth_tokens")
+    if not n or not r.get("prefill_depth_tps"):
+        return None
+    return min(PREFILL_SLOTS, key=lambda s: abs(math.log(n / s)))
+
+
+def reference_depth(rows):
+    """The depth the Agent score compares prefill-at-depth at: the one most ranked models were measured at (ties:
+    the deeper). Prefill gets slower with depth, so speeds measured at different depths are not compared."""
+    from collections import Counter
+    c = Counter(depth_slot(r) for r in rows if depth_slot(r))
+    return max(c, key=lambda s: (c[s], s)) if c else None
+
+
+def speed_factor(r, cfg, use_depth=True):
+    """0-1 speed figure for the Agent score (v2.3). Parts (weights):
+      prompt processing 0.5  = prefill at depth 0.6 (new tokens on top of a 64k context, what an agent waits for each
+                               turn) + cold agent-prompt TTFT 0.4, whichever exist; else the longest prefill test
+      seconds per eval question 0.3
+      generation tokens/s 0.2
+    Missing parts are left out and the rest re-weighted. use_depth=False: the model's depth differs from the run's
+    reference depth, so its prefill-at-depth is left out (only the cold TTFT counts)."""
+    pp = []
+    if use_depth and r.get("prefill_depth_tps"):
+        pp.append((0.6, 1 / (1 + depth_ref_tps(cfg) / r["prefill_depth_tps"])))
     if r.get("agent_ttft_s") is not None:
-        parts.append((0.4, 1 / (1 + r["agent_ttft_s"] / cfg.agent_ttft_ref)))
+        pp.append((0.4, 1 / (1 + r["agent_ttft_s"] / cfg.agent_ttft_ref)))
+    parts = []
+    if pp:
+        parts.append((0.5, sum(w * v for w, v in pp) / sum(w for w, _ in pp)))
     elif best_prefill(r):
-        parts.append((0.4, min(1.0, math.log(max(1.0, best_prefill(r))) / math.log(cfg.agent_prefill_ref))))
+        parts.append((0.5, min(1.0, math.log(max(1.0, best_prefill(r))) / math.log(cfg.agent_prefill_ref))))
     if r.get("eval_avg_sec") is not None:
-        parts.append((0.35, 1 / (1 + r["eval_avg_sec"] / cfg.agent_sec_ref)))
+        parts.append((0.3, 1 / (1 + r["eval_avg_sec"] / cfg.agent_sec_ref)))
     if r.get("avg_tps"):
-        parts.append((0.25, min(1.0, math.log(max(1.0, r["avg_tps"])) / math.log(cfg.agent_tps_ref))))
+        parts.append((0.2, min(1.0, math.log(max(1.0, r["avg_tps"])) / math.log(cfg.agent_tps_ref))))
     return sum(w * v for w, v in parts) / sum(w for w, _ in parts) if parts else None
+
+
+def _no_score_notes(ok):
+    for r in ok:
+        if r.get("eval_quality") is None:
+            errs = sum(r.get(f"eval_{k}_err") or 0 for k in EVAL_SPECS)
+            if r.get("eval_skipped"):
+                r["score_note"] = f"evals skipped: {r['eval_skipped']}"
+            elif r.get("eval_screened"):
+                r["score_note"] = f"not ranked: {r['eval_screened']}"
+            elif r.get("eval_incomplete"):
+                r["score_note"] = (f"not ranked: incomplete evals ({r['eval_incomplete']}"
+                                   + (f"; {errs} request errors)" if errs else ")"))
+            else:
+                r["score_note"] = f"no eval score ({errs} request errors)" if errs else "no eval score"
+    for r in ok:
+        if r.get("eval_screened") and r.get("eval_quality") is not None:
+            r["score_note"] = f"not ranked: {r['eval_screened']}"
 
 
 def _fill_agent_scores(results, cfg):
     """Agent score (0-100), quality first and speed second. VRAM is deliberately not part of it (see score_sweet).
 
-    1. Quality. With evals: the eval average, blended with long-context retrieval (AGENT_LONGCTX_WEIGHT) when every
-       model has it, compared with the best of the run: anything within the noise margin (agent_tolerance) of the best
-       is a tie at 100; below that the credit falls steeply (quadratic, 0 at AGENT_ACC_SPAN points under the tie zone).
-       Then the retry penalty: x (1 - AGENT_FALLBACK_PENALTY% x share of questions retried), applied after the tie zone
-       so it separates tied models too. Without evals: proxy_quality() relative to the best of the run.
-    2. Speed factor (speed_factor): can only remove up to AGENT_SPEED_WEIGHT of the credit, so speed separates models of
-       equal quality but never lifts a clearly weaker one.
-    score_agent = credit x (1 - W + W x speed); agent_quality = credit.
+    score_agent = credit(composite -> tie zone -> quadratic fall-off) x retry_keep x ctx_factor x (1 - W + W x speed)
 
-    When the run HAS evals, a model whose evals produced no score (every request failed, e.g. a template error) gets
-    no Agent score at all. (v2.1 gave it the no-eval proxy, which is on a different scale and ranked it first.)"""
+    1. Composite quality (agent.py): evals / tool calling / long-ctx over the lengths every ranked model ran
+       (AGENT_TOOL_WEIGHT, AGENT_LONGCTX_WEIGHT; the evals get the rest). Anything within the composite's noise
+       (1 standard error of the best model, or AGENT_ACC_TOL) of the best is a tie at 100; below that the credit
+       falls steeply (quadratic, 0 at AGENT_ACC_SPAN points under the tie zone).
+    2. After the tie zone, so they separate tied models too: the retry penalty
+       x (1 - AGENT_FALLBACK_PENALTY% x share of questions retried) and the context factor (AGENT_CTX_CURVE at the
+       usable context: the loaded context, capped at the longest long-ctx length passed, agent.usable_ctx).
+    3. Speed factor (speed_factor): can only remove up to AGENT_SPEED_WEIGHT, so speed separates models of equal
+       quality but never lifts a clearly weaker one.
+    agent_quality = credit x retry_keep x ctx_factor (the part before speed).
+
+    No Agent score: evals failed / incomplete / skipped / screened out, loaded or usable context below AGENT_CTX_MIN,
+    or tool calling below MIN_TOOLCALL_PCT. Without evals in the run, proxy_quality() relative to the best stands in for 1.
+    """
+    from . import agent
     ok = [r for r in results if r["status"] == "ok"]
     has_evals = any(r.get("eval_avg_pct") is not None for r in ok)
     w = cfg.agent_speed_weight
+    lengths = agent.run_lc_lengths(ok) if has_evals else []
+    for r in ok:
+        judged = not lengths or r.get("eval_avg_pct") is not None or agent.lc_results(r)   # not evaluated: not judged
+        r["agent_ctx_usable"] = agent.usable_ctx(r, cfg, lengths)[0] if judged else None
+        r["agent_ctx_factor"] = agent.ctx_factor(r["agent_ctx_usable"], cfg.agent_ctx_curve)
+        r["agent_borderline"] = agent.borderline(r, cfg) if has_evals else None
+        for k in ("agent_composite_pct", "agent_longctx_pct", "agent_basis"):
+            r[k] = None
     if has_evals:
-        # Funnel: models screened out at an earlier stage answered fewer questions and are not ranked against the
-        # finalists (their stage score stays visible, with its larger margin of error).
-        pool = [r for r in ok if r.get("eval_quality") is not None and not r.get("eval_screened")]
-        lc_all = cfg.agent_longctx_weight > 0 and pool and all(r.get("longctx_avg_pct") is not None for r in pool)
-        for r in pool:
-            r["_q"] = r["eval_avg_pct"]
-            if lc_all:
-                r["_q"] = (1 - cfg.agent_longctx_weight) * r["eval_avg_pct"] + cfg.agent_longctx_weight * r["longctx_avg_pct"]
+        _no_score_notes(ok)
+        cand = [r for r in ok if r.get("eval_quality") is not None and not r.get("eval_screened")]
+        _, has_tools = agent.eval_keys(ok)
+        pool = []
+        for r in cand:
+            why = agent.exclusion(r, cfg, has_tools, lengths)
+            if why:
+                r["score_note"] = why
+            else:
+                pool.append(r)
+        if not pool:
+            return
+        b = agent.basis(cfg, pool, ok)
         for r in ok:
-            if r.get("eval_quality") is None:
-                errs = sum(r.get(f"eval_{k}_err") or 0 for k in EVAL_SPECS)
-                if r.get("eval_skipped"):
-                    r["score_note"] = f"evals skipped: {r['eval_skipped']}"
-                elif r.get("eval_screened"):
-                    r["score_note"] = f"not ranked: {r['eval_screened']}"
-                elif r.get("eval_incomplete"):
-                    r["score_note"] = (f"not ranked: incomplete evals ({r['eval_incomplete']}"
-                                       + (f"; {errs} request errors)" if errs else ")"))
-                else:
-                    r["score_note"] = f"no eval score ({errs} request errors)" if errs else "no eval score"
-        for r in ok:
-            if r.get("eval_screened") and r.get("eval_quality") is not None:
-                r["score_note"] = f"not ranked: {r['eval_screened']}"
+            r["agent_basis"] = b["text"]
+        for r in list(pool):
+            c = agent.composite(r, b["weights"], b["ekeys"], b["has_tools"], b["lengths"], b["lc_n"])
+            if c is None:                          # cannot happen for a complete row; never rank a partial one
+                r["score_note"] = "not ranked: a part of the Agent composite is missing"
+                pool.remove(r)
+                continue
+            r["_q"], r["_se"] = c
+            r["agent_composite_pct"] = c[0]
+            if b["lengths"]:
+                lc = agent.lc_results(r)
+                r["agent_longctx_pct"] = sum(lc[l] for l in b["lengths"]) / len(b["lengths"])
         if not pool:
             return
         ranked = [r for r in pool if r["eligible"]] or pool       # the bar is the best model that can actually be used
@@ -344,24 +423,48 @@ def _fill_agent_scores(results, cfg):
         tol = agent_tolerance(best, cfg)
         for r in pool:
             gap = max(0.0, best["_q"] - tol - r["_q"])
-            # The retry penalty is applied AFTER the tie zone, so it still separates models whose scores tie.
+            # Applied AFTER the tie zone, so they still separate models whose composites tie.
             keep = 1 - cfg.agent_fallback_penalty / 100 * (r.get("eval_retry_pct") or 0) / 100
-            r["agent_quality"] = 100 * max(0.0, 1 - gap / cfg.agent_acc_span) ** 2 * max(0.0, keep)
+            cf = r["agent_ctx_factor"] if r["agent_ctx_factor"] is not None else 1.0
+            r["agent_quality"] = 100 * max(0.0, 1 - gap / cfg.agent_acc_span) ** 2 * max(0.0, keep) * cf
     else:
         for r in ok:
             if r.get("eval_skipped"):
                 r["score_note"] = f"evals skipped: {r['eval_skipped']}"
-        pool = [r for r in ok if proxy_quality(r) is not None and not r.get("eval_skipped")]
+        pool = []
+        for r in ok:
+            if proxy_quality(r) is None or r.get("eval_skipped"):
+                continue
+            why = agent.exclusion(r, cfg, False)
+            if why:
+                r["score_note"] = why
+                continue
+            pool.append(r)
         if not pool:
             return
         top = max(proxy_quality(r) for r in pool) or 1
         for r in pool:
-            r["agent_quality"] = 100 * proxy_quality(r) / top
+            cf = r["agent_ctx_factor"] if r["agent_ctx_factor"] is not None else 1.0
+            r["agent_quality"] = 100 * proxy_quality(r) / top * cf
             r["score_note"] = "proxy (no evals): size and quant, not measured quality"
+            r["agent_basis"] = "proxy: size and quant" + (" \u00b7 context curve" if cfg.agent_ctx_curve else "")
+    ref = reference_depth(pool)
     for r in pool:
-        sp = speed_factor(r, cfg)
+        same = depth_slot(r) is None or depth_slot(r) == ref
+        sp = speed_factor(r, cfg, use_depth=same)
+        if not same and r.get("agent_basis"):
+            r["agent_basis"] += (f"; prefill at depth compared at {PREFILL_SLOTS[ref]}: models measured at another "
+                                 "depth are scored on their cold agent TTFT")
         r["score_agent"] = r["agent_quality"] * ((1 - w + w * sp) if sp is not None else 1.0)
+    for r in ok:
         r.pop("_q", None)
+        r.pop("_se", None)
+
+
+def agent_notes(results):
+    """Run-level notes about the Agent score worth printing once (e.g. long-ctx left out of the composite)."""
+    texts = {r.get("agent_basis") for r in results if r.get("agent_basis")}
+    return sorted(t.split("; ", 1)[1] for t in texts if "; " in t)
 
 
 def vram_fit(pct, cfg):
