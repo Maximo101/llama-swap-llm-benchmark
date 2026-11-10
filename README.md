@@ -1,16 +1,20 @@
 # Llama-Swap LLM Benchmark Suite
 
+<img width="3712" height="1152" alt="banner" src="https://github.com/user-attachments/assets/e40370b4-3a31-4c14-a486-46a6b280f9bf" />
+
 An automated, real-load benchmark for LLMs served by [llama-swap](https://github.com/mostlygeek/llama-swap).
 
 For every model on your server it measures generation speed (Technical + Logic prompts), prefill speed at the prompt lengths you actually deploy, agent-prompt time to first token, load time, prompt-cache efficiency and context size, while tracking GPU power, VRAM, temperature and CPU power. It reads what the server really loaded (launch flags and the GGUF header: KV-cache type, bits per weight, experts, KV cost per token). From those it derives energy per token, efficiency and (optionally) electricity cost. After the speed tests it runs dataset evaluations that grade knowledge, math, coding, tool calling and long-context retrieval, then ranks the models for real use on that machine and builds a self-contained interactive dashboard.
 
-A full run of ~28 models is dominated by the GPU generating eval answers. v2.1 adds the tools to make that much shorter without making the ranking less trustworthy: a confidence-gated funnel, a per-question result cache with resume, batched evaluation with a measured probe, skipping models that cannot be deployed anyway, a single shared long-context document, and a per-phase timing report with `--estimate`. See [Making a full run faster](#making-a-full-run-faster). v2.2 adds a full-retest mode and sanity checks for the result cache, a cache-aware `--estimate`, and `--compare` to put runs (for example a Strata run and a llama-swap run) in one dashboard. v2.3 makes the Agent score fit agentic use (a minimum and a preference for long context, tool calling as its own part, a tool-calling minimum), adds **prefill at depth** (what an agent waits for each turn on a long, cached context), six colour tiers with a light theme and model families in the dashboard, and a **settings page** (`python benchmark.py --ui`) to edit `.env`, keep favourites, estimate, compare and start or stop runs from the browser.
+A full run of ~28 models is dominated by the GPU generating eval answers. v2.1 adds the tools to make that much shorter without making the ranking less trustworthy: a confidence-gated funnel, a per-question result cache with resume, batched evaluation with a measured probe, skipping models that cannot be deployed anyway, a single shared long-context document, and a per-phase timing report with `--estimate`. See [Making a full run faster](#making-a-full-run-faster). v2.2 adds a full-retest mode and sanity checks for the result cache, a cache-aware `--estimate`, and `--compare` to put runs (for example a Strata run and a llama-swap run) in one dashboard. v2.2.1 adds a settings file you can read at a glance, and a check for your `.env` v2.3 makes the Agent score fit agentic use (a minimum and a preference for long context, tool calling as its own part, a tool-calling minimum), adds **prefill at depth** (what an agent waits for each turn on a long, cached context), six colour tiers with a light theme and model families in the dashboard, and a **settings page** (`python benchmark.py --ui`) to edit `.env`, keep favourites, estimate, compare and start or stop runs from the browser. v2.3.1: runs that survive trouble, `--resume`, honest timings, a harder settings page
 
-<img width="1337" height="864" alt="d1" src="https://github.com/user-attachments/assets/7cd334dc-d9c7-41fd-84f9-82c06125027c" />
+Dashboard
+<img width="1263" height="887" alt="s1" src="https://github.com/user-attachments/assets/b4e0c05e-53ff-4faf-bd3b-641614f2cfa0" />
 
-<img width="1273" height="828" alt="s1" src="https://github.com/user-attachments/assets/6e4bc882-24b3-4f53-ac0e-9e369e3f7635" />
+<img width="1279" height="685" alt="s2" src="https://github.com/user-attachments/assets/b8c1cf2f-53c9-4eae-8142-d6f542a3f11e" />
 
-<img width="1337" height="856" alt="m1" src="https://github.com/user-attachments/assets/17ea4e3a-bdf8-4830-9ff1-1e79c8da15eb" />
+Setting Page
+<img width="1111" height="914" alt="d1" src="https://github.com/user-attachments/assets/a87b0e68-3ec4-4582-8e73-73d61d9e0d60" />
 
 ## 📦 Features
 
@@ -35,12 +39,6 @@ A full run of ~28 models is dominated by the GPU generating eval answers. v2.1 a
 * **Interactive dashboard:** Filters, sortable and baseline-comparable table, charts (including Accuracy & Pass Rate graphs for knowledge, math and coding) and a radar per podium model. Hover any column header or dataset name for a short explanation; hide the columns you don't need. Six colour tiers per metric (flat bands or a smooth gradient, absolute or relative to the run), a light and a dark theme, model families as filter chips with a wildcard box, and a **? Help** page with every threshold and a speed-by-setup guide. See [The dashboard](#the-dashboard).
 * **Settings page:** `python benchmark.py --ui` shows every `.env` setting with its description, default and choices, checks values as you type, saves `.env` (keeping `.env.bak`), keeps favourite setups in `configs/`, and runs the tool's own commands (estimate, reload, compare, run and stop). Localhost only unless you open it to your LAN with a token. See [Settings page](#settings-page---ui).
 * **Rich outputs:** Per-run CSV, appended history CSV, structured JSON (`results.json`), optional Markdown report, per-question eval JSONL logs, a run log, and the HTML dashboard.
-
-<img width="1410" height="769" alt="ss2" src="https://github.com/user-attachments/assets/f3790d98-cba0-4f8e-a990-e2dd9ed06c4d" />
-
-<img width="1410" height="769" alt="ss1" src="https://github.com/user-attachments/assets/d8247de4-6966-47d8-8aaf-fea03f130cee" />
-
-<img width="1735" height="444" alt="dd5" src="https://github.com/user-attachments/assets/a0156de2-2569-408f-81aa-56ae17912a34" />
 
 ## 🛠️ Prerequisites
 
@@ -302,6 +300,8 @@ python benchmark.py --ui            # prints the address; on a desktop it opens 
 
 A page in the dashboard's style (light or dark) for everything in `.env`. Editing `.env` by hand and running from the command line or Unraid User Scripts work exactly as before; the page is optional.
 
+<img width="1228" height="329" alt="d2" src="https://github.com/user-attachments/assets/9ab0f57f-50eb-4327-8c54-09aaf15029e6" />
+
 * **Every setting** grouped by PART and section as in `.env.example`, with its description, built-in default, the `.env.example` value and, where there is a fixed set, a drop-down of the allowed values. Values are checked as you type with the same rules as `--check-env` and a run (a wrong value is marked in red with the reason). Settings new in this version, old names and unknown settings are listed under **Checks**. A filter box and *only changed* help find a setting.
 * **Save** checks every value (and that a run would load them), then writes `.env` in the `.env.example` layout: your values on their own lines, untouched settings as shipped, anything `.env.example` doesn't know kept at the end. The previous file is kept as `.env.bak`. **Return to defaults** (asks first) writes the shipped `.env.example` values and keeps your tokens and keys.
 * **Tokens and keys** (`LLAMA_SWAP_API_KEY`, `HF_TOKEN`, `STRATA_API_KEY`, `HA_TOKEN`, `UI_TOKEN`) are never sent to the page with the other settings; **show** fetches one when you ask, typing replaces it, **clear** removes it.
@@ -460,6 +460,10 @@ Missing measurements are `null`, never `NaN`. A JSON file is also written when e
 * **Families:** chips in the filter bar group models by `DASH_FAMILIES` in `.env` (`Gemma=*gemma-4*;BigBang=*bigbang*`, several patterns per family with `|`) and automatically by the first word of the model name when two or more models share it (e.g. all `endless-frontier_BigBang` quants). Click chips to show only those families; the box next to them takes wildcard patterns, comma-separated, `*` and `?`, case-insensitive: `*gemma-4*` also finds `agent-gemma-4-26B...`. Chips and patterns combine with OR (either matches), and with the other filter groups (quant, size, ...) with AND.
 * **? Help:** what the colours mean with every threshold for this run (and the VRAM and tool-calling marks), how the toggles and family patterns work, and a rough speed-by-setup table: the generation speed to expect from a few typical GPUs and model sizes (estimates from memory bandwidth, not measurements), to read the tiers against your hardware.
 
+<img width="551" height="798" alt="m1" src="https://github.com/user-attachments/assets/0aab53fc-f4b0-434a-a1b3-52515a556116" />
+
+<img width="1199" height="727" alt="d3" src="https://github.com/user-attachments/assets/e21dc80c-17e3-4518-9119-7fc2cdfd9336" />
+
 ## Metric definitions
 
 | Metric | How it is measured |
@@ -514,6 +518,8 @@ Missing measurements are `null`, never `NaN`. A JSON file is also written when e
 | **Sweet spot** | `Agent score × VRAM fit`: the most capable model that also uses the GPU sensibly (some headroom, nothing wasted). Ranked in the podium's "VRAM sweet spot" row |
 | **VRAM tuning hint** | Under the band with CPU offload: room to lower `--n-cpu-moe`. Over the band: raise `--n-cpu-moe` or cut ctx / KV cache. Tip: add several llama-swap entries of one model with different `--n-cpu-moe` values and the Sweet spot ranks them |
 
+<img width="1256" height="809" alt="s6" src="https://github.com/user-attachments/assets/ab0b8c59-ddb5-4b09-a3c4-25e495b8db6d" /><img width="1228" height="329" alt="d2" src="https://github.com/user-attachments/assets/401076e4-491a-4d68-9ac8-6b4a48dcd750" />
+
 ## Streaming, loop abort and the thinking cap
 
 Reasoning models can fall into endless loops, and a non-streaming request returns nothing until the model has finished, so a looping reply used to run into the 10-minute timeout and the benchmark learned nothing about it. Since v2.1 the evaluation phase reads replies as a stream (the speed tests do not), which allows:
@@ -559,34 +565,29 @@ The default budget is a judgement call: it keeps a run's duration predictable, b
 
 ## Dashboard Example
 
-<img width="1423" height="901" alt="d3" src="https://github.com/user-attachments/assets/ffa2a8b5-be96-4f86-8772-83ea3a3e0e6b" />
+<img width="1263" height="768" alt="s3" src="https://github.com/user-attachments/assets/47090d8d-a0bc-44eb-9da0-09a45e0d30c3" />
 
-<img width="1423" height="829" alt="d4" src="https://github.com/user-attachments/assets/2461467f-5eeb-4b2f-a736-24517382d892" />
+<img width="1251" height="738" alt="s4" src="https://github.com/user-attachments/assets/c6670acd-e808-493e-b896-080335f70e40" />
 
-<img width="1423" height="829" alt="d5" src="https://github.com/user-attachments/assets/fd744301-9bc5-4d1c-b879-1f114400f15c" />
+<img width="1263" height="815" alt="s5" src="https://github.com/user-attachments/assets/6f51c67b-177f-4026-a967-798435e65321" />
 
-<img width="1728" height="768" alt="d6" src="https://github.com/user-attachments/assets/370e02b3-2847-419d-8b3e-e7f237bf9d21" />
+<img width="1256" height="809" alt="s6" src="https://github.com/user-attachments/assets/ab0b8c59-ddb5-4b09-a3c4-25e495b8db6d" />
 
-<img width="1735" height="507" alt="d7" src="https://github.com/user-attachments/assets/3de1fb15-7c94-4553-85ac-da50e3c00784" />
-
-<img width="1337" height="784" alt="m3" src="https://github.com/user-attachments/assets/ef9d120b-a624-42fc-8b8d-d2aeb9d35e13" />
-
-<img width="1337" height="756" alt="m4" src="https://github.com/user-attachments/assets/36ced3d9-6cf8-4996-8041-adbb06a1bb1b" />
-
-<img width="1337" height="772" alt="m5" src="https://github.com/user-attachments/assets/1ca0ddcb-e13d-4c29-983c-f22885f6e1dc" />
-
+Previous Dashboard v2.2
 
 <img width="1424" height="783" alt="s2" src="https://github.com/user-attachments/assets/32724f33-a04a-4be4-8267-02352270dd73" />
-
-<img width="1424" height="783" alt="s3" src="https://github.com/user-attachments/assets/ec82207e-3cb0-4751-acee-3bced3560ab6" />
-
-<img width="1424" height="783" alt="s4" src="https://github.com/user-attachments/assets/4ec1c74d-4896-4a3d-bdf2-20d361c522e2" />
 
 <img width="1424" height="783" alt="s5" src="https://github.com/user-attachments/assets/da11daf3-0377-4c84-9365-ab513e39055a" />
 
 <img width="1568" height="516" alt="s6" src="https://github.com/user-attachments/assets/183a5493-a059-4984-ab77-265ea08c67ab" />
 
 <img width="1571" height="749" alt="s7" src="https://github.com/user-attachments/assets/35b75f0b-97f0-4bcb-9703-7b63da477cfa" />
+
+<img width="1584" height="809" alt="ss1" src="https://github.com/user-attachments/assets/8ddfaf73-2082-4ac2-bfa3-830a0d4dffb4" />
+
+<img width="1416" height="821" alt="ss2" src="https://github.com/user-attachments/assets/83ecca80-061e-4a46-a05b-35d7d2d82b05" />
+
+<img width="1416" height="738" alt="ss3" src="https://github.com/user-attachments/assets/eb69edc8-1aa7-450a-ba15-2a4575d357c2" />
 
 ## 🙏 Credits, datasets and licences
 
