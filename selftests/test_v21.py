@@ -280,7 +280,7 @@ def test_estimate_uses_earlier_results(monkeypatch, tmp_path, server, capsys):
     assert code == 0 and "Run-time estimate for 2 model(s) from server" in out and "Total: ~" in out
     assert "tok/s 50 (history)" in out and "measured" in out
     code, _, _ = run_cli(monkeypatch, tmp_path, server, ["--estimate"], datasets=["gpqa"], EVAL_PROFILE="funnel")
-    assert "without the funnel" in capsys.readouterr().out
+    assert "the funnel assumes 50% of models pass each gate" in capsys.readouterr().out
 
 
 def test_batch_probe(monkeypatch, tmp_path, server, ctx_slots, capsys):

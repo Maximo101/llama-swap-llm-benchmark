@@ -162,6 +162,12 @@ async def chat(request):
         body = {**body, "messages": [first] + body["messages"][1:]}
     STATE["calls"] += 1
     STATE["requests"].append(body)
+    if body.get("model") in STATE.get("load_fail", ()):   # llama-swap's reply when llama-server dies while loading
+        return web.json_response({"src": "llama-swap", "error": {"message": "unspecific error: upstream command "
+                                  "exited prematurely", "type": "server_error"}}, status=500)
+    if STATE.get("outage_left", 0) > 0 and "hi" != body["messages"][0]["content"]:   # v2.3.1: the server is "down"
+        STATE["outage_left"] -= 1
+        return web.Response(status=503, text="llama-swap is restarting")
     if STATE["flaky_503_left"] > 0 and "hi" == body["messages"][0]["content"]:
         STATE["flaky_503_left"] -= 1
         return web.Response(status=503, text="swapping")
@@ -198,6 +204,25 @@ async def chat(request):
                                       "timings": {"prompt_per_second": 280.0, "prompt_n": ptok - cache_n,
                                                   "cache_n": cache_n}})
         off = (body.get("chat_template_kwargs") or {}).get("enable_thinking") is False
+        # Prompt-cache reuse (v2.3 prefill at depth): a request whose first message repeats a recent long prompt
+        # reuses its tokens (cache_n) and processes only the rest, more slowly at depth. STATE["no_reuse"] = models
+        # whose server never reuses (another slot, cache off): cache_n stays 0.
+        first = str(body["messages"][0].get("content", ""))
+        recent = STATE.setdefault("prefixes", {})
+        cached = 0
+        if len(body["messages"]) > 1 and first in recent and body.get("cache_prompt") \
+                and body.get("model") not in STATE.get("no_reuse", ()):
+            cached = recent[first]
+        if body.get("cache_prompt") and len(first.split()) > 500:
+            recent[first] = int(len(first.split()) * 1.2) + 10
+        if cached:
+            n = 3
+            new = max(1, ptok - cached)
+            return web.json_response({
+                "choices": [{"message": {"content": "A file listing."}, "finish_reason": "stop"}],
+                "usage": {"completion_tokens": n, "prompt_tokens": ptok},
+                "timings": {"predicted_per_second": 50.0, "prompt_per_second": 250.0, "prompt_ms": 1000.0 * new / 250.0,
+                            "predicted_ms": 60.0, "predicted_n": n, "prompt_n": new, "cache_n": cached}})
         out = _answer_for(prompt, off)
         if out is None:
             return web.Response(status=500, text="boom")
@@ -249,9 +274,14 @@ async def unload(request):
     return web.json_response({"ok": True})
 
 
+async def logs(request):
+    """llama-swap's log history as plain text (STATE["log_text"])."""
+    return web.Response(text=STATE.get("log_text", ""), content_type="text/plain")
+
+
 def make_app():
     app = web.Application()
-    app.add_routes([web.post("/v1/chat/completions", chat), web.get("/v1/models", models),
+    app.add_routes([web.post("/v1/chat/completions", chat), web.get("/v1/models", models), web.get("/logs", logs),
                     web.get("/upstream/{model}/props", props), web.post("/api/models/unload", unload),
                     web.post("/upstream/{model}/apply-template", apply_template),
                     web.post("/upstream/{model}/completion", completion)])
