@@ -1,5 +1,10 @@
-# Secrets
+# Secrets (the settings page keeps the previous .env as .env.bak)
 .env
+.env.bak
+.env.tmp
+
+# Settings-page favourites are personal (they never hold secrets, but they are your setup)
+configs/*.env
 
 # Run outputs: eval_details_*.jsonl hold model replies and reference answers. With GPQA enabled these must not be
 # published (the GPQA authors ask that examples are not revealed online). Aggregate results can be shared on purpose.
@@ -7,6 +12,7 @@ results/
 benchmark_dashboard.html
 SS/
 venv/
+.venv/
 # Downloaded dataset cache (third-party data under its own licences; never redistribute it from this repo)
 tests/
 
