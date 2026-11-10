@@ -1,0 +1,4 @@
+# For running the self-tests (python -m pytest selftests/). Not needed to run the benchmark.
+-r requirements.txt
+pytest>=7.0
+# Optional: Node.js on PATH lets two tests check that the dashboard and settings page JavaScript parses (skipped without it).

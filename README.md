@@ -4,7 +4,7 @@ An automated, real-load benchmark for LLMs served by [llama-swap](https://github
 
 For every model on your server it measures generation speed (Technical + Logic prompts), prefill speed at the prompt lengths you actually deploy, agent-prompt time to first token, load time, prompt-cache efficiency and context size, while tracking GPU power, VRAM, temperature and CPU power. It reads what the server really loaded (launch flags and the GGUF header: KV-cache type, bits per weight, experts, KV cost per token). From those it derives energy per token, efficiency and (optionally) electricity cost. After the speed tests it runs dataset evaluations that grade knowledge, math, coding, tool calling and long-context retrieval, then ranks the models for real use on that machine and builds a self-contained interactive dashboard.
 
-A full run of ~28 models is dominated by the GPU generating eval answers. v2.1 adds the tools to make that much shorter without making the ranking less trustworthy: a confidence-gated funnel, a per-question result cache with resume, batched evaluation with a measured probe, skipping models that cannot be deployed anyway, a single shared long-context document, and a per-phase timing report with `--estimate`. See [Making a full run faster](#making-a-full-run-faster).
+A full run of ~28 models is dominated by the GPU generating eval answers. v2.1 adds the tools to make that much shorter without making the ranking less trustworthy: a confidence-gated funnel, a per-question result cache with resume, batched evaluation with a measured probe, skipping models that cannot be deployed anyway, a single shared long-context document, and a per-phase timing report with `--estimate`. See [Making a full run faster](#making-a-full-run-faster). v2.2 adds a full-retest mode and sanity checks for the result cache, a cache-aware `--estimate`, and `--compare` to put runs (for example a Strata run and a llama-swap run) in one dashboard. v2.3 makes the Agent score fit agentic use (a minimum and a preference for long context, tool calling as its own part, a tool-calling minimum), adds **prefill at depth** (what an agent waits for each turn on a long, cached context), six colour tiers with a light theme and model families in the dashboard, and a **settings page** (`python benchmark.py --ui`) to edit `.env`, keep favourites, estimate, compare and start or stop runs from the browser.
 
 <img width="1337" height="864" alt="d1" src="https://github.com/user-attachments/assets/7cd334dc-d9c7-41fd-84f9-82c06125027c" />
 
@@ -21,7 +21,7 @@ A full run of ~28 models is dominated by the GPU generating eval answers. v2.1 a
 * **Dataset evaluations:** Knowledge QA accuracy (GPQA Diamond, MMLU-Pro), math accuracy (GSM8K, MATH-500), code pass@1 (HumanEval, MBPP, LiveCodeBench, optionally limited to problems released after a date) and BFCL-style tool calling. Generated code is graded by executing it in an isolated Docker sandbox.
 * **Long-context retrieval:** several needles and decoys hidden in one 32k / 64k / 128k document, at the KV-cache precision the model is deployed with.
 * **What the server really loaded:** KV-cache type, flash attention, `-ub` / `-b`, slots and unified KV, CPU offload and mmproj come from the llama-server command line; architecture, bits per weight, experts, attention layout and KV bytes per token from the GGUF header. From these: KV GB at the loaded context and the largest context that would fit at a chosen share of VRAM.
-* **Deployed-context speed:** prefill tok/s at 8k-128k prompt tokens and time to first token for an agent-shaped prompt (a tool catalogue plus a long history), because a model that is fast on short prompts can be slow where an agent actually works.
+* **Deployed-context speed:** prefill tok/s at 8k-128k prompt tokens, time to first token for an agent-shaped prompt (a tool catalogue plus a long history), and **prefill at depth**: ~4k new tokens on top of a cached long conversation (`PREFILL_DEPTH`, up to 64k), which is what an agent waits for on every turn. A model that is fast on short prompts can be slow where an agent actually works.
 * **Per-machine budgets:** `BUDGET_PROFILE` rules (minimum context, VRAM reserve for other services, minimum KV precision, spill, speed, accuracy, retries) give every model a pass/fail per rule; failing models stay in the table but off the podium, and their evals can be skipped.
 * **Streamed evaluations with loop abort, thinking cap and partial-answer salvage:** a reply that falls into a repetition loop (`Fail: Degradation`) or thinks past its budget (`Fail: Think cap`) is stopped within seconds instead of after a 10-minute timeout. A reply whose visible answer is already complete is graded as it is; otherwise the reasoning can be closed and the answer asked for (budget forcing, opt-in), or the question is retried once with thinking disabled. See [Streaming, loop abort and the thinking cap](#streaming-loop-abort-and-the-thinking-cap).
 * **Honest margins:** every eval score carries its 95% margin of error; small profiles are flagged as a rough guide, ties within the noise are treated as ties, and a model whose evals are incomplete is not ranked.
@@ -30,9 +30,10 @@ A full run of ~28 models is dominated by the GPU generating eval answers. v2.1 a
 * **Context tracking:** Records the context size each model was loaded with, because VRAM and prefill speed depend on it.
 * **Energy and cost:** Watt-hours, joules per token, tokens/sec per watt, and optional cost per 1M tokens / 1,000 queries at your peak and off-peak electricity rates. Optionally uses the GPU's hardware energy counter for exact per-request energy.
 * **Click-to-highlight:** click a model name anywhere (table row, winner cards, quantization table, chart labels, bars or dots) and it turns red everywhere and becomes the table baseline. Click it again, or press Reset / Clear, to remove it.
-* **Rankings for real use:** Goldilocks (parameters × average TPS), Chat (speed × free VRAM), Agent (quality first, speed second, no VRAM) and Sweet spot (Agent × how well the model fits the GPU). See [Metric definitions](#metric-definitions).
+* **Rankings for real use:** Goldilocks (parameters × average TPS), Chat (speed × free VRAM), Agent (quality first: evals, tool calling and long-context retrieval; a minimum and a preference for long context; speed second; no VRAM) and Sweet spot (Agent × how well the model fits the GPU). See [Metric definitions](#metric-definitions).
 * **Strata fallback:** If llama-swap is down, the single model on a Strata server is benchmarked instead.
-* **Interactive dashboard:** Filters, sortable and baseline-comparable table, charts (including Accuracy & Pass Rate graphs for knowledge, math and coding) and a radar per podium model. Hover any column header or dataset name for a short explanation; hide the columns you don't need.
+* **Interactive dashboard:** Filters, sortable and baseline-comparable table, charts (including Accuracy & Pass Rate graphs for knowledge, math and coding) and a radar per podium model. Hover any column header or dataset name for a short explanation; hide the columns you don't need. Six colour tiers per metric (flat bands or a smooth gradient, absolute or relative to the run), a light and a dark theme, model families as filter chips with a wildcard box, and a **? Help** page with every threshold and a speed-by-setup guide. See [The dashboard](#the-dashboard).
+* **Settings page:** `python benchmark.py --ui` shows every `.env` setting with its description, default and choices, checks values as you type, saves `.env` (keeping `.env.bak`), keeps favourite setups in `configs/`, and runs the tool's own commands (estimate, reload, compare, run and stop). Localhost only unless you open it to your LAN with a token. See [Settings page](#settings-page---ui).
 * **Rich outputs:** Per-run CSV, appended history CSV, structured JSON (`results.json`), optional Markdown report, per-question eval JSONL logs, a run log, and the HTML dashboard.
 
 <img width="1410" height="769" alt="ss2" src="https://github.com/user-attachments/assets/f3790d98-cba0-4f8e-a990-e2dd9ed06c4d" />
@@ -68,7 +69,7 @@ A full run of ~28 models is dominated by the GPU generating eval answers. v2.1 a
    ```bash
    cp .env.example .env
    ```
-   Edit `.env` to match your setup.
+   Edit PART 1 (your setup) and PART 2 (your run) of `.env`; PART 3 is optional. After updating the tool, run `python benchmark.py --check-env` to find settings that are new, renamed or misspelt (see [Configuration](#configuration)).
 
 ### Project layout
 
@@ -80,17 +81,24 @@ llmbench/
   config.py             .env loading, Config, dataset specs
   client.py             llama-swap / Strata HTTP, backend detection, model selection
   speed.py              speed, prefill and cache tests for one model
+  status.py             run_status.json (progress, heartbeat) and run_<stamp>.rows.json (--resume)
   modelinfo.py, gguf.py  launch flags, /props and the GGUF header (own reader)
   scoring.py            CSV schema, derived metrics, Goldilocks / Chat / Agent / Sweet-spot scores, budgets
   telemetry/            gpu.py (NVML + nvidia-smi), host.py (RAPL, RAM, launch flags), hardware.py
   evals/                datasets, answers, mathcheck, sandbox, grading, transport, streaming, runner,
                         funnel (CI gates), cache (result cache), longctx, toolcall
-  reporting/            csv_out, markdown, json_out, dashboard (+ dashboard.html template), margin
+  reporting/            csv_out, markdown, json_out, dashboard (+ dashboard.html template), colours, margin
+  agent.py              Agent score parts: context curve and minimum, composite, tool minimum
   estimate.py           --estimate
   batchprobe.py         --batch-probe
   diagnostics.py        --demo and --check
+  envspec.py            --check-env (reads .env.example: parts, defaults, descriptions, choices)
+  envfile.py            writes .env in the .env.example layout; favourites
+  ui/                   --ui settings page (server.py, settings.html; standard library only)
   reload.py             --reload
+  compare.py            --compare
   cli.py                run orchestration
+configs/                settings-page favourites (<name>.env; git-ignored)
 selftests/              pytest suite with a mock llama-swap server (no GPU needed)
 ```
 
@@ -103,6 +111,18 @@ python benchmark.py --check
 ```
 
 Tests llama-swap, both GPU backends (NVML and `nvidia-smi`), the async client, RAPL, RAM, the inference process and, if a code dataset is enabled, the code sandbox self-test.
+
+Check your settings file too (typos, values that won't work, settings new in this version):
+
+```bash
+python benchmark.py --check-env
+```
+
+Or open the settings page, which does the same checks as you type and can save `.env` for you (see [Settings page](#settings-page---ui)):
+
+```bash
+python benchmark.py --ui
+```
 
 **2. Run the full benchmark (Speed + Evals)**
 
@@ -148,7 +168,7 @@ python benchmark.py --probe-strata
 python benchmark.py --estimate
 ```
 
-Uses earlier runs' JSON in `results/` (measured tok/s, prefill speed, seconds and tokens per question) and any batch-probe result; models without history get a rough guess from their size and quantisation. Models that `EVAL_SKIP_INELIGIBLE` would skip (context below `MIN_CTX`, a failed budget rule) get no eval time. A one-line estimate is also printed at the start of every run.
+Uses earlier runs' JSON in `results/` (measured tok/s, prefill speed, seconds and tokens per question) and any batch-probe result; models without history get a rough guess from their size and quantisation and the GPU's memory bandwidth (`ESTIMATE_GPU_BW_GBS`, PART 1: `auto` looks up the detected NVIDIA GPU in a table of common cards, else 670 GB/s; a number overrides it, e.g. when estimating for another machine's GPU). Models that `EVAL_SKIP_INELIGIBLE` would skip (context below `MIN_CTX`, a failed budget rule) get no eval time. It also reads the result cache: it says whether the run will reuse cached answers or is a full re-run (`EVAL_RESULT_CACHE=refresh` / `false`), shows per model how many answers it expects to reuse, and counts only the rest (plus any sanity-check re-asks). A one-line estimate is also printed at the start of every run.
 
 **8. Measure what batched evaluation gains on your GPU**
 
@@ -158,15 +178,17 @@ INCLUDE_MODELS=model-a,model-b,model-c python benchmark.py --batch-probe
 
 See [Batched evaluation](#batched-evaluation-eval_concurrency).
 
-**9. Resume an interrupted run**
+**9. Resume an interrupted run, or fill in what failed**
 
-Just run it again with the same `.env`. Every answered question is kept in the result cache (`results/cache/`), so only what is missing is asked; the speed tests are always measured again.
+Just run it again with the same `.env` and the same model list. Every answered question is kept in the result cache (`results/cache/`), so only what is missing or failed is asked; the speed tests are always measured again. For a full retest, set `EVAL_RESULT_CACHE=refresh` (asks everything and replaces the cached answers). To spot-check the cache instead, set `EVAL_SANITY_PCT` (see [Result cache and resume](#result-cache-and-resume)).
 
 **10. Build a demo dashboard (no server needed)**
 
 ```bash
 python benchmark.py --demo
 ```
+
+The demo's files go to `results/demo/`. It never replaces `results.json`, the latest dashboard next to `benchmark.py`, or what `--reload`, `--estimate` and the settings page read.
 
 **11. Rebuild the dashboard of the last run (no server needed)**
 
@@ -175,20 +197,41 @@ python benchmark.py --reload                                  # OUTPUT_DIR/resul
 python benchmark.py --reload results/benchmark_20261109_004502.json
 ```
 
-Mainly for working on the dashboard itself: it rebuilds the page from a finished run's JSON with the current dashboard code and writes `results/benchmark_dashboard_<run>_reload.html` (the run's own dashboard is kept) plus `benchmark_dashboard.html`. Nothing is measured or rescored: every number, score and ranking is the one the run stored, and the run's own settings are used rather than your current `.env`. Needs `JSON=true` (the default) during the run.
+Mainly for working on the dashboard itself: it rebuilds the page from a finished run's JSON with the current dashboard code and writes `results/benchmark_dashboard_<run>_reload.html` (the run's own dashboard is kept) plus `benchmark_dashboard.html`. Nothing is measured or rescored: every number, score and ranking is the one the run stored, and the run's own settings are used rather than your current `.env`. Needs `JSON=true` (the default) during the run. A run stopped with **Ctrl+C** (or **Stop** on the settings page) still writes its JSON, CSV and dashboard with the models finished so far (status `interrupted`), so it can be reloaded too; only a run that was killed hard (`kill -9`, a closed terminal, a power cut) leaves no JSON. (The v2.1 release notes said an interrupted run can't be reloaded; that is only true for a hard kill.)
 
-**12. Help - Lists all flags**
+**12. Compare runs in one dashboard (e.g. a Strata model with your llama-swap models)**
+
+```bash
+python benchmark.py --compare                                     # newest llama-swap run + newest Strata run
+python benchmark.py --compare results/benchmark_A.json results/benchmark_B.json
+```
+
+Combines finished runs into `results/benchmark_compare_<stamp>.html` (copied to `benchmark_compare.html`). Every model keeps its own measurements; the scores that compare models with each other (Agent score, sweet spot, budget eligibility) are computed again over all of them, with the first run's settings, so the ranking is the one a single run with all these models would give. Runs whose eval settings differ (seed, temperature, thinking budget, streaming switches) are refused, because they asked different questions or measured differently; `--force` combines them anyway and the dashboard says so. A model missing a dataset or questions is shown "not ranked: incomplete evals", as within one run. The dashboard gets a **Run** column and a **Run** filter to show or hide each run. Run both sides with the same eval settings in `.env`; a funnel run with a single model goes straight to the final profile, so a lone Strata model answers the same questions as a llama-swap run's finalists. A model that appears in both runs is shown twice, labelled with its run.
+
+**13. Help - Lists all flags**
 
 ```bash
 python benchmark.py --help
 ```
 
-**12. Run the self-tests (optional, no GPU or server needed)**
+**14. Run the self-tests (optional, no GPU or server needed)**
 
 ```bash
-pip install pytest
+pip install -r requirements-dev.txt     # the normal requirements plus pytest
 python -m pytest selftests/
 ```
+
+On a system Python that refuses pip installs (Debian/Ubuntu/Kubuntu), use `sudo apt install python3-pytest` or a virtual environment.
+
+**15. Use another settings file, or check one**
+
+```bash
+python benchmark.py --env /mnt/user/bench/second-gpu.env      # a run with that file instead of .env
+python benchmark.py --env /mnt/user/bench/second-gpu.env --estimate
+python benchmark.py --validate                                # do the settings load? (prints OK or the error)
+```
+
+`--env FILE` works with every flag and needs a complete settings file (like `.env`). A favourite in `configs/` is not one: it holds only what differs from `.env.example` and no tokens, so load it on the settings page instead. The settings page uses `--env` for **Estimate** with unsaved settings.
 
 ## What happens for each model
 
@@ -199,7 +242,7 @@ python -m pytest selftests/
 3. The model is cold-loaded (load time). Its context size, launch flags and GGUF header are read, and `MIN_CTX` is checked.
 4. Technical, Logic and Prefill tests run, `RUNS_PER_PROMPT` times each. The median is reported. The prompt cache is disabled for these.
 5. The cache test sends a long prompt cold, then again with a follow-up appended.
-6. Prefill at each `PREFILL_CTX_TESTS` length (one cold, unique prompt each) and the agent-prompt TTFT (`AGENT_PROMPT_TOKENS`). A length that the long-context test also uses is taken from that test's first prompt instead of being sent twice.
+6. Prefill at each `PREFILL_CTX_TESTS` length (one cold, unique prompt each) and the agent-prompt TTFT (`AGENT_PROMPT_TOKENS`). A length that the long-context test also uses is taken from that test's first prompt instead of being sent twice. Then **prefill at depth** (`PREFILL_DEPTH`, default `auto` = per model the largest of 8k / 16k / 32k / 64k that fits the loaded context with the 4k turn: a model loaded at 64k is measured at 32k, every 90k+ model at 64k; a number fixes it): that prompt is kept in the server's prompt cache and ~4k new tokens (a tool result) are sent on top of it; only those new tokens count. It is not recorded when the server did not reuse the cached prefix.
 7. After a short cooldown, the next model starts.
 
 **Eval phase** (after all speed tests, telemetry stopped):
@@ -212,87 +255,72 @@ python -m pytest selftests/
 
 ## Configuration
 
-All settings live in `.env`. See `.env.example` for the full annotated list. The main options:
+All settings live in `.env`, next to `benchmark.py`. `.env.example` is the complete, annotated list: copy it once (`cp .env.example .env`) and edit. It has three parts:
+
+| Part | What is in it | What to do |
+| --- | --- | --- |
+| **1 · Your setup** | server address, RAM process name, budget profile, VRAM sweet spot, GPU bandwidth for estimates, the context your agents need (`AGENT_CTX_MIN`, `AGENT_CTX_PASS_PCT`, `AGENT_CTX_CURVE`), where Docker keeps the model files | check every line once per machine |
+| **2 · Your run** | which models and datasets, profile / funnel, concurrency, prefill lengths, cache, sampling, thinking budget, output files | change between runs (`--estimate` first) |
+| **3 · Optional** | telemetry, speed-test details, Agent score tuning, budget rules, sandbox, funnel tuning, dataset pinning, dashboard colours and families, the settings page, ... | nothing: every line is commented out and already at its built-in default |
+
+How a line reads:
 
 ```ini
-# --- llama-swap ---
-LLAMA_SWAP_URL=http://localhost:8080
-
-# --- GPU telemetry ---
-GPU_BACKEND=auto             # auto (NVML, else nvidia-smi) | nvml | smi
-GPU_POLL_MS=200
-GPU_ENERGY_COUNTER=false     # true = exact per-request GPU energy from NVML (Volta or newer)
-
-# --- Benchmark behaviour ---
-RUNS_PER_PROMPT=3            # median is reported
-TIMEOUT_TECH=60
-TIMEOUT_LOGIC=300
-TIMEOUT_LOAD=300
-MAX_TOKENS_TECH=300
-MAX_TOKENS_LOGIC=500
-PREFILL_WORDS=1200           # long-prompt prefill test (~1.5k tokens). 0 disables
-
-# --- Evaluations (accuracy / pass-rate tests, run AFTER the speed tests) ---
-RUN_EVAL_TESTS=true
-EVAL_GPQA=false
-EVAL_MMLU_PRO=true
-EVAL_HUMANEVAL=true
-EVAL_MBPP=true
-EVAL_LIVECODEBENCH=false
-EVAL_GSM8K=false             # grade-school math word problems
-EVAL_MATH=false              # MATH-500 competition problems
-EVAL_TOOLCALL=false          # 32 built-in BFCL-style tool-calling cases
-EVAL_LONGCTX=true            # long-context retrieval at LONGCTX_LENGTHS (default 64k, 128k)
-# EVAL_LCB_SINCE=2025-01-01  # LiveCodeBench: only problems released on/after this date (contamination)
-
-# Rows per dataset: test, quick, basic, moderate, standard, thorough, deep, ultra, full - or funnel
-EVAL_PROFILE=funnel          # to choose a model; test / quick for a first look
-# EVAL_FUNNEL_FINAL=standard # the profile the funnel's finalists finish at
-# EVAL_LEADERS=5             # minimum number of models kept at every funnel gate
-# EVAL_RESULT_CACHE=true     # reuse answers already obtained with identical settings (resume, reruns)
-# EVAL_SKIP_INELIGIBLE=auto  # no evals for models that fail MIN_CTX / the budget profile
-
-# Questions in flight at once (1 = sequential). Needs llama-server -np N (and ideally --kv-unified)
-EVAL_CONCURRENCY=1
-# EVAL_HTTP_BACKEND=auto     # auto | aiohttp | threads
-# EVAL_SANDBOX_WORKERS=0     # parallel code executions (0 = auto)
-
-# Streamed evals (speed tests are never streamed)
-# EVAL_STREAM=true           # false = no loop abort, no salvage, no live thinking budget
-# EVAL_THINK_BUDGET=16384    # max thinking tokens per question (0 = unlimited) -> "Fail: Think cap"
-# EVAL_THINK_BUDGET_GSM8K=   # per-dataset override (opt-in; changes what is measured)
-# EVAL_BUDGET_FORCING=false  # at the cap: close the thinking and ask for the answer instead of a No-Thinking retry
-# EVAL_LOOP_ABORT=true       # stop repetition loops -> "Fail: Degradation"
-# EVAL_SALVAGE=true          # grade the complete visible answer of a stopped reply
-# EVAL_TEMPERATURE=0         # reasoning models often loop at 0; see Troubleshooting
-# EVAL_TIMEOUT=600           # safety net per request
-
-# Sandbox for executing generated code: auto / docker (needs Docker) | subprocess (not isolated)
-EVAL_CODE_SANDBOX=auto
-
-# Agent score (quality first, speed second; see Metric definitions)
-# AGENT_SPEED_WEIGHT=0.3     # most of the score speed can remove (0 = accuracy only)
-# AGENT_ACC_TOL=             # points below the best eval score still counted as a tie (empty = 1 standard error)
-# AGENT_ACC_SPAN=40          # points under the tie zone at which the accuracy credit reaches 0
-# AGENT_FALLBACK_PENALTY=10  # % of quality lost if EVERY question needed the No-Thinking retry
-# AGENT_LONGCTX_WEIGHT=0.25  # share of the quality figure from long-context retrieval
-# AGENT_SEC_REF=60           # s/q at which the s/q credit halves
-# AGENT_TTFT_REF=15          # agent-prompt TTFT (s) at which its credit halves
-# AGENT_PREFILL_REF=4000     # prefill tok/s that earns the full prefill credit (when TTFT is not measured)
-# AGENT_TPS_REF=200          # tokens/s that earns the full token-speed credit
-
-# --- Deployment fit ---
-PREFILL_CTX_TESTS=8192,32768,65536   # prefill tok/s at these prompt lengths (8k 16k 32k 64k 128k)
-AGENT_PROMPT_TOKENS=20000            # TTFT of an agent-shaped prompt (0 = off)
-MIN_CTX_ACTION=flag                  # a model below MIN_CTX: flag (kept off the podium) | refuse (not benchmarked)
-BUDGET_PROFILE=server                # server | main | your own name | none (rules: see .env.example)
-GGUF_INSPECT=true                    # read the model file's header
-# GGUF_PATH_MAP=/models=/mnt/AI-Models   # container path -> host path, when the file is not readable as-is
-
-# --- Output ---
-WRITE_MARKDOWN=true
-JSON=true                    # results.json + benchmark_<timestamp>.json
+EVAL_PROFILE=funnel        # funnel (recommended) or one of the profiles above   [default: funnel]
+# EVAL_LEADERS=5           # MINIMUM number of models kept at every gate (not a top-K cut)
+# EVAL_LCB_SINCE=          # only problems released on/after, e.g. 2025-01-01
 ```
+
+* An **active** line is used as written; `[default: ...]` is what you get if you delete it.
+* A **commented** line shows the built-in default as its value; uncomment it to change it.
+* A commented line with **nothing after `=`** is not set by default; the description says what happens then.
+* For an empty value on an active line write `KEY=""`. With python-dotenv, `KEY=   # comment` reads the comment as the value.
+* `true`/`false` also accept `1/0`, `yes/no`, `on/off`. Anything else, such as a typo like `tue`, is read as **false**.
+* A value set in the shell environment wins over `.env`. If a key appears twice in `.env`, the last line wins.
+
+### Checking your `.env` after an update
+
+```bash
+python benchmark.py --check-env            # or: --check-env path/to/other.env
+```
+
+This compares your `.env` with this version's `.env.example`. It reads files only: nothing is changed and nothing is sent to the server. It lists:
+
+* **unknown settings**: a typo or a setting that was removed. They are ignored by the benchmark, and the check suggests the closest real name (`EVAL_TOOLCAL` -> `EVAL_TOOLCALL`).
+* **values that won't work**: `tue` for a boolean, a word where a number is expected, `KEY=   # comment`, an unknown budget rule or dataset name.
+* old setting names, keys set twice, and keys your shell also sets.
+* **Part 1 / Part 2 settings missing from your `.env`** (typically new in this version), with the built-in default they fall back to.
+* everything you changed from the built-in defaults.
+
+It exits with status 1 if it found an unknown setting or an unusable value. A selftest checks that `.env.example` lists every setting the code reads and that each documented default matches the code, so the file and the code can't drift apart.
+
+### Settings page (`--ui`)
+
+```bash
+python benchmark.py --ui            # prints the address; on a desktop it opens the browser: http://localhost:41010/
+```
+
+A page in the dashboard's style (light or dark) for everything in `.env`. Editing `.env` by hand and running from the command line or Unraid User Scripts work exactly as before; the page is optional.
+
+* **Every setting** grouped by PART and section as in `.env.example`, with its description, built-in default, the `.env.example` value and, where there is a fixed set, a drop-down of the allowed values. Values are checked as you type with the same rules as `--check-env` and a run (a wrong value is marked in red with the reason). Settings new in this version, old names and unknown settings are listed under **Checks**. A filter box and *only changed* help find a setting.
+* **Save** checks every value (and that a run would load them), then writes `.env` in the `.env.example` layout: your values on their own lines, untouched settings as shipped, anything `.env.example` doesn't know kept at the end. The previous file is kept as `.env.bak`. **Return to defaults** (asks first) writes the shipped `.env.example` values and keeps your tokens and keys.
+* **Tokens and keys** (`LLAMA_SWAP_API_KEY`, `HF_TOKEN`, `STRATA_API_KEY`, `HA_TOKEN`, `UI_TOKEN`) are never sent to the page with the other settings; **show** fetches one when you ask, typing replaces it, **clear** removes it.
+* **Favourites** in `configs/<name>.env`: only the settings that differ from the shipped `.env.example` (never tokens or keys), each with the shipped value at the time. The first visit saves your current `.env` as `main`. Loading a favourite starts from this version's defaults and puts it on top: renamed settings follow along, settings that no longer exist are listed, and where both the shipped value and your favourite changed a setting you choose which to keep. Nothing is written until you press Save.
+* **Models:** lists the server's models (with the URL and key on the page) with a tick box each that edits `INCLUDE_MODELS` / `EXCLUDE_MODELS`, why a model would be skipped, its file size, parameters (total / active for MoE), trained context, architecture and bits per weight (from the GGUF header when the file is readable here via `GGUF_SEARCH_DIRS` / `GGUF_PATH_MAP`, else from the last run, else parameters from the name), and its VRAM, context and Agent score from the last run.
+* **Guides** under `EVAL_PROFILE` (why `funnel` is recommended, how the funnel works, the margin of error per test for every profile, a link to Estimate for the time), `EVAL_FUNNEL_FINAL` (the stages and the finalists' margin for each choice), `ESTIMATE_GPU_BW_GBS` (common GPUs with their memory bandwidth; click one to use it) and the two temperature settings.
+* **On opening** the page lists the server's models and runs `--check` (once per browser session; it tests the GPU readers and the code sandbox, so it takes a moment).
+* **Buttons:** **Estimate** (with the settings on the page, saved or not), **Run --check again**, **Reload dashboard**, **Compare** (pick finished runs), **Open latest dashboard**, **? Help**.
+* **Run / Stop:** **Full run**, **Speed only**, **Evals only** or **Batch probe** (`--batch-probe`) start the benchmark with the saved `.env`. One run at a time; it keeps going when you close the page, and the page follows its log again when you come back. **Stop** is Ctrl+C for the run: it finishes the current request and writes partial results (dashboard, CSV, JSON). A run started from the command line shows up too (`OUTPUT_DIR/.benchmark_run.json`), and a second run on the same GPU prints a warning.
+
+**Opening it from another PC** (a headless server, Unraid): set `UI_HOST=0.0.0.0` (or the server's LAN address) in `.env`. On the first start a token is generated, saved as `UI_TOKEN` and printed in the address (`http://192.168.1.20:41010/?token=...`). Open that address once; the browser keeps the token as a cookie. `UI_PORT` changes the port.
+
+**Security:**
+
+* Only `127.0.0.1` unless `UI_HOST` is set; on the LAN the token is required (a `UI_TOKEN` you set yourself is required on localhost too).
+* Every button runs a fixed command of this tool (`--check`, `--check-env`, `--list-models`, `--estimate`, `--reload`, `--compare` with runs picked from the list, a run, Ctrl+C for the run). The page cannot run anything else and does not take file paths.
+* The page refuses requests whose `Host` is not an IP address, `localhost` or this machine's name (DNS rebinding), and every change must come from the page itself (a custom header plus an `Origin` check), so another website open in your browser cannot drive it.
+* Plain HTTP: on the LAN the token and any token you reveal travel unencrypted. That is fine on a home network; put a reverse proxy with HTTPS in front if you need more. Don't forward the port to the internet.
+* Unsaved settings for **Estimate** go to a private temporary file (readable only by you) that is deleted straight after.
 
 ## Making a full run faster
 
@@ -304,14 +332,14 @@ On a 16 GB card with ~28 models, 94-98% of a full run is the GPU generating (or 
 | Skip undeployable models | `EVAL_SKIP_INELIGIBLE=auto` | the share of models that fail a rule | they are off the podium already; the Agent "bar" only ever came from eligible models |
 | Funnel | `EVAL_PROFILE=funnel` | ~40-50% of eval work (more when the field is spread out) | a model is only dropped when its upper bound is below the leaders' lower bound; screened models are not ranked against the finalists |
 | Batched evaluation | `EVAL_CONCURRENCY`, `--batch-probe` | eval time / 1.8-3 on dense models fully on the GPU (less for offloaded MoEs) | requests capped to the server's slots and KV pool; with concurrency the Agent score uses the single-stream s/q estimate |
-| Result cache + resume | `EVAL_RESULT_CACHE=true` | reruns only ask what changed | an answer is reused only when the model file, launch flags, build, prompt, sampling and grader are identical |
+| Result cache + resume | `EVAL_RESULT_CACHE=true` (`refresh` = full retest), `EVAL_SANITY_PCT` | reruns only ask what changed | an answer is reused only when the model file, launch flags, build, prompt, sampling and grader are identical; the sanity check re-asks a share of them |
 | Pipelined grading | always on | the sandbox time (a few %) | grading is unchanged, it just runs while the next question generates |
 | One long-context document per length | always on | about half of the long-context time, plus the separate 64k/128k prefill prompt | prefill tok/s depends on length, not content; questions ask different needles |
 | Thinking budgets | `EVAL_THINK_BUDGET_<DATASET>`, `EVAL_BUDGET_FORCING` | 15-35% of tokens (model-dependent) | **opt-in only**: this changes what is measured (accuracy within a budget), recorded in the JSON and dashboard |
 
 ### Funnel (`EVAL_PROFILE=funnel`)
 
-Every model answers the first stage (`quick`, 11 questions per dataset). After each stage a gate keeps every model whose upper bound (one-sided, `EVAL_FUNNEL_CONF`, default 95%) reaches the lower bound of the `EVAL_LEADERS`-th best model, and never fewer than `EVAL_LEADERS` models. The survivors answer the next stage (`basic`, `moderate`, ... up to `EVAL_FUNNEL_FINAL`, default `standard`); questions are nested, so each stage only asks the new ones. The compared figure is the one the Agent score ranks on (dataset average, blended with long-context retrieval when every model has it).
+Every model answers the first stage (`quick`, 11 questions per dataset). After each stage a gate keeps every model whose upper bound (one-sided, `EVAL_FUNNEL_CONF`, default 95%) reaches the lower bound of the `EVAL_LEADERS`-th best model, and never fewer than `EVAL_LEADERS` models. The survivors answer the next stage (`basic`, `moderate`, ... up to `EVAL_FUNNEL_FINAL`, default `standard`); questions are nested, so each stage only asks the new ones. The compared figure is the one the Agent score ranks on: the composite of the evals, tool calling and long-context retrieval (v2.3; a model without a long-context result is compared on the parts it has). Tool calling is asked in full at every stage.
 
 A plain "keep the top 5 after `quick`" was rejected: in a simulation with a crowded top (six models within six points) it screened out the true best model in 18-33% of runs. The confidence gates lost it in at most 0.1% of runs and picked as well as running everyone at the final profile. A screened-out model keeps its stage score (with its larger margin of error) and the column **First-stage avg** compares every model on the same first-stage questions, but it is **not ranked** and never on the podium.
 
@@ -335,7 +363,41 @@ The probe asks the same `BATCH_PROBE_QUESTIONS` (default 32) questions at each l
 
 ### Result cache and resume
 
-Every answered question is stored in `results/cache/` (one JSONL file per model fingerprint). A cached answer is reused only when everything that could change it is identical: the model file (size and SHA-256 of its first and last MiB), the server's launch command (port, host, threads, logging and API key removed), llama.cpp's `build_info`, the loaded context and slots, the chat template, the hardware, the exact request (prompt, `max_tokens`, temperature, tools, `EVAL_EXTRA_BODY`), the thinking budget and retry/salvage/forcing switches, code-grading settings and the grader version. Change any of them and the question is asked again. If the model file is not readable from where the benchmark runs, the fingerprint falls back to what the server reports and says so. API errors are never cached. The speed tests are never cached. Delete the folder, or set `EVAL_RESULT_CACHE=false`, to ask everything again. The cache holds model replies: do not publish it after a GPQA run.
+Every answered question is stored in `results/cache/` (one JSONL file per model fingerprint). A cached answer is reused only when everything that could change it is identical: the model file (size and SHA-256 of its first and last MiB), the server's launch command (port, host, threads, logging and API key removed), llama.cpp's `build_info`, the loaded context and slots, the chat template, the hardware, the exact request (prompt, `max_tokens`, temperature, tools, `EVAL_EXTRA_BODY`), the thinking budget and retry/salvage/forcing switches, code-grading settings and the grader version. Change any of them and the question is asked again. If the model file is not readable from where the benchmark runs, the fingerprint falls back to what the server reports and says so. API errors are never cached. The speed tests and the long-context test are never cached.
+
+* `EVAL_RESULT_CACHE=true` (default): reuse cached answers.
+* `EVAL_RESULT_CACHE=refresh`: full retest. Every question is asked again, and the new answers replace the cached ones, so the next run can reuse them.
+* `EVAL_RESULT_CACHE=false`: no cache at all; nothing is reused or stored.
+
+**Sanity check (`EVAL_SANITY_PCT`, 0-100, default 0).** With the cache on, this share of the answers that would come from the cache is re-asked at random and compared with the cached answer (same pass/fail for code and tool calls; same extracted answer and verdict for multiple choice and math). The new answer is the one scored and stored. Differences are listed in the log (`[sanity] <question>: cached ..., now ...`), summed per model at the end, and shown in the dashboard's **Sanity diff** column. With `EVAL_SANITY_ADAPTIVE=true` (default) each model starts at `EVAL_SANITY_PCT`; every matching answer halves its rate, in whole percents, and below 2% the checks stop for that model for the rest of the run (from 20%: 20 → 10 → 5 → 2 → 0); a different answer puts it back to the full rate. Models that keep answering the same are checked less and less, and models that change keep being checked. Each run starts again at the full rate. Different answers under identical settings usually mean non-deterministic decoding (several requests batched on the server, or sampling at temperature > 0), not a broken cache. Picks differ per run (the seed is printed), so repeated runs check different questions.
+
+**Keeping the cache valid between runs:** don't update the llama.cpp / llama-swap image (the build is part of the key), and keep the same `.env` eval settings and launch flags for the models you want reused. Changing a model's flags (for example `--n-cpu-moe`) or its sampling re-asks that model only. To complete a run where some models failed, rerun the **whole** model list: scores are relative to the best model in the run, and the cache makes the full rerun cheap. The cache holds model replies: do not publish it after a GPQA run.
+
+### Resuming a run that stopped (`--resume`)
+
+From v2.3.1 a run saves its rows to `results/run_<stamp>.rows.json` after every model, so a crash, a kill or a power cut loses at most the model being tested.
+
+```bash
+python benchmark.py --resume                    # the newest run in OUTPUT_DIR
+python benchmark.py --resume 20261110_103848    # a named run
+```
+
+* Models whose speed test finished are kept. Models that failed, or were never reached, are benchmarked.
+* The result cache answers every eval question already asked; only the missing ones are sent. With `EVAL_RESULT_CACHE=false` they are all asked again.
+* A complete long-context result is kept; a missing one is run.
+* A finished run keeps its rows file, so `--resume` also repairs it: only the models that failed to load, lost a test or have incomplete evals cost time.
+* The resumed run has its own stamp. Resume on the machine and server the run was made on: the kept speed figures are that machine's.
+
+If llama-swap stops answering during a run, the run waits up to `SERVER_WAIT_SECONDS` (default 600) for it, then asks the failed requests once more. While a run is going, `results/run_status.json` says where it is (the settings page shows it), and `NOTIFY_URL` gets a JSON summary when it ends. Exit codes: 0 complete, 2 stopped early with partial results, 130 stopped by Ctrl+C / Stop.
+
+### Sampling: the benchmark's temperature or each model's own
+
+Since v2.3 the default is `EVAL_TEMPERATURE=server` (and `TEMPERATURE=server` for the speed tests): no temperature is sent, so each model uses the sampling in its own llama-swap command (`--temp`, `--top-k`, `--top-p`, `--min-p`; llama-server's defaults where none is set), with `EVAL_SEED` as the sampling seed. This measures each model as you deploy it. Answers are no longer bit-identical between runs (sampling, plus batching), so small score differences mean less; the margin of error still applies. **Put each model's recommended sampling in its llama-swap command**; a model without any gets llama-server's defaults.
+
+* `EVAL_TEMPERATURE=0` (a number): every eval request carries that temperature, which overrides `--temp` in your llama-swap commands. 0 = greedy: every model is measured the same, repeatable way, but some reasoning models (Gemma-family especially) loop under greedy decoding and lose points to the retry penalty. This was the default before v2.3: set it to keep using answers cached by earlier runs.
+* `EVAL_SERVER_SAMPLING_MODELS=gemma|Wicked`: with a number above, only the matching models use their own sampling.
+
+The dashboard's **Sampling** column shows what each model was evaluated with (`temp 0`, or `server: temp 1.0, top-k 64, top-p 0.95`). Switching a model between the two re-asks its questions (the request changes); models you don't switch keep their cached answers. Changing a model's sampling flags in llama-swap also re-asks it, because its launch command is part of the cache key. `--compare` refuses runs whose sampling settings differ.
 
 ### Recommended setup for choosing a model
 
@@ -357,12 +419,14 @@ All results are saved to `OUTPUT_DIR` (default: `results/` next to the script).
 * `benchmark_<timestamp>.csv`: Raw telemetry and benchmark data for the current run.
 * `benchmark_history_v2.csv`: Every run appended over time. If new columns are added (for example when you enable GSM8K or MATH), older rows are migrated automatically and a `.bak` copy is kept.
 * `results.json` and `benchmark_<timestamp>.json`: Structured export for dashboards, databases and notebooks. `results.json` is always the newest run and is written atomically, so it is safe to poll. See [JSON export](#json-export).
-* `eval_details_<timestamp>.jsonl`: Per-question evaluation logs containing the model responses and grading logic. Each line has the verdict, `flag` (`Fail: Degradation` / `Fail: Think cap` / empty), `salvaged`, `forced`, `api_error`, `tokens` and `think_tokens`, `prompt_tokens`, `seconds` and `grade_s`, the funnel `stage`, `cached`, and `attempts`: one entry per request sent, with how it ended (`stop`, `length`, `loop`, `budget`, `timeout`, `error`), its mode (`think`, `forced`, `no-think`), its tokens and seconds, and for stopped attempts the reason and the last ~600 characters the model wrote. Long-context lines include the reused prefix (`cache_n`).
+* `eval_details_<timestamp>.jsonl`: Per-question evaluation logs containing the model responses and grading logic. Each line has the verdict, `flag` (`Fail: Degradation` / `Fail: Think cap` / empty), `salvaged`, `forced`, `api_error`, `tokens` and `think_tokens`, `prompt_tokens`, `seconds` and `grade_s`, the funnel `stage`, `cached`, `sanity` (`same` / `different`, with the cached answer in `sanity_cached`, for re-asked questions), and `attempts`: one entry per request sent, with how it ended (`stop`, `length`, `loop`, `budget`, `timeout`, `error`), its mode (`think`, `forced`, `no-think`), its tokens and seconds, and for stopped attempts the reason and the last ~600 characters the model wrote. Long-context lines include the reused prefix (`cache_n`).
 * `cache/`: the result cache (see [Result cache and resume](#result-cache-and-resume)).
 * `batch_probe_<timestamp>.json`: written by `--batch-probe`.
+* `benchmark_compare_<timestamp>.html`: written by `--compare` (also copied to `benchmark_compare.html`).
 * `benchmark_dashboard_<timestamp>.html`: The interactive, self-contained dashboard for this run. The newest one is also copied next to the script as `benchmark_dashboard.html`.
 * `benchmark_report.md`: Markdown report with the top 3, speed overview, full comparison, quantization analysis and eval results.
 * `benchmark_<timestamp>.log`: Everything printed during the run, with start/end time and time taken.
+* `.benchmark_run.json`: exists only while a run is going (its process id, start time and log), so the settings page can follow and stop it; removed when the run ends.
 
 ### JSON export
 
@@ -373,9 +437,11 @@ All results are saved to `OUTPUT_DIR` (default: `results/` next to the script).
 | `run` | Run id, start/end time, duration, status (`complete`, `interrupted`, `failed`), mode, backend, model counts, `timing` (wall time of the speed and eval phases, every model's phases summed, eval time per dataset, thinking and answer tokens) |
 | `host` | Hardware, platform, Python version, GPU backend used, CPU power source |
 | `config` | The settings used for the run (API keys and tokens are never written) |
-| `evaluation` | Profile, seed, temperature, concurrency, HTTP backend, code sandbox, streaming settings (`stream`, `think_budget`, `think_budgets`, `budget_forcing`, `loop_abort`, `salvage`), `sq_basis`, `result_cache`, `skip_ineligible`, `funnel` (stages, leaders, confidence and every gate decision), margin of error, long-context settings, and per dataset the row counts, pinned `revision` and LiveCodeBench `since` |
+| `evaluation` | Profile, seed, temperature, concurrency, HTTP backend, code sandbox, streaming settings (`stream`, `think_budget`, `think_budgets`, `budget_forcing`, `loop_abort`, `salvage`), `server_sampling_models`, `sq_basis`, `result_cache`, `result_cache_mode` (`true` / `refresh` / `false`), `sanity_pct`, `sanity_adaptive`, `skip_ineligible`, `funnel` (stages, leaders, confidence and every gate decision), margin of error, long-context settings, and per dataset the row counts, pinned `revision` and LiveCodeBench `since` |
 | `artifacts` | Paths of every file written for the run, including the JSON itself |
-| `models[]` | One entry per model: `metadata`, `speed`, `gpu`, `cpu`, `memory`, `energy`, `scores`, `launch`, `gguf`, `context`, `long_context`, `budget`, `timing` (seconds per phase), `evaluation` (`incomplete`, `skipped`, `screened`, `stage`, `stage1_avg_pct`, `in_flight`, `sec_basis`, `cached`, tokens, and per dataset: `pct`, `n`, `rows`, `err`, `na`, `fallback`, `sec`, `sec1`, `trunc`, `degr`, `cap`, `salv`, `forced`, `tok`, `think`, `answer`, `ptok`, `grade_s`, `cached`, `wall`, `concurrency`), and `other` for any column not in a group |
+| `models[]` | One entry per model: `metadata`, `speed`, `gpu`, `cpu`, `memory`, `energy`, `scores`, `launch`, `gguf`, `context`, `long_context`, `budget`, `timing` (seconds per phase), `evaluation` (`incomplete`, `skipped`, `screened`, `stage`, `stage1_avg_pct`, `in_flight`, `sec_basis`, `cached`, `sanity_checked`, `sanity_different`, `sampling`, tokens, and per dataset: `pct`, `n`, `rows`, `err`, `na`, `fallback`, `sec`, `sec1`, `trunc`, `degr`, `cap`, `salv`, `forced`, `tok`, `think`, `answer`, `ptok`, `grade_s`, `cached`, `wall`, `concurrency`), and `other` for any column not in a group |
+
+v2.3 adds to `models[]`: `scores.agent_composite_pct`, `agent_longctx_pct`, `agent_ctx_factor`, `agent_borderline` (tool calling within its margin of the minimum) and `agent_basis` (the weights used), and `context.prefill_depth_tps`, `prefill_depth_ttft_s`, `prefill_depth_tokens` (the cached depth) and `prefill_depth_new` (new tokens sent). The CSV has the same columns; older history files are migrated.
 
 Missing measurements are `null`, never `NaN`. A JSON file is also written when every model fails, so errors are machine-readable.
 
@@ -386,8 +452,13 @@ Missing measurements are `null`, never `NaN`. A JSON file is also written when e
 * **Top 3 Goldilocks podium:** Gold/silver/bronze cards ranking Overall Balance, Chat Driver, and Agentic Reasoner (which factors in eval quality).
 * **Charts:** Generation speed, VRAM vs speed, power efficiency, energy per token, TTFT leaderboard, latency vs throughput, prefill vs generation, active vs idle GPU power, speed by quantization, and **Accuracy & Pass rates** (knowledge, math and coding shown as separate groups).
 * **Full model comparison:** Hover any column header for what it measures and which way is better. Hide columns with the × in a header or the **Columns** panel (single columns, whole groups such as Speed or Evals, or *Only this group*); **Show all columns** restores the full table. The choice is remembered in your browser, so the next run's dashboard opens with the same view. Columns with no data in a run are hidden automatically. Click a row to set it as a baseline, and every other row shows its +/- % against it. Models that are not ranked (incomplete evals, screened out by the funnel) or whose evals were skipped carry a badge; hover it for the reason.
+* **Combined runs (`--compare`):** a **Run** column and a **Run** filter show which run each model comes from and hide or show a run's rows (the scores stay as computed over all models).
 * **Where the time went:** time per model and phase (speed tests, eval load, long context, each dataset) as a stacked chart, the totals, and the thinking vs answer tokens generated.
 * **Quantization analysis and methodology:** Per-quant averages, plus the exact definitions used for this run.
+* **Colours (v2.3):** six tiers per metric, worst to best: red with ⚠, pink, amber, green, blue, purple. Generation tok/s 30 / 40 / 50 / 80 / 100, prefill 500 / 1,000 / 1,500 / 2,500 / 4,000 tok/s, accuracy and scores 50 / 60 / 70 / 80 / 90, and reversed scales for times (TTFT, s/q), retries and power; VRAM keeps its sweet-spot colours. The toggles at the top right switch **Bands** (flat tiers) / **Smooth** (a gradient between the tier colours) and **Absolute** (the thresholds) / **Relative** (tiers spread over this run's own range, so a slow GPU still shows which models are faster); they apply to the table and all charts. `COLOUR_STYLE`, `COLOUR_MODE` and `COLOUR_<METRIC>=t1,t2,t3,t4,t5` in `.env` set the defaults (e.g. a small GPU: `COLOUR_GEN=10,15,20,30,40`). Colours are display only and never part of a score.
+* **Theme:** **Auto** follows your system, or pick **Light** / **Dark**. The light theme has its own tier colours with real contrast on white. The view choices are remembered in your browser; the theme is shared with the settings page.
+* **Families:** chips in the filter bar group models by `DASH_FAMILIES` in `.env` (`Gemma=*gemma-4*;BigBang=*bigbang*`, several patterns per family with `|`) and automatically by the first word of the model name when two or more models share it (e.g. all `endless-frontier_BigBang` quants). Click chips to show only those families; the box next to them takes wildcard patterns, comma-separated, `*` and `?`, case-insensitive: `*gemma-4*` also finds `agent-gemma-4-26B...`. Chips and patterns combine with OR (either matches), and with the other filter groups (quant, size, ...) with AND.
+* **? Help:** what the colours mean with every threshold for this run (and the VRAM and tool-calling marks), how the toggles and family patterns work, and a rough speed-by-setup table: the generation speed to expect from a few typical GPUs and model sizes (estimates from memory bandwidth, not measurements), to read the tiers against your hardware.
 
 ## Metric definitions
 
@@ -417,6 +488,7 @@ Missing measurements are `null`, never `NaN`. A JSON file is also written when e
 | Max ctx @X% | The context that would fit with VRAM at `MAX_CTX_VRAM_PCT` of the GPU: loaded context + (X% of VRAM - measured VRAM) / KV bytes per token, capped at the training context |
 | Prefill 8k...128k t/s | `timings.prompt_per_second` for one cold, unique prompt of that length (`PREFILL_CTX_TESTS`). A length the long-context test also uses is taken from its first, cold prompt |
 | Agent TTFT s / Next-turn TTFT s | Time to first token for an agent-shaped prompt of `AGENT_PROMPT_TOKENS` (a 16-tool catalogue plus a long history), cold, and for the next turn of the same conversation (prefix cached) |
+| Prefill @depth t/s, @depth TTFT s | ~4,096 new tokens (a tool result) sent on top of a cached prompt (`PREFILL_DEPTH`; auto = up to 64k, column **Depth**): `timings.prompt_per_second` and `prompt_ms` of the new tokens only, the turn-by-turn cost an agent pays on a long context. Needs llama-server prompt-cache reuse on the same slot (`cache_prompt`, the default); recorded only when at least 90% of the cached prefix was reused. Blank when not even 8k + 4k fits the loaded context. The Agent score compares it only between models measured at the same depth |
 | Long-ctx % | Share of asked vault codes returned, over `LONGCTX_TRIALS` questions about one document of that length, each asking `LONGCTX_KEYS` different vaults among as many decoys; asked with thinking off. A model that thinks anyway and spends its whole reply on reasoning is asked once more with 4,096 tokens (noted, and `thinking_retry` in the details). Flagged when the KV type is below `LONGCTX_KV_MIN` |
 | Tool calling % | Built-in BFCL-style cases (simple, multiple, parallel, irrelevance) sent as OpenAI `tools` requests, graded on function name and arguments |
 | Budget columns | One pass / fail / ? per `BUDGET_PROFILE` rule. VRAM rule: model VRAM + `VRAM_RESERVE_GB` <= GPU total x `MAX_VRAM_PCT`. `?` = not measured, never a fail. A failing model stays off the podium (`BUDGET_PODIUM_PASS_ONLY`) |
@@ -433,7 +505,8 @@ Missing measurements are `null`, never `NaN`. A JSON file is also written when e
 | **s/q** | Mean latency of one question: request, retries, timeouts and grading (never the model load: a warm-up request comes first). It is deliberately not dataset wall time divided by questions. With requests in flight it includes queueing, so `sec1` (JSON) is also given: the single-stream estimate, tokens ÷ speed-test tok/s + prompt tokens ÷ prefill tok/s + grading. Real elapsed time is `eval_<dataset>_wall` |
 | **Eval avg %** | Mean of the dataset scores. Only for a model with a score on **every** dataset of the run (at least 90% of each dataset's questions answered without an API error); otherwise the model is **not ranked** and the reason is shown ("incomplete evals: GPQA 0/96 answered") |
 | **Retries, Eval − retry penalty** | Share of questions that needed the No-Thinking retry, and the eval average minus `AGENT_FALLBACK_PENALTY` × that share |
-| **Agent Score** | 0-100, quality first. **1. Quality** = the eval average, blended `AGENT_LONGCTX_WEIGHT` (25%) with long-context retrieval when every model has it, compared with the best *eligible* model of the run: within its noise margin (`AGENT_ACC_TOL`, default 1 standard error) = a tie at 100, below that a quadratic fall to 0 at `AGENT_ACC_SPAN` (40) points under the tie zone. Then × (1 − `AGENT_FALLBACK_PENALTY`% × the share of questions retried), applied after the tie zone so it separates tied models. **2. Speed factor** (0-1): prompt processing 40% (`1/(1 + agent TTFT ÷ AGENT_TTFT_REF)`, else `ln(longest prefill tok/s) / ln(AGENT_PREFILL_REF)`), s/q 35% (`1/(1 + s/q ÷ AGENT_SEC_REF)`), generation 25% (`ln(TPS) / ln(AGENT_TPS_REF)`); missing parts are left out and the rest re-weighted. `score = quality × (1 − W + W × speed)` with `W = AGENT_SPEED_WEIGHT` (0.3), so speed separates models of equal quality but never lifts a clearly weaker one. VRAM is not part of it. A model whose evals all failed, are incomplete, were skipped, or that the funnel screened out gets **no** Agent score. **Without evals in the run:** a proxy from dense-equivalent size (a MoE counts as √(total × active)) with a penalty below ~4.5 bits per weight, relative to the largest, also 0-100 and marked as a proxy |
+| **Agent Score** | 0-100, quality first (v2.3). **1. Composite quality** = the eval average (every dataset except tool calling) 45%, tool calling 30% (`AGENT_TOOL_WEIGHT`), long-context retrieval 25% (`AGENT_LONGCTX_WEIGHT`); a part the run doesn't have gives its weight to the evals. Long-ctx counts only the lengths **every** ranked model ran (a 90k model that skipped 128k is compared on the same questions); a model with no long-ctx result at 64k is not ranked, so long-ctx stays in everyone else's composite (only with `AGENT_CTX_PASS_PCT=0` is it left out for everyone, with a note). The composite is compared with the best of the run: within one standard error of the best composite (from each part's question count) = a tie at 100, below that a quadratic fall to 0 at `AGENT_ACC_SPAN` (40) points under the tie zone. **2. After the tie zone** (so they separate tied models): × (1 − `AGENT_FALLBACK_PENALTY`% × the share of questions retried) and × the **context factor** from `AGENT_CTX_CURVE` at the **usable context** (128k+ 1.0, 77k 0.97, 64k 0.95, linear between: a mild preference; an unknown context is not penalised). The usable context is the loaded context, capped at the longest long-context length that reached `AGENT_CTX_PASS_PCT` (75%) when a length that fits did not: a 128k model that finds 12% at 128k counts as 64k, a 90k model that passed 64k counts as 90k, and a length without a result does not count as passed. **3. Speed factor** (0-1): prompt processing 50% (prefill at depth 60%, credit halving at about 1,333 tok/s; cold agent-prompt TTFT 40%, `1/(1 + TTFT ÷ AGENT_TTFT_REF)`; whichever exist, else `ln(longest prefill tok/s) / ln(AGENT_PREFILL_REF)`), s/q 30% (`1/(1 + s/q ÷ AGENT_SEC_REF)`), generation 20% (`ln(TPS) / ln(AGENT_TPS_REF)`); missing parts are left out. `score = quality × (1 − W + W × speed)` with `W = AGENT_SPEED_WEIGHT` (0.3), so speed separates models of equal quality but never lifts a clearly weaker one. VRAM is not part of it. **No Agent score** when the evals failed, are incomplete, were skipped or screened out, the usable context is below `AGENT_CTX_MIN` (64k: a model must pass the 64k long-context test), or tool calling is below `MIN_TOOLCALL_PCT` (70%; ≈ marks a model within its margin of error of that minimum). Tool calling runs in full (all 32 cases) at every profile and funnel stage. **Without evals in the run:** a proxy from dense-equivalent size (a MoE counts as √(total × active)) with a penalty below ~4.5 bits per weight, relative to the largest, also 0-100, marked as a proxy, with the same context rules |
+| **Composite, Long-ctx (Agent), Usable ctx, Ctx factor** | The Agent score's parts per model: the composite quality before the tie zone, the long-context average it used (over the common lengths), the usable context and its factor |
 | **Funnel stage, First-stage avg** | The last funnel stage a model answered, and every model's average on the first stage's questions only (like-for-like across finalists and screened models) |
 | **In flight** | Requests a model actually had in flight during the evals (after the slot / KV-pool cap). Shown when `EVAL_CONCURRENCY` > 1 |
 | **Time min** | Everything this model took in the run (speed tests, loads, long context, evals). Per phase in the JSON |
@@ -468,12 +541,20 @@ The default budget is a judgement call: it keeps a run's duration predictable, b
 * **Docker/Sandbox issues during evals:** The sandbox self-test runs when the datasets load and in `--check`. If Docker is unavailable or fails it, the run stops with the reason (v2.0 fell back to a subprocess with only a warning, which in an unattended run meant executing untrusted code as your user). Make sure the Docker daemon is running and your user can use it, or set `EVAL_CODE_SANDBOX=subprocess` (only for models you trust). Containers left behind by an interrupted run are removed automatically on the next start.
 * **Evals are no faster with `EVAL_CONCURRENCY` above 1:** The run prints `in flight: 1 (capped: ...)` with the reason. Give llama-server slots (`-np N`, N at least `EVAL_CONCURRENCY`) and `--kv-unified`, and check llama-swap's `concurrencyLimit` for that model (when it is reached llama-swap answers 429 instead of queueing). With a shared KV pool, raise `-c` or lower `EVAL_THINK_BUDGET` if the cap is the pool. Run `--batch-probe` to see the real gain.
 * **A model shows "not ranked":** hover the badge. *Incomplete evals*: a dataset failed or stopped early (often a chat-template / `--jinja` problem); fix it and rerun (the result cache keeps everything else). *Screened out*: the funnel found it clearly below the leaders; its first-stage score is still shown. *Evals skipped*: it fails a deployment rule (set `EVAL_SKIP_INELIGIBLE=false` to evaluate it anyway).
-* **A rerun finishes instantly / did not ask anything:** the result cache had every answer. Set `EVAL_RESULT_CACHE=false` (or delete `results/cache/`) to measure again.
-* **Many `Fail: Degradation` lines, or questions taking 10 minutes:** Reasoning models often loop under greedy decoding (`EVAL_TEMPERATURE=0`). Use the sampling settings the model's authors recommend (often 0.6 to 1.0), or switch thinking off for that model with `EVAL_EXTRA_BODY`. Heavily quantized models (IQ2/IQ3) loop more. The run prints a warning when more than 25% of a dataset's questions loop.
+* **A rerun finishes instantly / did not ask anything:** the result cache had every answer. Set `EVAL_RESULT_CACHE=refresh` to measure everything again (the new answers replace the cached ones), or `EVAL_SANITY_PCT` to spot-check a share of them.
+* **A rerun asked everything again although nothing changed:** something in the cache key did change, most often the llama.cpp build (an updated llama-swap container image), a launch flag, the context size or an eval setting in `.env`. `--estimate` shows how many answers it expects to reuse per model.
+* **Many `Fail: Degradation` lines, or questions taking 10 minutes:** Reasoning models often loop under greedy decoding (`EVAL_TEMPERATURE=0`; Gemma-family models especially). With the default `EVAL_TEMPERATURE=server` each model uses the sampling in its llama-swap command: put the authors' recommended sampling there (with a number in `EVAL_TEMPERATURE` that number overrides `--temp`; list such models in `EVAL_SERVER_SAMPLING_MODELS`).
 * **Many `Fail: Think cap` lines:** The model genuinely thinks for a long time. Raise `EVAL_THINK_BUDGET` (the run then takes longer), or accept the cap as part of the score.
 * **After a timeout the next request is unusually slow (about half speed):** In the llama-swap log, requests that follow a 499 status (client closed) can decode much more slowly. With non-streaming requests the abandoned generation may keep running on the server. Streaming (the default since v2.1) closes the connection explicitly; to check on your build, run `curl http://<server>/slots` right after an abort and confirm no slot is still processing.
 * **Eval scores aren't comparable with older runs:** v2.1 samples nested questions, so a profile's questions differ from v2.0's (scores move within the margin of error); the long-context test uses one document per length; `EVAL_LCB_SINCE` restricts LiveCodeBench to newer (harder) problems. The thinking cap can also lower the score of a model that needs very long reasoning; compare runs with the same `EVAL_THINK_BUDGET`. Enabling GSM8K or MATH changes the eval average, since it averages every enabled dataset.
+* **Prefill @depth is blank:** the depth plus ~4k new tokens did not fit the loaded context (the log says *skipped*; with a fixed `PREFILL_DEPTH`, try `auto`), or the server did not reuse the cached prompt (*not recorded: the server reused X of ~Y prompt tokens*). Prompt-cache reuse needs `cache_prompt` (llama-server's default) and the follow-up landing on the same slot; with several slots (`-np`) and no `--kv-unified` it may land on another one. A model with no depth figure is scored on its cold agent-prompt TTFT instead.
+* **"no Agent score: context 32k is below AGENT_CTX_MIN 64k"** or **"... long-ctx 62% at 64k is below AGENT_CTX_PASS_PCT 75%"**: the model was loaded with less context than an agent needs, or it can't find things in a long context it holds. Load it with more (`-c`); for a model that only fits with a short context, lower `AGENT_CTX_MIN` (0 = off). `AGENT_CTX_PASS_PCT=0` judges the loaded context only. "no long-ctx result at 64k" means the test didn't run for that model (server down, KV below `LONGCTX_KV_MIN`): rerun it, the cache keeps its other answers.
+* **"no Agent score: tool calling 62% is below MIN_TOOLCALL_PCT 70%":** the model fails too many tool calls to drive an agent. Often a chat-template problem (`--jinja`, the model's tool-call format); check `eval_details_*.jsonl`. `MIN_TOOLCALL_PCT=0` switches the minimum off.
+* **Running the benchmark (or the settings page) on a desktop PC from a share of the server's folder:** editing `.env`, `--check-env`, `--estimate`, `--reload`, `--compare` and evals-only runs work from there. The **speed test does not**: it reads GPU power, VRAM, CPU power and RAM on the machine it runs on, so it would record the desktop's GPU. The VRAM budget checks would also use the desktop's GPU size. `--check`, the run's start and the settings page warn when `LLAMA_SWAP_URL` is on another machine. Run the speed test on the server: for the settings page there, set `UI_HOST=0.0.0.0` on the server, start `python3 benchmark.py --ui` there (an Unraid User Script in the background works), and open the printed `http://<server>:41010/?token=...` link from the desktop. Files written by root on the server (e.g. `benchmark_dashboard.html`) may not be writable from the share; the run then says so and the dashboard stays in `results/`, and the page's **Open latest dashboard** opens the newest one.
+* **`--ui` says "cannot open ...":** `UI_HOST` is an address to listen on, not a URL (`http://...` is now cut down to the address). An address that isn't this machine's own fails: use `0.0.0.0`. "Address in use" means another program (or a settings page already running) has the port: set `UI_PORT`.
+* **The settings page doesn't open from another PC:** set `UI_HOST=0.0.0.0` and use the address with `?token=` that `--ui` printed; check the server's firewall and `UI_PORT`. Opening it by a name the server doesn't know as its own (a DNS alias) is refused on purpose; use the IP address.
 * **`ModuleNotFoundError: llmbench`:** Run `benchmark.py` from the repository as downloaded; the `llmbench/` folder must sit next to it.
+* **A model fails to load (`HTTP 500 ... upstream command exited prematurely`):** the log and the dashboard show **Failed to load** with the cause when it can be told: *out of memory*, *bad launch flag*, *model file not found*, *unsupported model*, *load timed out*, or *cause not reported, most often out of memory*. The cause comes from llama-swap's own log lines (when its `/logs` gives plain text) and the error. Each gets its fix in the hint (hover the dashboard badge). For out of memory: add `--fit on` to the model's llama-swap command and remove its `-c` and `-ngl` (`--fit` only adjusts settings you didn't set), so llama-server lowers the context and offloads layers until it fits (`--fit-ctx 16384` sets the smallest context it may pick); or lower `-c` yourself, offload with `--n-cpu-moe`, or use a smaller KV type. When the GGUF is readable here (`GGUF_SEARCH_DIRS`), the hint adds the weight size, trained context and KV cost per 16k. The benchmark can't change launch flags itself; to keep both versions, add a second llama-swap entry for the same file. A model loaded below `MIN_CTX` is still flagged by a budget profile.
 * **A dataset fails to load:** Run `python benchmark.py --download-datasets` with internet access once; later runs read from the local `tests/` cache. Setting `HF_TOKEN` in `.env` avoids anonymous rate limits.
 
 ## Dashboard Example
@@ -555,13 +636,13 @@ The GPQA authors ask users **not to reveal examples from the dataset in plain te
 | --- | --- | --- |
 | [llama-swap](https://github.com/mostlygeek/llama-swap) by mostlygeek | The model-swapping proxy this tool benchmarks through | MIT |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) (ggml-org) | llama-server, its `/props`, `/apply-template`, `/completion` and `timings` fields, and the [GGUF file format](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md) read by `llmbench/gguf.py` (own implementation, no code copied) | MIT |
-| [Chart.js](https://www.chartjs.org/) | Dashboard charts, loaded from cdnjs when the dashboard is opened (not bundled) | MIT |
+| [Chart.js](https://www.chartjs.org/) 4.4.1, © 2014-2022 Chart.js Contributors | Dashboard charts. From v2.3.1 the minified build (`dist/chart.umd.js` of the npm package) is bundled in `llmbench/reporting/vendor/` with its licence text and written into every dashboard, so a dashboard opens offline and loads nothing from a CDN | MIT ([licence](llmbench/reporting/vendor/LICENSE-chartjs.md)) |
 | [Hugging Face `datasets`](https://github.com/huggingface/datasets) / `huggingface_hub` | Downloading and caching the evaluation datasets | Apache 2.0 |
 | [Requests](https://github.com/psf/requests) | HTTP client | Apache 2.0 |
 | [aiohttp](https://github.com/aio-libs/aiohttp) | Concurrent evaluation requests | Apache 2.0 |
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | `.env` loading | BSD 3-Clause |
 | [nvidia-ml-py](https://pypi.org/project/nvidia-ml-py/) (NVIDIA) | NVML GPU telemetry (`pynvml`) | BSD 3-Clause |
 
-Dependencies are installed by you from PyPI and are not redistributed here. Each project's licence applies to it.
+Dependencies are installed by you from PyPI and are not redistributed here, with one exception: Chart.js is bundled (see its row). Each project's licence applies to it.
 
 If you are an author of one of these works and would like the credit worded differently, or a dataset removed, please open an issue.
