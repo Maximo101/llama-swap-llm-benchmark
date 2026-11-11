@@ -1,6 +1,8 @@
 # Llama-Swap LLM Benchmark Suite
 
-<img width="3712" height="1152" alt="banner" src="https://github.com/user-attachments/assets/e40370b4-3a31-4c14-a486-46a6b280f9bf" />
+<a href="./assets/banner.png" target="_blank">
+  <img src="./assets/banner.png" alt="Banner" width="100%" />
+</a>
 
 An automated, real-load benchmark for LLMs served by [llama-swap](https://github.com/mostlygeek/llama-swap).
 
@@ -8,13 +10,29 @@ For every model on your server it measures generation speed (Technical + Logic p
 
 A full run of ~28 models is dominated by the GPU generating eval answers. v2.1 adds the tools to make that much shorter without making the ranking less trustworthy: a confidence-gated funnel, a per-question result cache with resume, batched evaluation with a measured probe, skipping models that cannot be deployed anyway, a single shared long-context document, and a per-phase timing report with `--estimate`. See [Making a full run faster](#making-a-full-run-faster). v2.2 adds a full-retest mode and sanity checks for the result cache, a cache-aware `--estimate`, and `--compare` to put runs (for example a Strata run and a llama-swap run) in one dashboard. v2.2.1 adds a settings file you can read at a glance, and a check for your `.env` v2.3 makes the Agent score fit agentic use (a minimum and a preference for long context, tool calling as its own part, a tool-calling minimum), adds **prefill at depth** (what an agent waits for each turn on a long, cached context), six colour tiers with a light theme and model families in the dashboard, and a **settings page** (`python benchmark.py --ui`) to edit `.env`, keep favourites, estimate, compare and start or stop runs from the browser. v2.3.1: runs that survive trouble, `--resume`, honest timings, a harder settings page
 
-Dashboard
-<img width="1263" height="887" alt="s1" src="https://github.com/user-attachments/assets/b4e0c05e-53ff-4faf-bd3b-641614f2cfa0" />
+* 📊 **RTX 5070 Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/llama-swap-llm-benchmark/blob/main/assets/5070_benchmark_dashboard.html)
+* 📊 **RTX 5070 Ti Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/llama-swap-llm-benchmark/blob/main/assets/5070ti_benchmark_dashboard.html)
 
-<img width="1279" height="685" alt="s2" src="https://github.com/user-attachments/assets/b8c1cf2f-53c9-4eae-8142-d6f542a3f11e" />
+<a href="./assets/m1.png" target="_blank">
+  <img src="./assets/m1.png" alt="5070 12GB Benchmark Result" width="100%" />
+</a>
 
-Setting Page
-<img width="1111" height="914" alt="d1" src="https://github.com/user-attachments/assets/a87b0e68-3ec4-4582-8e73-73d61d9e0d60" />
+<a href="./assets/s1.png" target="_blank">
+  <img src="./assets/s1.png" alt="5070ti 16GB Benchmark Result" width="100%" />
+</a>
+
+<a href="./assets/s2.png" target="_blank">
+  <img src="./assets/s2.png" alt="5070ti 16GB Benchmark Result" width="100%" />
+</a>
+
+Settings Page
+<a href="./assets/d1.png" target="_blank">
+  <img src="./assets/d1.png" alt="Settings Page" width="100%" />
+</a>
+
+<a href="./assets/models.png" target="_blank">
+  <img src="./assets/models.png" alt="Settings Page - Models" width="100%" />
+</a>
 
 ## 📦 Features
 
@@ -168,7 +186,9 @@ python benchmark.py --estimate
 
 Uses earlier runs' JSON in `results/` (measured tok/s, prefill speed, seconds and tokens per question) and any batch-probe result; models without history get a rough guess from their size and quantisation and the GPU's memory bandwidth (`ESTIMATE_GPU_BW_GBS`, PART 1: `auto` looks up the detected NVIDIA GPU in a table of common cards, else 670 GB/s; a number overrides it, e.g. when estimating for another machine's GPU). Models that `EVAL_SKIP_INELIGIBLE` would skip (context below `MIN_CTX`, a failed budget rule) get no eval time. It also reads the result cache: it says whether the run will reuse cached answers or is a full re-run (`EVAL_RESULT_CACHE=refresh` / `false`), shows per model how many answers it expects to reuse, and counts only the rest (plus any sanity-check re-asks). A one-line estimate is also printed at the start of every run.
 
-<img width="1199" height="727" alt="d3" src="https://github.com/user-attachments/assets/e21dc80c-17e3-4518-9119-7fc2cdfd9336" />
+<a href="./assets/d3.png" target="_blank">
+  <img src="./assets/d3.png" alt="GPU Bandwidth GBS" width="100%" />
+</a>
 
 **8. Measure what batched evaluation gains on your GPU**
 
@@ -252,6 +272,10 @@ python benchmark.py --validate                                # do the settings 
 3. Within a dataset, up to `EVAL_CONCURRENCY` questions are in flight, capped to what the server's slots and KV pool can hold. Replies are streamed; grading (including sandboxed code) runs while the next question is generating.
 4. A stopped reply (repetition loop, thinking cap, timeout) whose visible answer is already complete is graded as it is; otherwise, and also when a reply is cut off by the token limit, the question is asked once more with thinking disabled (or, with `EVAL_BUDGET_FORCING=true`, the reasoning is closed and the answer asked for).
 5. Every answer is stored in the result cache. With `EVAL_PROFILE=funnel` the models clearly below the leaders are dropped after each stage and the rest answer the next stage's new questions.
+
+<a href="./assets/eval1.png" target="_blank">
+  <img src="./assets/eval1.png" alt="Funnel Test" width="100%" />
+</a>
 
 ## Configuration
 
@@ -462,7 +486,9 @@ Missing measurements are `null`, never `NaN`. A JSON file is also written when e
 * **Families:** chips in the filter bar group models by `DASH_FAMILIES` in `.env` (`Gemma=*gemma-4*;BigBang=*bigbang*`, several patterns per family with `|`) and automatically by the first word of the model name when two or more models share it (e.g. all `endless-frontier_BigBang` quants). Click chips to show only those families; the box next to them takes wildcard patterns, comma-separated, `*` and `?`, case-insensitive: `*gemma-4*` also finds `agent-gemma-4-26B...`. Chips and patterns combine with OR (either matches), and with the other filter groups (quant, size, ...) with AND.
 * **? Help:** what the colours mean with every threshold for this run (and the VRAM and tool-calling marks), how the toggles and family patterns work, and a rough speed-by-setup table: the generation speed to expect from a few typical GPUs and model sizes (estimates from memory bandwidth, not measurements), to read the tiers against your hardware.
 
-<img width="551" height="798" alt="m1" src="https://github.com/user-attachments/assets/0aab53fc-f4b0-434a-a1b3-52515a556116" />
+<a href="./assets/colour.png" target="_blank">
+  <img src="./assets/colour.png" alt="Colour Tool tip" width="100%" />
+</a>
 
 ## Metric definitions
 
@@ -518,7 +544,11 @@ Missing measurements are `null`, never `NaN`. A JSON file is also written when e
 | **Sweet spot** | `Agent score × VRAM fit`: the most capable model that also uses the GPU sensibly (some headroom, nothing wasted). Ranked in the podium's "VRAM sweet spot" row |
 | **VRAM tuning hint** | Under the band with CPU offload: room to lower `--n-cpu-moe`. Over the band: raise `--n-cpu-moe` or cut ctx / KV cache. Tip: add several llama-swap entries of one model with different `--n-cpu-moe` values and the Sweet spot ranks them |
 
-<img width="1256" height="809" alt="s6" src="https://github.com/user-attachments/assets/ab0b8c59-ddb5-4b09-a3c4-25e495b8db6d" /><img width="1228" height="329" alt="d2" src="https://github.com/user-attachments/assets/401076e4-491a-4d68-9ac8-6b4a48dcd750" />
+<img width="1256" height="809" alt="s6" src="https://github.com/user-attachments/assets/ab0b8c59-ddb5-4b09-a3c4-25e495b8db6d" />
+
+<a href="./assets/s7.png" target="_blank">
+  <img src="./assets/s7.png" alt="Where the time went" width="100%" />
+</a>
 
 ## Streaming, loop abort and the thinking cap
 
@@ -567,11 +597,43 @@ The default budget is a judgement call: it keeps a run's duration predictable, b
 
 <img width="1263" height="768" alt="s3" src="https://github.com/user-attachments/assets/47090d8d-a0bc-44eb-9da0-09a45e0d30c3" />
 
+<a href="./assets/ss1.png" target="_blank">
+  <img src="./assets/ss1.png" alt="Benchmark Result S1" width="100%" />
+</a>
+
 <img width="1251" height="738" alt="s4" src="https://github.com/user-attachments/assets/c6670acd-e808-493e-b896-080335f70e40" />
 
 <img width="1263" height="815" alt="s5" src="https://github.com/user-attachments/assets/6f51c67b-177f-4026-a967-798435e65321" />
 
 <img width="1256" height="809" alt="s6" src="https://github.com/user-attachments/assets/ab0b8c59-ddb5-4b09-a3c4-25e495b8db6d" />
+
+<a href="./assets/s8.png" target="_blank">
+  <img src="./assets/s8.png" alt="Benchmark Result" width="100%" />
+</a>
+
+<a href="./assets/s9.png" target="_blank">
+  <img src="./assets/s9.png" alt="Benchmark Result" width="100%" />
+</a>
+
+<a href="./assets/s10.png" target="_blank">
+  <img src="./assets/s10.png" alt="Benchmark Result" width="100%" />
+</a>
+
+<a href="./assets/s3.png" target="_blank">
+  <img src="./assets/s3.png" alt="Benchmark Result" width="100%" />
+</a>
+
+<a href="./assets/s4.png" target="_blank">
+  <img src="./assets/s4.png" alt="Benchmark Result" width="100%" />
+</a>
+
+<a href="./assets/s5.png" target="_blank">
+  <img src="./assets/s6.png" alt="Benchmark Result" width="100%" />
+</a>
+
+<a href="./assets/s6.png" target="_blank">
+  <img src="./assets/s6.png" alt="Benchmark Result" width="100%" />
+</a>
 
 Previous Dashboard v2.2
 
