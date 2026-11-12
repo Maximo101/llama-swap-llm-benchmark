@@ -6,6 +6,7 @@ import time
 
 from . import modelinfo
 from .client import post_chat, unload_all
+from .pause import CONTROL, PauseRestart
 from .common import BenchError, Clock, avg, col, median, vmax, now
 from .config import DEPTH_NEW_TOKENS, PREFILL_SLOTS, depth_for
 from .scoring import blank, parse_quant
@@ -80,7 +81,7 @@ def measure(cfg, session, gpu, host, ha, model, prompt, max_tokens, timeout, cac
         cpu_w = ha.window_avg(t0, t1)
     gpu_w = avg(col(g, "gpu_w"))
     energy = request_energy_j(gpu_w, cpu_w, wall, e0, e1)
-    return {"tps": float(tps), "tps_basis": basis, "prompt_tps": timings.get("prompt_per_second"),
+    res = {"tps": float(tps), "tps_basis": basis, "prompt_tps": timings.get("prompt_per_second"),
             "ttft_ms": timings.get("prompt_ms"), "gen_ms": timings.get("predicted_ms"),
             "wall_s": wall, "tokens": tokens, "energy_j": energy, "attempts": mark["attempts"],
             "cache_n": timings.get("cache_n"), "prompt_n": timings.get("prompt_n"),
@@ -89,6 +90,8 @@ def measure(cfg, session, gpu, host, ha, model, prompt, max_tokens, timeout, cac
             "vram_total_gb": vmax(col(g, "vram_total_gb")),
             "cpu_w": cpu_w, "cpu_util": h.get("cpu_util"),
             "ram_gb": vmax(col(rw, "ram_gb")), "proc_gb": vmax(col(rw, "proc_gb"))}
+    CONTROL.checkpoint()          # the GPU tripped MAX_GPU_TEMP during this request: the test line restarts (pause.py)
+    return res
 
 
 def cache_test(cfg, session, gpu, host, ha, model) -> dict:
@@ -378,6 +381,19 @@ def _summarise(r, runs, cache_runs, base):
 
 
 def bench_model(cfg, session, gpu, host, ha, model, unload_state) -> dict:
+    """One model's speed test. If the GPU trips MAX_GPU_TEMP part-way, the half-measured model is dropped, the run
+    waits for the GPU to cool (or for Resume) and the model is tested again from its first step."""
+    while True:
+        CONTROL.wait(f"before the speed test of {model}")
+        try:
+            with CONTROL.restartable():
+                return _bench_model(cfg, session, gpu, host, ha, model, unload_state)
+        except PauseRestart:
+            print(f"\n  [pause] the GPU got too hot during the speed test of {model}: it is discarded")
+            CONTROL.discard(f"the speed test of {model}")
+
+
+def _bench_model(cfg, session, gpu, host, ha, model, unload_state) -> dict:
     r = blank(model)
     strata = cfg.backend == "strata"
     if strata:      # no filename to parse, so take the model facts from .env

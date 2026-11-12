@@ -30,6 +30,8 @@ from .reporting.csv_out import write_csv
 from .reporting.dashboard import write_dashboards
 from .reporting.json_out import json_paths, write_json
 from .reporting.markdown import render_markdown
+from .pause import CONTROL, pause_path, read_pause
+from .pause import request as request_pause
 from .scoring import agent_notes, blank, finalize
 from .speed import bench_model
 from .telemetry import HaCpuPoller, HostMeter, detect_hardware, open_gpu_monitor
@@ -418,6 +420,16 @@ def _run(args, cfg, stamp, info):
         info.update(resumed_from=doc.get("stamp"), prior_cpu_source=doc.get("cpu_source"))
         print(f"Resuming run {doc.get('stamp')} ({doc.get('state')}, saved {doc.get('saved')}, {len(st.prior)} model "
               f"row(s)) from {path}")
+        old_pause = pause_path(cfg.output_dir, doc.get("stamp"))
+        pd = read_pause(old_pause)
+        if pd:                                    # the run was lost while it was paused: its rows are the saved state
+            print(f"That run was paused ({pd.get('reason')}) during {pd.get('phase')}"
+                  + (f", model {pd.get('model_i')} of {pd.get('models')}: {pd.get('model')}" if pd.get("model") else "")
+                  + f". {len(pd.get('completed_models') or [])} model(s) were finished; what was half done starts again.")
+            try:
+                old_pause.unlink()
+            except OSError:
+                pass
         if doc.get("base_url") and doc["base_url"] != cfg.base_url:
             print(f"[warn] that run used {doc['base_url']}, this one uses {cfg.base_url}: only resume a run on the "
                   "server it was made on")
@@ -428,6 +440,7 @@ def _run(args, cfg, stamp, info):
         st.save = lambda state="partial": status.save_rows(
             cfg, stamp, st.results, state, {"hardware": st.hardware, "cpu_source": st.cpu_source,
                                             "resumed_from": info.get("resumed_from")})
+        CONTROL.configure(cfg, stamp, st.results, st.save)     # pause / resume, and MAX_GPU_TEMP (pause.py)
     info["results"] = st.results              # shared with main(): the closing banner reads models/tests from it
     evals_only = (args.evals_only or not cfg.run_speed_tests) and not args.demo
     if evals_only:
@@ -467,6 +480,8 @@ def _run(args, cfg, stamp, info):
                 _early_dashboard(cfg, st, stamp)
                 _eval_phase(cfg, session, st, eval_data, stamp, info)
 
+    if CONTROL.pauses:
+        info.setdefault("phases", {})["paused_s"] = round(CONTROL.paused_s, 1)     # inside speed_s / eval_s as well
     if not st.results:
         sys.exit("No results to write.")
     finalize(st.results, cfg)
@@ -595,7 +610,8 @@ def release_lock(p):
 
 
 def _parser():
-    ap = argparse.ArgumentParser(description="Benchmark every model on a llama-swap server (run on the GPU host).")
+    ap = argparse.ArgumentParser(description="Local LLM Benchmark Suite: benchmark every model on a local OpenAI-compatible server such as "
+                                 "llama-swap (run on the GPU host).")
     ap.add_argument("--check", action="store_true", help="test telemetry sources and exit")
     ap.add_argument("--probe-strata", action="store_true", help="list what Strata's API exposes and save it")
     ap.add_argument("--demo", action="store_true", help="build a dashboard from synthetic data (no server)")
@@ -626,8 +642,12 @@ def _parser():
     ap.add_argument("--force", action="store_true",
                     help="with --compare: combine runs even when their eval settings differ; with a run: start "
                          "although another benchmark run is still going")
+    ap.add_argument("--pause", action="store_true",
+                    help="ask the run that is going in OUTPUT_DIR to pause: it finishes its current model (speed test) "
+                         "or the requests in flight (evals), then waits. `--resume` carries it on. (The settings page "
+                         "has the same buttons; MAX_GPU_TEMP pauses by itself.)")
     ap.add_argument("--resume", nargs="?", const="", metavar="RUN",
-                    help="continue a run that stopped (crash, kill, power cut, Ctrl+C), or repair a finished one: "
+                    help="while a run is going and paused: carry it on. Otherwise continue a run that stopped (crash, kill, power cut, Ctrl+C), or repair a finished one: "
                          "models whose speed test finished are kept, the others are benchmarked, and the result "
                          "cache answers every eval question already asked. RUN = a stamp (20261110_103848) or a "
                          "run_<stamp>.rows.json; without it the newest run in OUTPUT_DIR")
@@ -709,6 +729,12 @@ def main():
     if args.validate:
         print(f"Settings OK ({args.env or '.env'})")
         return
+    if args.pause or (args.resume == "" and lock_info(cfg)):     # talk to the run that is going, start nothing
+        try:
+            print(request_pause(cfg.output_dir, bool(args.pause)))
+        except RuntimeError as e:
+            sys.exit(f"[error] {e}")
+        return
     if args.speed_only:
         cfg.run_eval_tests, cfg.run_speed_tests = False, True
     if args.compare is not None:
@@ -781,6 +807,7 @@ def main():
         traceback.print_exc()
         code = 1
     finally:
+        CONTROL.shutdown()
         status.finish({0: "complete", 2: "partial", 130: "interrupted"}.get(code, "failed"))
         release_lock(lock)
         notify(cfg, info, stamp, code, now() - t_start, args.demo)

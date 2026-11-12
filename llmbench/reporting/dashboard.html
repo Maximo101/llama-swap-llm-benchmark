@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>llama-swap Benchmark Dashboard</title>
+<title>Local LLM Benchmark Suite Dashboard</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 :root{--bg:#0d1117;--card:#161b22;--line:#30363d;--text:#e6edf3;--mute:#8b949e;--link:#58a6ff;--chip:#21262d;--chipon:#1f3a5f;
@@ -19,7 +19,8 @@ a{color:var(--link)}
 h1{margin:0 0 4px}h2{margin:36px 0 12px;border-bottom:1px solid var(--line);padding-bottom:6px}
 .sub{color:var(--mute)}
 .grid{display:grid;gap:16px;align-items:start}.podium{grid-template-columns:repeat(auto-fit,minmax(270px,1fr))}
-.charts{grid-template-columns:repeat(auto-fit,minmax(560px,1fr))}
+.charts{grid-template-columns:repeat(2,minmax(0,1fr))}
+.charts>.card.wide{grid-column:1/-1}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;overflow:hidden}
 .card h3{margin:0 0 8px;font-size:15px}
 .rank{font-size:12px;font-weight:700;letter-spacing:.08em}
@@ -31,13 +32,31 @@ h1{margin:0 0 4px}h2{margin:36px 0 12px;border-bottom:1px solid var(--line);padd
 /* filter bar */
 .filters{position:sticky;top:0;z-index:30;margin:16px 0;padding:10px 14px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
 .fg{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.fg>span{color:var(--mute);font-size:12px;margin-right:2px}
+/* v2.3.2: the filter bar folds to one line (kept open on wide screens until you fold it; folded by default on phones) */
+.filters.min{gap:6px 12px;padding:6px 12px}.filters.min>.fg:not(.keep){display:none}
+.filters .fmin{font-weight:700}
 .tog{background:var(--chip);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:3px 11px;font:inherit;font-size:12px;cursor:pointer}
 .tog:hover{border-color:var(--link)}.tog.on{background:var(--chipon);border-color:var(--link)}
 /* table: vertical scroll, frozen header and first five columns */
 #tblwrap{max-height:72vh;overflow:auto;position:relative;border:1px solid var(--line);border-radius:10px;background:var(--card)}
 table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%}
 th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;background:var(--card)}
+/* v2.3.2: body cells stay on one line (cut with an ellipsis when a column is narrowed); the header row is two rows
+   high and its text wraps to the column's width */
+#tbl td{overflow:hidden;text-overflow:ellipsis}
 th{position:sticky;top:0;z-index:3;cursor:pointer;color:var(--mute);user-select:none}
+#tbl th{height:70px;vertical-align:bottom;white-space:normal;overflow-wrap:anywhere;line-height:1.3;overflow:hidden}
+#tbl th .colrs{position:absolute;top:0;right:0;bottom:0;width:9px;cursor:col-resize;touch-action:none;border-right:2px solid transparent}
+#tbl th:hover .colrs,#tbl th .colrs.drag{border-right-color:var(--link)}
+body.colresizing,body.colresizing *{cursor:col-resize!important;user-select:none!important}
+.rowx{display:inline-block;margin-right:6px;padding:0 5px;border-radius:4px;border:0;background:none;font:inherit;font-weight:700;line-height:1.2;color:var(--colx);cursor:pointer;opacity:.45;flex:none}
+tr:hover .rowx{opacity:1}.rowx:hover{color:var(--red);background:var(--warnbg)}
+td .mrow{display:flex;align-items:center;min-width:0}td .mrow>.clip{flex:1;min-width:0}
+#hiddenbox{margin-top:10px}#hiddenbox .hm{display:inline-flex;align-items:center;gap:6px;margin:4px 10px 0 0;padding:2px 4px 2px 10px;border:1px solid var(--line);border-radius:14px;background:var(--chip);font-size:12.5px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.chip{display:inline-block;padding:1px 9px;border-radius:12px;border:1px solid var(--line);background:var(--chip);color:var(--text);font-size:12px;font-weight:600;vertical-align:1px}
+#tbl td .bar{width:60px}
+.lbbox{position:relative;height:460px}.lbscroll{overflow-x:auto}
 th:hover{color:var(--text)}
 th:first-child,td:first-child{text-align:left}
 .fz{position:sticky;z-index:2}th.fz{z-index:5}.fz.last{border-right:2px solid var(--frz)}
@@ -45,7 +64,7 @@ td.warn{background:var(--warnbg)}
 tr[data-m]{cursor:pointer}tr[data-m]:hover td{background:var(--hover)}tr.sel td{background:var(--sel)}
 .hl{color:var(--hl)!important;font-weight:700}
 .mn{cursor:pointer}.mn:hover{text-decoration:underline}
-#charts canvas:not(#c_quant),#evcharts canvas{cursor:pointer}
+#charts canvas:not(#c_quant),#evcharts canvas,#c_lb{cursor:pointer}
 .hint-ok{color:var(--green)}.hint-room{color:var(--amber)}.hint-tight{color:var(--red)}
 [data-tip]{cursor:help}.tipd{border-bottom:1px dotted var(--mute)}
 #tipbox{position:fixed;z-index:50;max-width:340px;padding:8px 10px;border-radius:8px;background:var(--tipbg);color:var(--text);border:1px solid var(--tipline);font-size:12.5px;line-height:1.45;box-shadow:0 6px 18px var(--shadow);pointer-events:none;display:none;white-space:normal;text-align:left}
@@ -86,15 +105,22 @@ th[data-k="model"] .colx{display:none}
 .tierkey{display:flex;flex-wrap:wrap;gap:4px 14px;margin:4px 0 8px}
 .bline{color:var(--amber);font-size:11px;margin-left:3px;cursor:help}
 footer{margin-top:40px}
-@media(max-width:900px){body{padding:12px}.charts{grid-template-columns:1fr}.fz{position:static}}
+@media(max-width:1100px){.charts{grid-template-columns:1fr}}
+@media(max-width:900px){body{padding:12px}.fz{position:static}.lbbox{height:380px}}
 </style></head><body>
-<div class="topline"><h1>llama-swap Benchmark</h1><div class="viewbar" id="viewbar"></div></div>
+<div class="topline"><h1>Local LLM Benchmark Suite</h1><div class="viewbar" id="viewbar"></div></div>
 <div class="sub" id="hdr"></div>
 <div class="card" id="helppop" hidden></div>
 
 <div id="sdetails" style="margin-top:12px"></div>
 
 <div class="card filters" id="filters"></div>
+
+<div id="lbsec" hidden>
+<div class="card" id="lbcard"><div class="toolbar" style="margin-bottom:4px"><h3 style="margin:0" id="lbtitle">Agent leaderboard</h3><span class="fg" id="lbmode"></span></div>
+<div class="sub" id="lbsub"></div>
+<div class="lbscroll"><div class="lbbox" id="b_lb"><canvas id="c_lb"></canvas></div></div><p class="sub" id="e_lb" hidden>No model with an Agent score for the current filters.</p></div>
+</div>
 
 <div id="speedtop">
 <h2>Category winners &mdash; top 3</h2><div id="podium"></div>
@@ -113,6 +139,7 @@ footer{margin-top:40px}
 <div class="toolbar" id="toolbar"></div>
 <details class="card" id="colpanel"></details>
 <div id="tblwrap"><table id="tbl"></table></div>
+<div class="card" id="hiddenbox" hidden></div>
 
 <div id="timesec" hidden><h2>Where the time went</h2>
 <div class="sub" id="timesub"></div>
@@ -159,7 +186,9 @@ const VIEW = (() => { let v = {}; try { v = JSON.parse(localStorage.getItem(VIEW
           tstyle: ['bands','smooth'].includes(v.tstyle) ? v.tstyle : (C.style || 'bands'),
           cstyle: ['bands','smooth'].includes(v.cstyle) ? v.cstyle : (C.style || 'bands'),
           mode: ['absolute','relative'].includes(v.mode) ? v.mode : (C.mode || 'absolute'),
-          pattern: typeof v.pattern === 'string' ? v.pattern : ''}; })();
+          pattern: typeof v.pattern === 'string' ? v.pattern : '',
+          fmin: typeof v.fmin === 'boolean' ? v.fmin : null,          // filter bar folded (null = by screen width)
+          lb: ['score','quality'].includes(v.lb) ? v.lb : 'score'}; })();
 const saveView = () => { try { localStorage.setItem(VIEWSTORE, JSON.stringify(VIEW)); } catch(e){} };
 const OSDARK = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 const themeNow = () => VIEW.theme==='auto' ? (OSDARK && !OSDARK.matches ? 'light' : 'dark') : VIEW.theme;
@@ -235,7 +264,8 @@ Chart.defaults.maintainAspectRatio = false;
 applyTheme();
 
 const state = {filters:{quant:new Set(), arch:new Set(), size:new Set(), source:new Set(), family:new Set(), vram95:false, hideErr:false, noSpill:false, ctxOk:false, budOk:false},
-               sk:'avg_tps', sd:-1, base:null, rate:'peak'};
+               sk:'avg_tps', sd:-1, base:null, rate:'peak',
+               excluded:new Set()};                    // v2.3.2: models removed with the row's x (this page view only)
 
 /* ---------- filters ---------- */
 const BUCKETS = [['lt10','<10B',p=>p<10],['10-20','10\u201320B',p=>p>=10&&p<20],['20-40','20\u201340B',p=>p>=20&&p<40],['gt40','\u226540B',p=>p>=40]];
@@ -270,6 +300,7 @@ function famPass(m){
 }
 function pass(m){
   const f = state.filters;
+  if (state.excluded.has(m.model)) return false;      // removed by hand: gone from the table and every chart
   if (!famPass(m)) return false;
   if (f.source.size && !f.source.has(m.source)) return false;
   if (f.quant.size && !f.quant.has(m.quant)) return false;
@@ -290,6 +321,7 @@ function buildFilters(){
   if (ALL.some(m=>m.params_b==null)) sizes.push(['unk','unknown']);
   const grp = (label,g,items) => `<div class="fg"><span>${label}</span>${items.map(([v,t])=>`<button class="tog" data-g="${g}" data-v="${esc(v)}">${esc(t)}</button>`).join('')}</div>`;
   $('filters').innerHTML =
+    `<div class="fg keep"><button class="tog fmin" data-fmin="1" aria-controls="filters"></button><span id="fcount"></span><span id="factive"></span><span id="hlchip"></span></div>` +
     (sources.length>1 ? grp('Run','source',sources.map(x=>[x,x])) : '') +
     grp('Quant','quant',quants.map(q=>[q,q])) +
     (archs.length>1 ? grp('Type','arch',archs.map(a=>[a,a])) : '') +
@@ -300,9 +332,11 @@ function buildFilters(){
     grp('Show','x',[['vram95','Hide VRAM \u226595%'],['noSpill','VRAM-only (hide RAM spill)'],['hideErr','Hide failed']]
       .concat(META.min_ctx && ALL.some(m=>m.ctx_ok===false) ? [['ctxOk','Hide ctx < '+ctxFmt(META.min_ctx)]] : [])
       .concat(BUD ? [['budOk','Budget pass only ('+esc(BUD.name)+')']] : [])) +
-    `<div class="fg"><button class="tog" data-reset="1">Reset</button><span id="fcount"></span><span id="hlchip"></span></div>`;
+    `<div class="fg"><button class="tog" data-reset="1">Reset</button></div>`;
+  applyFmin();
   $('filters').onclick = e => {
     const b = e.target.closest('button'); if(!b) return;
+    if (b.dataset.fmin){ VIEW.fmin = !filtersMin(); saveView(); return applyFmin(); }
     if (b.dataset.clearhl){ state.base = null; return refreshHighlight(); }
     if (b.dataset.reset){ state.base = null; Object.values(state.filters).forEach(v=>v instanceof Set?v.clear():0); state.filters.vram95=state.filters.hideErr=state.filters.noSpill=state.filters.ctxOk=state.filters.budOk=false;
       VIEW.pattern = ''; saveView(); const pb = $('fampat'); if (pb){ pb.value = ''; pb.classList.remove('on'); }
@@ -317,6 +351,19 @@ function buildFilters(){
   pb.oninput = () => { VIEW.pattern = pb.value; saveView(); pb.classList.toggle('on', !!pb.value.trim()); render(); };
 }
 
+// v2.3.2: the sticky filter bar can be folded to one line. Folded by default on a narrow screen, where it would
+// otherwise cover most of the page; the choice is remembered in this browser.
+const filtersMin = () => VIEW.fmin==null ? window.innerWidth <= 760 : VIEW.fmin;
+const activeFilters = () => Object.values(state.filters).reduce((n,v) => n + (v instanceof Set ? v.size : (v ? 1 : 0)), 0) + patList().length;
+function applyFmin(){
+  const min = filtersMin(), box = $('filters'), b = box.querySelector('[data-fmin]'); if (!b) return;
+  box.classList.toggle('min', min);
+  b.textContent = (min ? '\u25B8' : '\u25BE') + ' Filters'; b.setAttribute('aria-expanded', String(!min));
+  b.setAttribute('data-tip', min ? 'Show the filters (quant, type, size, family, ...)' : 'Fold the filter bar to one line');
+  const n = activeFilters(), fa = $('factive');
+  if (fa) fa.innerHTML = n ? `<span class="hint-room">${n} filter${n>1?'s':''} on</span>` : '';
+}
+
 /* ---------- charts ---------- */
 const charts = {};
 function mk(id, cfg){ if(charts[id]) charts[id].destroy(); charts[id] = new Chart($(id), cfg); }
@@ -328,8 +375,46 @@ function box(key, items, h){
   b.style.display=''; e.hidden=true; b.style.height=h+'px'; return true;
 }
 const rowsH = n => Math.max(340, n*26+90);
+/* v2.3.2: the numbers of a numeric x axis are repeated above the chart (no title), so a long chart can be read while its
+   bottom axis is off screen. Drawn from the bottom axis's own tick labels, so the two can never disagree. Category
+   axes (model or quant names) and radars have no numbers to repeat. */
+const TOPTICK_H = 18;
+const numericX = chart => { const x = chart.scales && chart.scales.x; return x && x.type!=='category' && x.options.display!==false ? x : null; };
+const topTicks = {id:'topTicks',
+  beforeInit(chart){
+    const lg = chart.legend; if (!lg || lg._topTicks) return;
+    const fit = lg.fit; lg._topTicks = true;                  // room for the numbers: between the legend and the plot
+    lg.fit = function(){ fit.call(this); if (numericX(chart)) this.height += TOPTICK_H; };
+  },
+  afterDraw(chart){
+    const x = numericX(chart), ca = chart.chartArea; if (!x || !ca) return;
+    const c = chart.ctx; c.save(); c.textAlign = 'center'; c.textBaseline = 'bottom';
+    c.font = '12px ' + (Chart.defaults.font.family || 'sans-serif'); c.fillStyle = TH.text;
+    const used = [];                                         // [left, right] of labels already drawn: none may overlap
+    const put = t => {
+      const label = Array.isArray(t.label) ? t.label.join(' ') : t.label; if (label==null || label==='') return;
+      const px = x.getPixelForValue(t.value); if (px < ca.left-1 || px > ca.right+1) return;
+      const w = c.measureText(label).width/2 + 4; if (used.some(([l,r]) => px - w < r && px + w > l)) return;
+      used.push([px - w, px + w]); c.fillText(label, px, ca.top - 5);
+    };
+    x.ticks.filter(t => t.major).forEach(put); x.ticks.filter(t => !t.major).forEach(put);   // log axes: powers of ten first
+    c.restore();
+  }};
+Chart.register(topTicks);
+/* v2.3.2: axis bounds that follow the data (scatter and bubble charts only: a point's position, unlike a bar's length,
+   stays honest on an axis that does not start at 0). Padded by 8% and rounded out to a round step; lo/hi are hard
+   limits (0 for a quantity, 100 for a percentage). */
+function fitAxis(vals, lo, hi){
+  const v = vals.filter(x => x!=null && isFinite(x)); if (!v.length) return {};
+  const a = Math.min(...v), b = Math.max(...v), span = (b - a) || Math.max(1, Math.abs(b)*0.1);
+  const raw = span/6, mag = Math.pow(10, Math.floor(Math.log10(raw))), step = [1,2,5,10].map(k=>k*mag).find(s => s >= raw);
+  let min = Math.floor((a - span*0.08)/step)*step, max = Math.ceil((b + span*0.08)/step)*step;
+  if (lo!=null) min = Math.max(lo, min); if (hi!=null) max = Math.min(hi, max);
+  const r = x => +x.toFixed(6);
+  return {min:r(min), max:r(max)};
+}
 const valueLabels = {id:'valueLabels', afterDatasetsDraw(chart){
-  if (chart.data.datasets.length!==1) return;
+  if (chart.data.datasets.length!==1 || !chart.isDatasetVisible(0)) return;
   const c = chart.ctx, horiz = chart.options.indexAxis === 'y';
   c.save(); c.fillStyle = TH.text; c.font = '12px sans-serif'; c.textBaseline = 'middle';
   c.textAlign = horiz ? 'left' : 'center';
@@ -370,11 +455,11 @@ function renderCharts(OKR){
     const ps = vp.map(m=>m.params_b).filter(p=>p!=null), pmin=Math.min(...ps), pmax=Math.max(...ps);
     const rad = p => p==null ? 8 : (pmax===pmin ? 15 : 5 + (p-pmin)/(pmax-pmin)*20);
     mk('c_vram', {type:'bubble', plugins:[hlPoints],
-      data:{datasets:[{data:vp.map(m=>({x:m.vram_gb,y:m.avg_tps,r:rad(m.params_b),name:m.model,p:m.params_b})),
+      data:{datasets:[{clip:false, data:vp.map(m=>({x:m.vram_gb,y:m.avg_tps,r:rad(m.params_b),name:m.model,p:m.params_b})),
         backgroundColor:vp.map(m=>tpsColor(m.avg_tps)+'b3'), borderColor:vp.map(m=>tpsColor(m.avg_tps))}]},
-      options:{plugins:{legend:{display:false}, tooltip:{callbacks:{label:c=>`${c.raw.name}: ${c.raw.y.toFixed(1)} tok/s, ${c.raw.x.toFixed(1)} GB, ${c.raw.p??'?'}B`}}},
-        scales:{x:{min:Math.floor(Math.min(...vp.map(m=>m.vram_gb))-1), max:Math.ceil(Math.max(...vp.map(m=>m.vram_gb))+1), title:axTitle('VRAM used (GB)')},
-                y:{min:0, max:Math.ceil(Math.max(...vp.map(m=>m.avg_tps))+20), title:axTitle('Avg tok/s')}}}});
+      options:{layout:{padding:{right:14}}, plugins:{legend:{display:false}, tooltip:{callbacks:{label:c=>`${c.raw.name}: ${c.raw.y.toFixed(1)} tok/s, ${c.raw.x.toFixed(1)} GB, ${c.raw.p??'?'}B`}}},
+        scales:{x:{...fitAxis(vp.map(m=>m.vram_gb), 0), title:axTitle('VRAM used (GB)')},
+                y:{...fitAxis(vp.map(m=>m.avg_tps), 0), title:axTitle('Avg tok/s')}}}});
   }
 
   hbar('eff', OKR.filter(m=>m.tps_per_watt!=null).sort((a,b)=>b.tps_per_watt-a.tps_per_watt), m=>m.tps_per_watt, 'tok/s per W');
@@ -442,9 +527,11 @@ function renderCharts(OKR){
 /* ---------- evaluations: accuracy (QA) and pass rate (code) ---------- */
 const evLabels = {id:'evLabels', afterDatasetsDraw(chart){
   const c = chart.ctx; c.save(); c.fillStyle = TH.text; c.font = '11px sans-serif'; c.textBaseline = 'middle'; c.textAlign = 'left';
-  chart.data.datasets.forEach((d,di)=>chart.getDatasetMeta(di).data.forEach((bar,i)=>{
+  chart.data.datasets.forEach((d,di)=>{
+    if (!chart.isDatasetVisible(di)) return;            // v2.3.2: a series hidden in the legend takes its labels with it
+    chart.getDatasetMeta(di).data.forEach((bar,i)=>{
     const v = d.data[i]; if (v==null) return; const hl = isHlLabel(chart,i); c.fillStyle = hl ? HLRED() : TH.text; c.font = (hl?'700 ':'')+'11px sans-serif';
-    c.fillText(v.toFixed(1)+'%', bar.x+5, bar.y); }));
+    c.fillText(v.toFixed(1)+'%', bar.x+5, bar.y); }); });
   c.restore();
 }};
 const evMean = (m, ds) => { const v = ds.map(e=>evPct(m,e)).filter(x=>x!=null); return v.length ? v.reduce((s,x)=>s+x,0)/v.length : -1; };
@@ -478,12 +565,68 @@ function renderEvalCharts(OKR){
   const sp = OKR.filter(m=>m.eval_avg_pct!=null && m.avg_tps!=null);
   if (box('evspeed', sp, 420)){
     mk('c_evspeed', {type:'scatter', plugins:[hlPoints],
-      data:{datasets:[{data:sp.map(m=>pt(m,m.eval_avg_pct,m.avg_tps)), pointRadius:7, pointHoverRadius:10,
+      data:{datasets:[{clip:false, data:sp.map(m=>pt(m,m.eval_avg_pct,m.avg_tps)), pointRadius:7, pointHoverRadius:10,
         backgroundColor:sp.map(m=>tpsColor(m.avg_tps)+'cc'), borderColor:sp.map(m=>tpsColor(m.avg_tps))}]},
-      options:{plugins:{legend:{display:false}, tooltip:{callbacks:{label:c=>`${c.raw.name}: ${c.raw.x.toFixed(1)}% avg score, ${c.raw.y.toFixed(1)} tok/s`}}},
-        scales:{x:{min:0, max:100, title:axTitle('Average score over '+EV.map(e=>e.short).join(', ')+' (%)')}, y:{min:0, title:axTitle('Avg tok/s')}}}});
+      options:{layout:{padding:{right:14}}, plugins:{legend:{display:false}, tooltip:{callbacks:{label:c=>`${c.raw.name}: ${c.raw.x.toFixed(1)}% avg score, ${c.raw.y.toFixed(1)} tok/s`}}},
+        scales:{x:{...fitAxis(sp.map(m=>m.eval_avg_pct), 0, 100), title:axTitle('Average score over '+EV.map(e=>e.short).join(', ')+' (%)')},
+                y:{...fitAxis(sp.map(m=>m.avg_tps), 0), title:axTitle('Avg tok/s')}}}});
   }
 }
+
+/* ---------- v2.3.2: Agent leaderboard (full width, above everything else) ----------
+   Ranked by the Agent score, which is already the combined figure: Agent quality x the speed factor. The quality
+   part is marked on each bar, and the switch ranks by it alone. No new blend is computed here: the order is the
+   one the run itself produced. Models without an Agent score are left out and counted in the note. */
+const LBKEYS = {score:['score_agent','Agent score'], quality:['agent_quality','Agent quality']};
+const lbMark = {id:'lbMark', afterDatasetsDraw(chart){
+  const d = chart.data.datasets[0], other = d && d.other; if (!other || !chart.isDatasetVisible(0)) return;
+  const c = chart.ctx, y = chart.scales.y; c.save();
+  chart.getDatasetMeta(0).data.forEach((bar,i) => {
+    const v = d.data[i], o = other[i], hl = isHlLabel(chart,i);
+    if (o!=null){ const py = y.getPixelForValue(o), w = bar.width/2 + 3;
+      c.strokeStyle = TH.text; c.lineWidth = 2; c.setLineDash([4,3]); c.beginPath(); c.moveTo(bar.x-w, py); c.lineTo(bar.x+w, py); c.stroke(); c.setLineDash([]); }
+    if (v==null) return;
+    c.fillStyle = hl ? HLRED() : TH.text; c.font = (hl?'700 ':'600 ')+(bar.width < 26 ? 10 : 12)+'px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'bottom';
+    c.fillText(v.toFixed(v%1 && bar.width >= 34 ? 1 : 0), bar.x, Math.min(bar.y, o!=null ? y.getPixelForValue(o) : bar.y) - 4);
+  });
+  c.restore();
+}};
+function renderLeaderboard(rows){
+  const sec = $('lbsec'); if (!ALL.some(m => m.score_agent!=null || m.agent_quality!=null)){ sec.hidden = true; return; }
+  sec.hidden = false;
+  const hasQ = ALL.some(m => m.agent_quality!=null), mode = hasQ ? VIEW.lb : 'score';
+  const [k, name] = LBKEYS[mode], [ok, oname] = LBKEYS[mode==='score' ? 'quality' : 'score'];
+  const items = rows.filter(m => m[k]!=null).sort((a,b) => (b[k]-a[k]) || ((b[ok]??-1)-(a[ok]??-1)) || a.model.localeCompare(b.model));
+  const out = rows.filter(m => m.status==='ok' && m[k]==null).length;
+  $('lbtitle').textContent = 'Agent leaderboard' + (EVM ? '' : ' (proxy: no evals in this run)');
+  $('lbmode').innerHTML = hasQ ? `<span class="tipd" data-tip="${esc('<b>Rank by</b><br><b>Agent score</b> = Agent quality &times; the speed factor (speed can take off at most '+Math.round((META.agent_speed_weight||0)*100)+'%). <b>Agent quality</b> = the quality part alone: composite credit &times; retry penalty &times; context factor. Both come from the run; nothing is re-scored here.')}">Rank by</span>` +
+    ['score','quality'].map(v => `<button class="tog${mode===v?' on':''}" data-lb="${v}">${LBKEYS[v][1]}</button>`).join('') : '';
+  $('lbsub').innerHTML = `${items.length} model${items.length===1?'':'s'} ranked by <b>${name}</b> (0&ndash;100, higher is better)` +
+    (hasQ ? `; the dashed line on each bar is its <b>${oname}</b>` : '') + '. Bar colour = score tier.' +
+    (out ? ` <span class="hint-room">${out} model${out>1?'s':''} without ${mode==='score'?'an Agent score':'an Agent quality'} not shown</span> (hover the name in the table for the reason).` : '') +
+    (FUNNEL_FINAL ? ` Funnel final: <b>${esc(cap(FUNNEL_FINAL))}</b>.` : '');
+  if (!box('lb', items, window.innerWidth <= 900 ? 380 : 460)) return;
+  $('b_lb').style.minWidth = (items.length*30 + 90) + 'px';          // a phone scrolls the chart sideways instead of squeezing the bars
+  const colors = items.map(m => colorFor('SCORE', m[k], 'chart') || tpsColor(m.avg_tps));
+  const short = s => s.length > 30 ? s.slice(0,29)+'\u2026' : s;
+  mk('c_lb', {type:'bar', plugins:[lbMark],
+    data:{labels:items.map(m=>m.model), datasets:[{label:name, data:items.map(m=>m[k]), other:hasQ ? items.map(m=>m[ok]??null) : null,
+      backgroundColor:colors, borderColor:colors, borderWidth:1, borderRadius:3, maxBarThickness:64, categoryPercentage:.86, barPercentage:.92}]},
+    options:{layout:{padding:{top:18}}, plugins:{legend:{display:false}, tooltip:{callbacks:{
+        label:c => { const m = items[c.dataIndex]; return [`${name}: ${fmtN(m[k])}`].concat(hasQ && m[ok]!=null ? [`${oname}: ${fmtN(m[ok])}`] : [])
+          .concat(m.agent_composite_pct!=null ? [`Composite: ${m.agent_composite_pct.toFixed(1)}%`] : []).concat(m.avg_tps!=null ? [`${m.avg_tps.toFixed(1)} tok/s`] : [])
+          .concat(m.eval_stage ? [`Funnel stage: ${m.eval_stage}`] : []); }}}},
+      scales:{x:{grid:{display:false}, ticks:{autoSkip:false, maxRotation:60, minRotation:items.length > 6 ? 45 : 0, callback(v){ return short(this.getLabelForValue(v)); },
+                 font:ctx=>({size:11, weight:isHlLabel(ctx.chart,ctx.index)?'700':'400'}), color:ctx=>isHlLabel(ctx.chart,ctx.index)?HLRED():TH.text}},
+              y:{min:0, max:100, title:axTitle(name+' (0\u2013100)')}}}});
+}
+const fmtN = v => v==null ? '\u2013' : Number(v).toFixed(1);
+const cap = s => String(s).charAt(0).toUpperCase() + String(s).slice(1);
+// The funnel's last stage (EVAL_FUNNEL_FINAL, or the last of EVAL_FUNNEL_STAGES); null when the run was not a funnel.
+const FUNNEL = EVM && EVM.funnel ? EVM.funnel : null;
+const FUNNEL_FINAL = FUNNEL ? (FUNNEL.final || (FUNNEL.stages.length ? FUNNEL.stages[FUNNEL.stages.length-1][0] : null)) : null;
+const funnelTip = () => !FUNNEL ? '' : `<b>Funnel final: ${esc(cap(FUNNEL_FINAL))}</b><br>The finalists were asked up to the <code>${esc(FUNNEL_FINAL)}</code> profile (EVAL_FUNNEL_FINAL). Stages: ${FUNNEL.stages.map(s=>esc(s[0])+' ('+(s[1]??'all')+')').join(' &rarr; ')}.<br>${ALL.filter(m=>m.eval_stage===FUNNEL_FINAL).length} of ${ALL.filter(m=>m.eval_stage).length} evaluated models reached it.`;
+const profileHtml = () => !EVM ? '' : `<span class="sub tipd" data-tip="${esc(FUNNEL ? funnelTip() : '<b>Eval profile</b><br>Every model was asked the same '+esc(EVM.profile)+' question set (EVAL_PROFILE).')}">Eval profile <b style="color:var(--text)">${esc(EVM.profile)}</b>${FUNNEL_FINAL ? ` &middot; funnel final <b style="color:var(--text)">${esc(FUNNEL_FINAL)}</b> <span>(${FUNNEL.stages.map(s=>esc(s[0])+' '+(s[1]??'all')).join(' &rarr; ')})</span>` : ''}</span>`;
 
 /* ---------- podium + radar ---------- */
 const maxOf = f => Math.max(1e-9, ...ALLOK.map(m=>f(m)||0));
@@ -541,7 +684,14 @@ function renderQuant(OKR){
 }
 
 /* ---------- comparison table ---------- */
-const FROZEN = {model:260, params_b:80, quant:100, load_s:88, vram_gb:250};   // widths of the frozen columns
+const FROZEN = {model:270, params_b:80, quant:100, load_s:70, vram_gb:208};   // default widths of the frozen columns
+const VRAM_BASE_EXTRA = 38;                          // room for the "+12%" change shown in the VRAM cell with a baseline
+/* v2.3.2: column widths set by dragging a header's right edge (double-click the edge = back to automatic).
+   Remembered in this browser by column key, like the hidden columns. */
+const WSTORE = 'llmbench.colWidths.v1', MINW = 44;
+const colW = (() => { try { const o = JSON.parse(localStorage.getItem(WSTORE) || '{}'); return (o && typeof o==='object') ? o : {}; } catch(e){ return {}; } })();
+const saveW = () => { try { localStorage.setItem(WSTORE, JSON.stringify(colW)); } catch(e){} };
+const widthOf = k => colW[k] ?? (FROZEN[k] ? FROZEN[k] + (k==='vram_gb' && state.base ? VRAM_BASE_EXTRA : 0) : null);
 const rateKey = () => state.rate==='off' ? 'off' : 'peak';
 const ALLCOLS = [
  {k:'model',l:'Model'},
@@ -743,11 +893,12 @@ let VIS = [], FZ = {}, LASTFZ = null;
 function layoutCols(){
   VIS = COLS.filter(c => !userHidden.has(c.k));
   FZ = {}; let left = 0;
-  VIS.forEach(c => { if (FROZEN[c.k]) { FZ[c.k] = {left, w:FROZEN[c.k]}; left += FROZEN[c.k]; } });
+  VIS.forEach(c => { if (FROZEN[c.k]) { const w = widthOf(c.k); FZ[c.k] = {left, w}; left += w; } });
   LASTFZ = [...VIS].reverse().find(c => FZ[c.k])?.k;
 }
 layoutCols();
-const fzStyle = c => FZ[c.k] ? ` style="left:${FZ[c.k].left}px;width:${FZ[c.k].w}px;min-width:${FZ[c.k].w}px;max-width:${FZ[c.k].w}px"` : '';
+const wCss = w => `width:${w}px;min-width:${w}px;max-width:${w}px`;
+const fzStyle = c => FZ[c.k] ? ` style="left:${FZ[c.k].left}px;${wCss(FZ[c.k].w)}"` : (colW[c.k] ? ` style="${wCss(colW[c.k])}"` : '');
 const fzClass = c => FZ[c.k] ? 'fz'+(c.k===LASTFZ?' last':'') : '';
 
 function deltaHtml(m, c, v, base){
@@ -787,7 +938,7 @@ function cell(m, c, base){
   const dl = deltaHtml(m,c,v,base);
   if (c.k==='model'){
     const star = base && base.model===m.model ? '\u2605 ' : '';
-    inner = `<div class="clip${hlc(m.model)}" title="${esc(v)}${m.error?' \u2014 '+esc(m.error):''}${m.score_note?' \u2014 Agent score: '+esc(m.score_note):''}">${star}${esc(v)}${m.status==='skipped'?` <span class="hint-room">SKIPPED: ${esc(m.error)}</span>`:m.status!=='ok'?(String(m.error||'').startsWith('Failed to load')?` <span class="err" title="${esc(m.error)}">\u26A0 ${esc(String(m.error).split(':')[0])}</span>`:` <span class="err">ERR: ${esc(m.error)}</span>`):''}${m.score_note&&m.score_note.startsWith('no eval')?` <span class="err" title="${esc(m.score_note)}">no eval score</span>`:''}${m.score_note&&m.score_note.startsWith('not ranked')?` <span class="hint-room" title="${esc(m.score_note)}">not ranked</span>`:''}${m.score_note&&m.score_note.startsWith('evals skipped')?` <span class="hint-room" title="${esc(m.score_note)}">evals skipped</span>`:''}${m.score_note&&m.score_note.startsWith('no Agent score')?` <span class="err" title="${esc(m.score_note)}">\u26A0 no Agent score</span>`:''}</div>`;
+    inner = `<div class="mrow"><button class="rowx" data-x="${encodeURIComponent(m.model)}" data-tip="Remove this model from the table and every chart (bring it back under Hidden models, below the table)" aria-label="Remove ${esc(v)}">&times;</button><div class="clip${hlc(m.model)}" title="${esc(v)}${m.error?' \u2014 '+esc(m.error):''}${m.score_note?' \u2014 Agent score: '+esc(m.score_note):''}">${star}${esc(v)}${m.status==='skipped'?` <span class="hint-room">SKIPPED: ${esc(m.error)}</span>`:m.status!=='ok'?(String(m.error||'').startsWith('Failed to load')?` <span class="err" title="${esc(m.error)}">\u26A0 ${esc(String(m.error).split(':')[0])}</span>`:` <span class="err">ERR: ${esc(m.error)}</span>`):''}${m.score_note&&m.score_note.startsWith('no eval')?` <span class="err" title="${esc(m.score_note)}">no eval score</span>`:''}${m.score_note&&m.score_note.startsWith('not ranked')?` <span class="hint-room" title="${esc(m.score_note)}">not ranked</span>`:''}${m.score_note&&m.score_note.startsWith('evals skipped')?` <span class="hint-room" title="${esc(m.score_note)}">evals skipped</span>`:''}${m.score_note&&m.score_note.startsWith('no Agent score')?` <span class="err" title="${esc(m.score_note)}">\u26A0 no Agent score</span>`:''}</div></div>`;
   } else if (c.k==='vram_gb' || c.k==='ram_used_gb'){
     if (v==null) inner = '&ndash;';
     else {
@@ -828,6 +979,7 @@ function cell(m, c, base){
 function renderTable(){
   const wrap = $('tblwrap'), sx = wrap.scrollLeft, sy = wrap.scrollTop;
   const base = state.base ? ALL.find(m=>m.model===state.base && m.status==='ok') : null;
+  layoutCols();                                                // widths can change (drag, baseline on/off)
   const col = COLS.find(c=>c.k===state.sk) || COLS[0];
   const rows = [...cur_rows].sort((a,b)=>{
     const x=val(a,col), y=val(b,col);
@@ -835,12 +987,57 @@ function renderTable(){
     return (typeof x==='string' ? x.localeCompare(y) : x-y) * state.sd;
   });
   $('tbl').innerHTML = '<thead><tr>' + VIS.map(c=>{
-      const tip = (c.tip || `<b>${esc(c.l)}</b>`) + '<br><span style="color:var(--mute)">Click to sort &middot; &times; to hide this column</span>';
-      return `<th class="${fzClass(c)}" data-k="${c.k}"${fzStyle(c)} data-tip="${esc(tip)}"><span class="tipd">${c.l}</span>${state.sk===c.k?(state.sd<0?' \u25BC':' \u25B2'):''}<span class="colx" data-hide="${c.k}" data-tip="Hide this column (bring it back with Columns or Show all)">&times;</span></th>`;
+      const tip = (c.tip || `<b>${esc(c.l)}</b>`) + '<br><span style="color:var(--mute)">Click to sort &middot; &times; to hide this column &middot; drag the right edge to resize</span>';
+      return `<th class="${fzClass(c)}" data-k="${c.k}"${fzStyle(c)} data-tip="${esc(tip)}"><span class="tipd">${c.l}</span>${state.sk===c.k?(state.sd<0?' \u25BC':' \u25B2'):''}<span class="colx" data-hide="${c.k}" data-tip="Hide this column (bring it back with Columns or Show all)">&times;</span><span class="colrs" data-rs="${c.k}" data-tip="Drag to resize this column &middot; double-click for automatic width"></span></th>`;
     }).join('') + '</tr></thead><tbody>' +
     rows.map(m=>`<tr data-m="${encodeURIComponent(m.model)}"${base&&base.model===m.model?' class="sel"':''}>${VIS.map(c=>cell(m,c,base)).join('')}</tr>`).join('') + '</tbody>';
   wrap.scrollLeft = sx; wrap.scrollTop = sy;
-  renderToolbar(base);
+  renderToolbar(base); renderHidden();
+}
+/* v2.3.2: models removed with a row's x. They leave the table, the podium and every chart; scores are not re-computed
+   (they were fixed when the run ended), so the remaining models keep their numbers. */
+function renderHidden(){
+  const box = $('hiddenbox'), names = ALL.map(m=>m.model).filter(n => state.excluded.has(n));
+  box.hidden = !names.length; if (!names.length){ box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="toolbar" style="margin-bottom:2px"><b>Hidden models</b> <span class="sub">${names.length} removed from the table and all charts (this page view only; scores are unchanged)</span>` +
+    `<button class="tog" data-restoreall="1">Restore all</button></div>` +
+    names.map(n => `<span class="hm"><span class="mono">${esc(n)}</span><button class="tog" data-restore="${encodeURIComponent(n)}">Restore</button></span>`).join('');
+}
+function excludeModel(name){
+  state.excluded.add(name); if (state.base===name) state.base = null;
+  TIPBOX.style.display = 'none'; render();
+}
+/* Column resize: live while dragging (styles on the column's cells, and the sticky offsets of the frozen columns
+   after it), saved on release. Pointer events, so it also works by touch. */
+function applyWidths(){
+  const rows = $('tbl').rows; let left = 0;
+  VIS.forEach((c,i) => {
+    const fz = !!FROZEN[c.k], w = widthOf(c.k); if (!fz && w==null) return;
+    for (const r of rows){ const el = r.cells[i]; if (!el) continue;
+      el.style.width = el.style.minWidth = el.style.maxWidth = w + 'px'; if (fz) el.style.left = left + 'px'; }
+    if (fz){ FZ[c.k] = {left, w}; left += w; }
+  });
+}
+let RESIZED_AT = 0;
+function bindResize(){
+  const wrap = $('tblwrap'); let drag = null, raf = 0;
+  wrap.addEventListener('pointerdown', e => {
+    const h = e.target.closest('.colrs'); if (!h) return;
+    e.preventDefault(); e.stopPropagation(); TIPBOX.style.display = 'none';
+    const th = h.closest('th'); drag = {k:h.dataset.rs, x:e.clientX, w:th.getBoundingClientRect().width, h};
+    h.classList.add('drag'); document.body.classList.add('colresizing');
+    try { h.setPointerCapture(e.pointerId); } catch(err){}
+  });
+  wrap.addEventListener('pointermove', e => {
+    if (!drag) return;
+    colW[drag.k] = Math.max(MINW, Math.round(drag.w + e.clientX - drag.x));
+    if (!raf) raf = requestAnimationFrame(() => { raf = 0; applyWidths(); });
+  });
+  const end = () => { if (!drag) return; drag.h.classList.remove('drag'); document.body.classList.remove('colresizing');
+    drag = null; RESIZED_AT = Date.now(); saveW(); renderTable(); };
+  wrap.addEventListener('pointerup', end); wrap.addEventListener('pointercancel', end);
+  wrap.addEventListener('dblclick', e => { const h = e.target.closest('.colrs'); if (!h) return;
+    delete colW[h.dataset.rs]; RESIZED_AT = Date.now(); saveW(); renderTable(); });
 }
 function renderToolbar(base){
   const rate = (META.has_cost && META.rate_peak!==META.rate_off)
@@ -850,8 +1047,9 @@ function renderToolbar(base){
     ? `<span><span class="good">\u2605 Baseline:</span> <b>${esc(base.model)}</b> &mdash; other rows show change vs this model (green = better, red = worse). <button class="tog" data-clear="1">Clear baseline</button> <span class="sub">(shown in red everywhere)</span></span>`
     : '<span class="sub">Click a column header to sort (click again to reverse). Click a model name anywhere (table row, winner cards, chart labels or dots) to highlight it in red everywhere and use it as the 100% baseline; click it again, or press Reset, to clear.</span>';
   const hid = NODATA.length ? `<span class="sub">Not shown (no data this run): ${NODATA.join(', ')}</span>` : '';
+  const prof = profileHtml();
   const sortHidden = state.sk!=='model' && userHidden.has(state.sk) ? `<span class="hint-room">Sorted by a hidden column: ${esc((COLS.find(c=>c.k===state.sk)||{}).l||state.sk)}</span>` : '';
-  $('toolbar').innerHTML = bl + rate + sortHidden + hid;
+  $('toolbar').innerHTML = bl + rate + prof + sortHidden + hid;
   renderColPanel();
 }
 
@@ -861,7 +1059,8 @@ function renderColPanel(){
   const n = COLS.filter(c=>!userHidden.has(c.k)).length;
   const groups = GROUPS.map(g=>[g, COLS.filter(c=>c.g===g && c.k!=='model')]).filter(([,cs])=>cs.length);
   p.innerHTML = `<summary><b>Columns</b> <span class="sub">${n} of ${COLS.length} shown${userHidden.size?' &middot; your choice is remembered in this browser':''}</span>` +
-      `<button class="tog" data-colall="1"${userHidden.size?'':' disabled'}>Show all columns</button></summary>` +
+      `<button class="tog" data-colall="1"${userHidden.size?'':' disabled'}>Show all columns</button>` +
+      `<button class="tog" data-colwreset="1"${Object.keys(colW).length?'':' disabled'} data-tip="Forget the column widths you set by dragging">Reset column widths</button></summary>` +
     `<div class="sub" style="margin-top:6px">Click a column to hide or show it, or a group name to hide / show the whole group. <b>Only this group</b> keeps the Model columns (name, params, quant, ...) plus that group. You can also hover a header and click its &times;.</div>` +
     groups.map(([g,cs])=>{
       const shown = cs.filter(c=>!userHidden.has(c.k)).length, st = shown===cs.length ? 'on' : shown ? 'on part' : 'off';
@@ -878,6 +1077,7 @@ function bindColPanel(){
     e.preventDefault();                                          // buttons in <summary> must not toggle the panel
     TIPBOX.style.display = 'none';
     if (b.dataset.colall){ userHidden.clear(); saveHidden(); layoutCols(); return renderTable(); }
+    if (b.dataset.colwreset){ Object.keys(colW).forEach(k => delete colW[k]); saveW(); return renderTable(); }
     if (b.dataset.colk) return setHidden([b.dataset.colk], !userHidden.has(b.dataset.colk));
     const ofGroup = g => COLS.filter(c=>c.g===g && c.k!=='model').map(c=>c.k);
     if (b.dataset.colgrp){ const ks = ofGroup(b.dataset.colgrp); return setHidden(ks, ks.some(k=>!userHidden.has(k))); }
@@ -887,6 +1087,9 @@ function bindColPanel(){
 }
 function bindTable(){
   $('tblwrap').onclick = e => {
+    if (e.target.closest('.colrs') || Date.now() - RESIZED_AT < 350) return;       // the end of a resize drag is not a sort click
+    const rx = e.target.closest('[data-x]');
+    if (rx) return excludeModel(decodeURIComponent(rx.dataset.x));
     const hx = e.target.closest('[data-hide]');
     if (hx){ TIPBOX.style.display = 'none'; return setHidden([hx.dataset.hide], true); }
     const th = e.target.closest('th');
@@ -894,6 +1097,15 @@ function bindTable(){
     const tr = e.target.closest('tr[data-m]');
     if (tr) toggleModel(decodeURIComponent(tr.dataset.m));
   };
+  $('hiddenbox').onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.restoreall) state.excluded.clear();
+    else if (b.dataset.restore) state.excluded.delete(decodeURIComponent(b.dataset.restore));
+    else return;
+    render();
+  };
+  $('lbmode').onclick = e => { const b = e.target.closest('button[data-lb]'); if (!b) return; VIEW.lb = b.dataset.lb; saveView(); render(); };
+  bindResize();
   $('toolbar').onclick = e => {
     const b = e.target.closest('button'); if(!b) return;
     if (b.dataset.clear){ state.base = null; return refreshHighlight(); }
@@ -923,6 +1135,10 @@ function modelAtChart(chart, ev){
     if (!ca || y<ca.top || y>ca.bottom || x>ca.right) return null;
     const i = Math.round(chart.scales.y.getValueForPixel(y)); return chart.data.labels[i] ?? null;
   }
+  if (t==='bar' && chart.canvas.id==='c_lb'){               // vertical bars: the bar or its name under the axis
+    if (!ca || x<ca.left || x>ca.right || y<ca.top) return null;
+    const i = Math.round(chart.scales.x.getValueForPixel(x)); return chart.data.labels[i] ?? null;
+  }
   if (t==='scatter' || t==='bubble'){
     const els = chart.getElementsAtEventForMode(ev, 'nearest', {intersect:true}, true); if (!els.length) return null;
     return chart.data.datasets[els[0].datasetIndex].data[els[0].index].name ?? null;
@@ -940,7 +1156,9 @@ let cur_rows = [];
 function render(){
   cur_rows = ALL.filter(pass);
   const OKR = cur_rows.filter(isOK);
-  if ($('fcount')) $('fcount').textContent = `Showing ${cur_rows.length} of ${ALL.length} models`;
+  if ($('fcount')) $('fcount').textContent = `Showing ${cur_rows.length} of ${ALL.length} models` + (state.excluded.size ? ` (${state.excluded.size} hidden by hand)` : '');
+  applyFmin();
+  renderLeaderboard(cur_rows.filter(m=>m.status==='ok'));
   renderPodium(OKR); renderCharts(OKR); renderEvalCharts(cur_rows.filter(m=>m.status==='ok')); renderQuant(OKR); renderTable(); updateChip();
   renderTime(cur_rows.filter(m=>m.status==='ok'));
 }
@@ -992,17 +1210,23 @@ function testLinks(){
     return esc(t);
   }).join(', ');
 }
-$('hdr').innerHTML = `${META.count} models` + (META.tests.length ? ` &middot; <b style="color:var(--text)">Tests:</b> ${testLinks()}${META.evals?` (profile ${esc(META.evals.profile)})`:''}` : '') +
+$('hdr').innerHTML = `${META.count} models` + (META.tests.length ? ` &middot; <b style="color:var(--text)">Tests</b>${FUNNEL_FINAL?` <span class="chip tipd" data-tip="${esc(funnelTip())}">Funnel final: ${esc(cap(FUNNEL_FINAL))}</span>`:''}<b style="color:var(--text)">:</b> ${testLinks()}${META.evals?` (profile ${esc(META.evals.profile)})`:''}` : '') +
   ` &middot; ${esc(META.generated)} &middot; ${esc(META.backend)}<br>` +
   (META.compare ? `<b style="color:var(--amber)">Combined runs (--compare):</b> ${META.compare.runs.map(r=>esc(r.label)+' ('+r.models+' models)').join(' + ')}. Agent scores are re-computed over all models together; the Run filter only hides rows.${META.compare.warnings.length?' <span class="tipd" data-tip="'+esc(META.compare.warnings.map(esc).join('<br>'))+'">'+META.compare.warnings.length+' note(s)</span>':''}<br>` : '') +
   (META.partial ? '<b style="color:var(--amber)">Speed test only &mdash; the evaluations had not finished when this dashboard was saved. It is replaced automatically when they complete.</b><br>' : '') +
   (!META.has_speed ? 'Evaluations only &mdash; speed and hardware telemetry were not measured in this run.' : `<b style="color:var(--text)">Host:</b> ${META.hardware ? esc(META.hardware) : 'VRAM limit '+META.vram_limit+' GB'} &middot; ` +
   `<b style="color:var(--text)">Power:</b> GPU via ${esc(META.gpu_source||'nvidia-smi')} (${META.poll_ms} ms), CPU via ${esc(META.cpu_source)}` +
   (IDLE!=null ? ` &middot; <b style="color:var(--text)">Idle RAM baseline:</b> ${IDLE.toFixed(1)} GB` : ''));
-const CH = [['tps','Avg generation speed (tok/s)'],['vram','VRAM vs speed (bubble = params)'],['eff','Power efficiency (tok/s per W, GPU + CPU)'],
-  ['jt','Energy per token (J, lower is better)'],['ttft','Prompt processing time, short prompt (ms, lower is better)'],['lat','Latency vs throughput (top-left is best)'],
-  ['pg','Prefill vs generation speed (tok/s, log scale)'],['pwr','Active vs idle GPU power (W)'],['mem','Memory footprint: VRAM vs inference-server RAM (GB)'],['quant','Avg TPS by quantization']]
-  .concat(PFL.length ? [['pctx','Prefill speed by prompt length (tok/s) \u2014 offloaded MoEs slow down most']] : []);
+/* v2.3.2 order, two charts to a row on a wide screen (the Agent leaderboard sits above, full width):
+   1 prefill vs generation | memory footprint   2 avg speed | VRAM vs speed   3 GPU power | prefill by prompt length,
+   then the rest. Without prefill-by-length tests the third row takes the next chart instead. */
+const FITNOTE = ' <span class="sub" style="font-weight:400">&middot; axes fit the data (not from 0)</span>';
+const CH = [['pg','Prefill vs generation speed (tok/s, log scale)'],['mem','Memory footprint: VRAM vs inference-server RAM (GB)'],
+  ['tps','Avg generation speed (tok/s)'],['vram','VRAM vs speed (bubble = params)'+FITNOTE],
+  ['pwr','Active vs idle GPU power (W)']]
+  .concat(PFL.length ? [['pctx','Prefill speed by prompt length (tok/s) \u2014 offloaded MoEs slow down most']] : [])
+  .concat([['eff','Power efficiency (tok/s per W, GPU + CPU)'],['jt','Energy per token (J, lower is better)'],
+  ['ttft','Prompt processing time, short prompt (ms, lower is better)'],['lat','Latency vs throughput (top-left is best)'],['quant','Avg TPS by quantization']]);
 const chartCard = ([id,t])=>`<div class="card"><h3>${t}</h3><div class="chartbox" id="b_${id}"><canvas id="c_${id}"></canvas></div><p class="sub" id="e_${id}" hidden>No data for this chart (telemetry unavailable, or filtered out).</p></div>`;
 $('charts').innerHTML = CH.map(chartCard).join('');
 $('timecharts').innerHTML = chartCard(['time','Time per model and phase (minutes)']);
@@ -1025,7 +1249,7 @@ if (EV.length || LCL.length){
   $('evsub').innerHTML = (agentNote ? `<div class="card" style="margin:0 0 8px;border-color:var(--amber)"><b style="color:var(--amber)">\u26A0 Agent score:</b> ${esc(agentNote)}. The composite this run: ${esc(AGENT_BASIS.split('; ')[0])}.</div>` : '') + (EV.length ? `${EV.map(e=>`<b class="tipd" data-tip="${esc('<b>'+esc(e.label)+'</b><br>'+esc(e.desc||''))}">${safeUrl(e.url)?`<a class="tlink" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">${esc(e.label)}</a>`:esc(e.label)}</b> (${e.rows??'?'}${e.available?' of '+e.available:''} rows)`).join(' &middot; ')} &mdash; Test profile <b>${esc(EVM.profile)}</b>${mo}. Only the tests and models that were actually run are shown.` : 'Long-context retrieval only.')
     + (MOE && MOE.rough ? `<div class="card" style="margin-top:8px;border-color:var(--amber)"><b style="color:var(--amber)">\u26A0 Rough guide only.</b> The <code>${esc(EVM.profile)}</code> profile asks so few questions that gaps smaller than the margin above are noise. Use it to drop clear losers, then re-run the finalists with <code>EVAL_PROFILE=standard</code> (&plusmn;10) or <code>thorough</code> (&plusmn;7) before choosing.</div>` : '')
     + (ALL.some(m=>(m.eval_retry_pct||0)>RETRY_WARN) ? `<div class="sub" style="margin-top:6px">\u26A0 = more than ${RETRY_WARN}% of a model's questions needed the No-Thinking retry. That usually points to a chat-template, <code>--jinja</code> / reasoning-format or sampling problem rather than the model itself; check it before judging the scores.</div>` : '');
-  $('evcharts').innerHTML = [...EVKINDS.map(([k,t])=>['ev'+k,t]), ...(LCL.length?[['evlong',`Long-context retrieval (${LC.keys} keys per prompt, KV &ge; ${esc(LC.kv_min)})`]]:[]), ['evspeed','Quality vs speed (top-right is best)']].map(chartCard).join('');
+  $('evcharts').innerHTML = [...EVKINDS.map(([k,t])=>['ev'+k,t]), ...(LCL.length?[['evlong',`Long-context retrieval (${LC.keys} keys per prompt, KV &ge; ${esc(LC.kv_min)})`]]:[]), ['evspeed','Quality vs speed (top-right is best)'+FITNOTE]].map(chartCard).join('');
 }
 if (META.strata_details && META.strata_details.length)
   $('sdetails').innerHTML = '<details class="card"><summary><b>Strata details</b> <span class="sub">(read from its API; click to expand)</span></summary>' +
@@ -1095,8 +1319,11 @@ $('meth').innerHTML = `<ul>
  <li><b>Goldilocks:</b> ${META.goldilocks_mode==='log'?'ln(params&nbsp;B)':'params&nbsp;B'} &times; avg TPS, VRAM &le; ${META.max_vram_pct}% of the GPU. Params come from the GGUF header when it is readable (else the filename) and are <i>total</i> (not active) parameters. <b>Radar:</b> Speed, Efficiency and Reasoning (params) are relative to the best model in this run; VRAM economy = 100% &minus; VRAM%.</li>
  <li><b>Podium:</b> the top 3 in each category, among eligible models: <b>Overall balance</b> (ranked by Goldilocks), <b>Chat driver</b> (Chat score), <b>Agentic reasoner</b> (Agent score) and <b>VRAM sweet spot</b> (Sweet-spot score). The same model can appear in more than one row.</li>
  <li><b>VRAM sweet spot:</b> <code>Agent score &times; VRAM fit</code>. <b>VRAM fit</b> is 100% when the model uses ${META.vram_sweet_low}&ndash;${META.vram_sweet_high}% of the GPU, is ${Math.round(META.underuse_floor*100)}&ndash;100% below that (once a model fits, quality and speed decide, not how full the GPU is; the tuning hint still says when a bigger quant or lower <code>--n-cpu-moe</code> would fit), drops to 50% at ${META.vram_sweet_max}% and to 0 at 100% (no headroom for context or other apps). <b>VRAM tuning hint</b> in the table says which way to move. Set the band with <code>VRAM_SWEET_LOW / HIGH / MAX</code> in .env.</li>
+ <li><b>Agent leaderboard</b> (top of the page): models ranked by the <b>Agent score</b> (= Agent quality &times; the speed factor), with each model's <b>Agent quality</b> marked by a dashed line; the switch ranks by quality alone. Both are the run's own figures: the chart computes nothing new.</li>
+ <li><b>Hidden models:</b> the &times; in front of a model name removes it from the table, the winners and every chart; <b>Hidden models</b> under the table brings it back. It is a view setting for this page only: scores were fixed when the run ended and do not change when a model is hidden.</li>
+ <li><b>Chart axes:</b> a numeric bottom axis is repeated above the chart. The two scatter charts (VRAM vs speed, Quality vs speed) fit their axes to the data instead of starting at 0, so a small gap looks larger there: read the numbers. Bar charts always start at 0.</li>
  <li><b>Highlight:</b> click a model name anywhere (table row, winner cards, quantization table, chart labels, bars or dots). It turns red everywhere and becomes the table baseline; click it again or press Reset / Clear to remove it.</li>
- <li><b>Table columns:</b> hover a header for what it measures; click it to sort. Hide columns with the &times; in a header or the <b>Columns</b> panel (single columns, whole groups, or <i>Only this group</i>); <b>Show all columns</b> brings the full table back. The choice is remembered in this browser for later dashboards. Test names in the page header link to the dataset each one was loaded from.</li>
+ <li><b>Table columns:</b> hover a header for what it measures; click it to sort. Drag a header's right edge to resize a column (double-click it for automatic width); the header wraps, the rows stay on one line. Hide columns with the &times; in a header or the <b>Columns</b> panel (single columns, whole groups, or <i>Only this group</i>); <b>Show all columns</b> brings the full table back. The choice is remembered in this browser for later dashboards. Test names in the page header link to the dataset each one was loaded from.</li>
  <li><b>Chat score:</b> <code>avg TPS &times; (100 &minus; VRAM%)</code>. Rewards a fast model that also leaves GPU memory free (for context or other apps).</li>
  <li><b>Agent score (0&ndash;100, quality first, v2.3):</b> for an agentic reasoner (many tool calls and turns, long context). <code>score = credit &times; retry keep &times; context factor &times; (1 &minus; ${META.agent_speed_weight} + ${META.agent_speed_weight} &times; speed)</code>.
    <b>1. Composite quality.</b> ${META.evals?`Evals (every dataset except tool calling) / tool calling / long-context retrieval, weighted ${esc(AGENT_BASIS || ('evals '+Math.round((1-(META.agent_tool_weight||0.3)-META.agent_longctx_weight)*100)+'% / tools '+Math.round((META.agent_tool_weight||0.3)*100)+'% / long-ctx '+Math.round(META.agent_longctx_weight*100)+'%'))} (a part the run does not have gives its weight to the evals). Long-ctx counts only the lengths <i>every</i> ranked model ran, so a 90k model that skipped the 128k test is compared on the same questions as the rest; the context factor carries the context preference instead. A ranked model with no long-ctx result at all leaves long-ctx out for everyone, with a note. The composite is compared with the best of the run: anything within its noise (one standard error of the best composite, from each part's question count: tool calling has only 32 cases) counts as a tie at 100; below that the credit falls steeply (quadratic, 0 at ${META.agent_acc_span}&nbsp;points under the tie zone).`:`No evaluations ran, so a <b>proxy</b> stands in: dense-equivalent size (a MoE counts as &radic;(total &times; active)) on a log scale, times a mild penalty below ~4.5 bits per weight, relative to the best model of the run. It is a rough guide: run evals to rank for real.`}

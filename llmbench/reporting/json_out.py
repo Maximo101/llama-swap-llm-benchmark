@@ -41,7 +41,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..common import SCHEMA_VERSION, __version__
-from ..config import EVAL_SPECS, funnel_stages
+from ..config import AUTO_BUDGET, EVAL_SPECS, funnel_stages, think_budget_value
 from .margin import margin_of_error
 
 _SECRETS = {"api_key", "strata_api_key", "ha_token"}
@@ -175,7 +175,10 @@ def build_report(results, cfg, info):
                         "server_sampling_models": cfg.eval_server_sampling or None,
                         "concurrency": cfg.eval_concurrency,
                         "http_backend": cfg.eval_http_backend, "code_sandbox": cfg.eval_sandbox_resolved or None,
-                        "stream": cfg.eval_stream, "think_budget": cfg.eval_think_budget or None,
+                        "stream": cfg.eval_stream, "think_budget": think_budget_value(cfg.eval_think_budget),
+                        "think_budget_pct": cfg.eval_think_budget_pct if cfg.eval_think_budget == AUTO_BUDGET else None,
+                        "think_budget_min": cfg.eval_think_budget_min if cfg.eval_think_budget == AUTO_BUDGET else None,
+                        "think_budget_max_pct": cfg.eval_think_budget_max_pct if cfg.eval_think_budget == AUTO_BUDGET else None,
                         "loop_abort": cfg.eval_loop_abort, "salvage": cfg.eval_salvage,
                         "think_budgets": cfg.eval_think_budgets or None, "budget_forcing": cfg.eval_budget_forcing,
                         "sq_basis": next((r.get("eval_sec_basis") for r in results if r.get("eval_sec_basis")), None),

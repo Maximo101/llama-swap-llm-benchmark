@@ -6,7 +6,8 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from ..config import EVAL_SPECS, LONGCTX_SLOTS, PREFILL_SLOTS, SCRIPT_DIR, funnel_stages, temperature_label
+from ..config import (AUTO_BUDGET, EVAL_SPECS, LONGCTX_SLOTS, PREFILL_SLOTS, SCRIPT_DIR, funnel_stages, temperature_label,
+                      think_budget_value)
 from ..evals.runner import tokens_label
 from .colours import scales_meta
 from .margin import margin_of_error
@@ -66,7 +67,11 @@ def render_dashboard(results, cfg, path, cpu_source="none", hardware="", partial
                      "max_tokens_code": tokens_label(cfg.eval_max_tokens_code), "code_sandbox": cfg.eval_sandbox_resolved or "subprocess",
                      "code_timeout": cfg.eval_code_timeout, "lcb_max_tests": cfg.eval_lcb_max_tests,
                      "retry_nothink": bool(cfg.eval_retry_on_length), "concurrency": cfg.eval_concurrency,
-                     "stream": cfg.eval_stream, "think_budget": cfg.eval_think_budget, "loop_abort": cfg.eval_loop_abort,
+                     "stream": cfg.eval_stream, "think_budget": think_budget_value(cfg.eval_think_budget),
+                     "think_budget_pct": cfg.eval_think_budget_pct if cfg.eval_think_budget == AUTO_BUDGET else None,
+                     "think_budget_min": cfg.eval_think_budget_min if cfg.eval_think_budget == AUTO_BUDGET else None,
+                     "think_budget_max_pct": cfg.eval_think_budget_max_pct if cfg.eval_think_budget == AUTO_BUDGET else None,
+                     "loop_abort": cfg.eval_loop_abort,
                      "salvage": cfg.eval_salvage} if evs else None
     if meta["evals"] is not None:
         meta["evals"]["margin"] = margin_of_error(cfg, results)

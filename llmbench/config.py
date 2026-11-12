@@ -79,17 +79,26 @@ def _env_tokens(name):
     return v if v > 0 else None
 
 
+AUTO_BUDGET = -1            # EVAL_THINK_BUDGET=auto: a share (EVAL_THINK_BUDGET_PCT) of each model's own context
+THINK_AUTO_FALLBACK = 16384  # the budget of "auto" when a model's context size is unknown
+THINK_AUTO_FLOOR = 4096      # EVAL_THINK_BUDGET_MIN default: the least "auto" gives a model (short reasoning is never cut off)
+THINK_AUTO_MAX_PCT = 60.0    # EVAL_THINK_BUDGET_MAX_PCT default: "auto" never takes more than this share of the context
+
+
 def _env_budget(name, default):
-    """Thinking budget in tokens: a number, or 0 / off / none / unlimited for no limit."""
+    """Thinking budget in tokens: a number, 0 / off / none / unlimited for no limit, or auto (a share of the model's
+    context). A default of "auto" means AUTO_BUDGET."""
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
-        return default
+        return AUTO_BUDGET if default == "auto" else default
+    if raw.strip().lower() in ("auto", "dynamic"):
+        return AUTO_BUDGET
     if raw.strip().lower() in ("off", "none", "unlimited", "false", "no"):
         return 0
     try:
         return max(0, int(raw.strip()))
     except ValueError:
-        sys.exit(f"[config] Invalid value for {name}: {raw!r} (a number of tokens, or 0 for no limit)")
+        sys.exit(f"[config] Invalid value for {name}: {raw!r} (a number of tokens, 0 for no limit, or auto)")
 
 
 FALLBACK_TOKENS = 4096      # max_tokens used when the model's context size or the prompt size is unknown
@@ -377,6 +386,9 @@ class Config:
     eval_max_consec_errors: int = 5
     server_wait: float = 600.0              # SERVER_WAIT_SECONDS: how long to wait for llama-swap to come back (0 = off)
     notify_url: str | None = None           # NOTIFY_URL: POST a JSON summary there when a run ends
+    max_gpu_temp: float = 0.0               # MAX_GPU_TEMP: pause the run at this GPU temperature in C (0 = off)
+    gpu_temp_resume_delta: float = 10.0     # GPU_TEMP_RESUME_DELTA: carry on at MAX_GPU_TEMP minus this
+    gpu_temp_max_restarts: int = 3          # GPU_TEMP_MAX_RESTARTS: end the run when one test line trips the limit this often
     agent_sec_ref: float = 60.0             # AGENT_SEC_REF: s/q at which the time factor of the Agent score is halved
     agent_acc_tol: float | None = None      # AGENT_ACC_TOL: points below the best eval score still counted as a tie (None = 1 std. error)
     agent_acc_span: float = 40.0            # AGENT_ACC_SPAN: points below the tie zone at which the accuracy credit reaches 0
@@ -401,7 +413,10 @@ class Config:
     # --- v2.1: streamed evaluations ---
     eval_log_interval: float = 300.0        # EVAL_LOG_INTERVAL: seconds between progress lines when output is a log/pipe (0 = off)
     eval_stream: bool = True                # EVAL_STREAM: read eval replies as a stream (enables everything below)
-    eval_think_budget: int = 16384          # EVAL_THINK_BUDGET: max thinking tokens per question (0 = unlimited)
+    eval_think_budget: int = AUTO_BUDGET    # EVAL_THINK_BUDGET: max thinking tokens per question (0 = unlimited, auto = a share of each model's context)
+    eval_think_budget_pct: float = 25.0     # EVAL_THINK_BUDGET_PCT: the share of the model's context that "auto" gives to thinking
+    eval_think_budget_min: int = THINK_AUTO_FLOOR           # EVAL_THINK_BUDGET_MIN: floor of "auto", in tokens
+    eval_think_budget_max_pct: float = THINK_AUTO_MAX_PCT   # EVAL_THINK_BUDGET_MAX_PCT: ceiling of "auto", as a share of the context
     eval_loop_abort: bool = True            # EVAL_LOOP_ABORT: stop a reply that falls into a repetition loop
     eval_salvage: bool = True               # EVAL_SALVAGE: grade the visible answer of a stopped reply if it has one
     # --- v2.2: what decides VRAM, deployed context, decisive evals, budgets ---
@@ -500,10 +515,62 @@ def _think_budgets():
     return out
 
 
-def think_budget(cfg, key):
-    """Thinking budget for one dataset: its EVAL_THINK_BUDGET_<DATASET> override, else EVAL_THINK_BUDGET."""
+def auto_think_budget(cfg, ctx):
+    """EVAL_THINK_BUDGET=auto: EVAL_THINK_BUDGET_PCT of the model's context (131,072 at 25% is 32,768; 65,536 is 16,384),
+    raised to the floor EVAL_THINK_BUDGET_MIN (default 4,096) and then held to the ceiling EVAL_THINK_BUDGET_MAX_PCT of the
+    context (default 60%), so a small context always leaves room for the answer. Rounded down to a multiple of 1,024.
+    An unknown context gives THINK_AUTO_FALLBACK."""
+    try:
+        ctx = int(ctx)
+    except (TypeError, ValueError):
+        ctx = 0
+    if ctx <= 0:
+        return THINK_AUTO_FALLBACK
+    floor = getattr(cfg, "eval_think_budget_min", THINK_AUTO_FLOOR)
+    ceil = ctx * getattr(cfg, "eval_think_budget_max_pct", THINK_AUTO_MAX_PCT) / 100
+    b = min(max(floor, ctx * cfg.eval_think_budget_pct / 100), ceil)
+    return max(1, int(b) // 1024 * 1024 if b >= 1024 else int(b))
+
+
+def think_budget_basis(cfg, ctx):
+    """How "auto" got its number, for the log: '25% of 131,072 ctx', 'floor 4,096 (25% of 8,192 ctx is lower)' or
+    'ceiling 60% of 4,096 ctx (25% ... )'."""
+    try:
+        ctx = int(ctx)
+    except (TypeError, ValueError):
+        ctx = 0
+    if ctx <= 0:
+        return "context unknown: the fallback"
+    pct = cfg.eval_think_budget_pct
+    share = ctx * pct / 100
+    floor = getattr(cfg, "eval_think_budget_min", THINK_AUTO_FLOOR)
+    mx = getattr(cfg, "eval_think_budget_max_pct", THINK_AUTO_MAX_PCT)
+    if min(max(floor, share), ctx * mx / 100) < max(floor, share):
+        return f"ceiling {mx:g}% of {ctx:,} ctx"
+    if share < floor:
+        return f"floor {floor:,}; {pct:g}% of {ctx:,} ctx is lower"
+    return f"{pct:g}% of {ctx:,} ctx"
+
+
+def think_budget(cfg, key, ctx=None):
+    """Thinking budget for one dataset and one model: the dataset's EVAL_THINK_BUDGET_<DATASET> override, else
+    EVAL_THINK_BUDGET; `auto` is worked out from the model's context `ctx`. 0 = unlimited."""
     b = (cfg.eval_think_budgets or {}).get(key)
-    return cfg.eval_think_budget if b is None else b
+    b = cfg.eval_think_budget if b is None else b
+    return auto_think_budget(cfg, ctx) if b == AUTO_BUDGET else b
+
+
+def think_budget_label(v, cfg=None):
+    """For logs: 'auto (25% of each model's context)', 'unlimited' or '16,384 tokens'."""
+    if v == AUTO_BUDGET:
+        pct = getattr(cfg, "eval_think_budget_pct", 25.0) if cfg is not None else 25.0
+        return f"auto ({pct:g}% of each model's context)"
+    return f"{v:,} tokens" if v else "unlimited"
+
+
+def think_budget_value(v):
+    """For the JSON export and the dashboard: 'auto', a number, or None for unlimited."""
+    return "auto" if v == AUTO_BUDGET else (v or None)
 
 
 def _eval_extra_body():
@@ -610,6 +677,24 @@ def load_config() -> Config:
         dash_families = parse_families(_env("DASH_FAMILIES", ""))
     except ValueError as e:
         sys.exit(f"[config] {e}")
+    think_pct = _env("EVAL_THINK_BUDGET_PCT", 25.0, float)
+    if not 5 <= think_pct <= 90:
+        sys.exit(f"[config] EVAL_THINK_BUDGET_PCT must be between 5 and 90 (percent of the model's context; got {think_pct:g})")
+    think_min = _env("EVAL_THINK_BUDGET_MIN", 4096, int)
+    if think_min < 256:
+        sys.exit(f"[config] EVAL_THINK_BUDGET_MIN must be at least 256 tokens (got {think_min})")
+    think_max_pct = _env("EVAL_THINK_BUDGET_MAX_PCT", 60.0, float)
+    if not 10 <= think_max_pct <= 90:
+        sys.exit(f"[config] EVAL_THINK_BUDGET_MAX_PCT must be between 10 and 90 (percent of the model's context; got {think_max_pct:g})")
+    if think_pct > think_max_pct:
+        sys.exit(f"[config] EVAL_THINK_BUDGET_PCT ({think_pct:g}) cannot be above EVAL_THINK_BUDGET_MAX_PCT ({think_max_pct:g})")
+    max_gpu_temp = _env("MAX_GPU_TEMP", 0.0, float)
+    if max_gpu_temp != 0 and not 40 <= max_gpu_temp <= 110:
+        sys.exit(f"[config] MAX_GPU_TEMP must be 0 (off) or a temperature in C between 40 and 110 (got {max_gpu_temp:g})")
+    resume_delta = _env("GPU_TEMP_RESUME_DELTA", 10.0, float)
+    if max_gpu_temp and not 1 <= resume_delta < max_gpu_temp - 20:
+        sys.exit(f"[config] GPU_TEMP_RESUME_DELTA must be at least 1 and leave a resume temperature of 20 C or more "
+                 f"(MAX_GPU_TEMP={max_gpu_temp:g}, got {resume_delta:g})")
     depth_cap, depth_auto = _prefill_depth(_env("PREFILL_DEPTH", "auto"))
     return Config(
         base_url=(_env("LLAMA_SWAP_URL", "http://localhost:8080")).rstrip("/"),
@@ -671,6 +756,8 @@ def load_config() -> Config:
         eval_timeout=_env("EVAL_TIMEOUT", 600.0, float),
         server_wait=max(0.0, _env("SERVER_WAIT_SECONDS", 600.0, float)),
         notify_url=(_env("NOTIFY_URL", "") or "").strip() or None,
+        max_gpu_temp=max_gpu_temp, gpu_temp_resume_delta=resume_delta,
+        gpu_temp_max_restarts=max(0, _env("GPU_TEMP_MAX_RESTARTS", 3, int)),
         eval_extra_body=_eval_extra_body(),
         eval_cache_dir=_eval_cache_dir(),
         eval_code_sandbox=sandbox,
@@ -697,7 +784,10 @@ def load_config() -> Config:
         json_enabled=_env("JSON", True, bool),
         eval_log_interval=_env("EVAL_LOG_INTERVAL", 300.0, float),
         eval_stream=_env("EVAL_STREAM", True, bool),
-        eval_think_budget=_env_budget("EVAL_THINK_BUDGET", 16384),
+        eval_think_budget=_env_budget("EVAL_THINK_BUDGET", "auto"),
+        eval_think_budget_pct=think_pct,
+        eval_think_budget_min=think_min,
+        eval_think_budget_max_pct=think_max_pct,
         eval_loop_abort=_env("EVAL_LOOP_ABORT", True, bool),
         eval_salvage=_env("EVAL_SALVAGE", True, bool),
         gguf_inspect=_env("GGUF_INSPECT", True, bool),

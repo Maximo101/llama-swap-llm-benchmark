@@ -42,7 +42,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
-from .. import config, envfile, envspec, status
+from .. import config, envfile, envspec, pause as pause_mod, status
 from ..locality import remote_warning
 from ..common import __version__
 from ..config import SCRIPT_DIR, env_path
@@ -277,7 +277,8 @@ def run_state(vals=None):
     info = lock_info(output_dir(vals))
     if info:
         _LAST["log"] = info.get("log") or _LAST["log"]
-        return {"running": True, **info, "status": status.read(output_dir(vals))}
+        return {"running": True, **info, "status": status.read(output_dir(vals)),
+                "pause_requested": pause_mod.read_control(output_dir(vals))}
     proc = _CHILD["proc"]
     if proc is not None and proc.poll() is None:
         return {"running": True, "pid": proc.pid, "started": _CHILD["started"], "log": None, "starting": True}
@@ -316,10 +317,12 @@ def newest_dashboard(kind="dashboard", vals=None):
 def outputs(vals=None):
     d = output_dir(vals)
     if not d.is_dir():
-        return {"dashboards": [], "runs": [], "latest": newest_dashboard("dashboard", vals) is not None}
+        return {"dashboards": [], "runs": [], "latest": newest_dashboard("dashboard", vals) is not None,
+                "resumable": False}
     dash = sorted((p.name for p in d.iterdir() if _DASH_RE.match(p.name)), reverse=True)
     runs = sorted((p.name for p in d.iterdir() if _RUN_RE.match(p.name) and p.name != "results.json"), reverse=True)
-    return {"dashboards": dash[:60], "runs": runs[:60], "latest": newest_dashboard("dashboard", vals) is not None}
+    return {"dashboards": dash[:60], "runs": runs[:60], "latest": newest_dashboard("dashboard", vals) is not None,
+            "resumable": resumable(vals)}
 
 
 def last_run_models(vals=None):
@@ -453,9 +456,10 @@ def run_command(argv, values=None, timeout=300):
 def start_run(mode):
     if run_state()["running"]:
         raise RuntimeError("a run is already going (one at a time)")
-    flags = {"all": [], "speed": ["--speed-only"], "evals": ["--evals-only"], "probe": ["--batch-probe"]}.get(mode)
+    flags = {"all": [], "speed": ["--speed-only"], "evals": ["--evals-only"], "probe": ["--batch-probe"],
+             "resume": ["--resume"]}.get(mode)
     if flags is None:
-        raise ValueError("mode is all, speed, evals or probe")
+        raise ValueError("mode is all, speed, evals, probe or resume")
     detach = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"   # Stop = Ctrl+Break
               else {"start_new_session": True})
     p = subprocess.Popen([sys.executable, str(SCRIPT_DIR / "benchmark.py"), *_env_arg(), *flags], cwd=SCRIPT_DIR,
@@ -464,6 +468,41 @@ def start_run(mode):
     _CHILD.update(proc=p, started=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     _LAST["log"] = None                             # the new run's log appears with its lock file
     return p.pid
+
+
+def pause_run(pause):
+    """Pause (True) or resume (False) the run that is going, through run_control.json in OUTPUT_DIR. The run reads it
+    within a second or two and reports `paused` in run_status.json. Works for a run on another machine that shares
+    OUTPUT_DIR as well (the file is all it needs)."""
+    st = run_state()
+    if not st["running"]:
+        raise RuntimeError("no run is going")
+    if "--batch-probe" in (st.get("argv") or []):
+        raise RuntimeError("a batch probe cannot be paused: Stop run ends it")
+    if st.get("starting") and not st.get("status"):
+        raise RuntimeError("the run is still starting: try again in a moment")
+    cur = st.get("status") or {}
+    if not pause and not (cur.get("paused") or st.get("pause_requested")):
+        raise RuntimeError("the run is not paused")
+    pause_mod.write_control(output_dir(), pause, "settings page")
+    return True
+
+
+def resumable(vals=None):
+    """Is there a run that stopped and can be continued (python benchmark.py --resume)? Its rows file says so; a run lost
+    while paused also left a pause file."""
+    d = output_dir(vals)
+    if not d.is_dir():
+        return False
+    if pause_mod.find_pause(d):
+        return True
+    p = status.find_rows(d)
+    if not p:
+        return False
+    try:
+        return status.load_rows(p).get("state") != "complete"
+    except (OSError, ValueError):
+        return False
 
 
 def stop_run():
@@ -500,7 +539,8 @@ def read_log(offset):
     log = safe_log(st.get("log") or _LAST["log"])     # a finished run: still hand out the end of its log
     if not log or not Path(log).is_file():
         return {"running": st["running"], "text": "", "offset": 0, "log": log, "status": st.get("status"),
-                "exited": st.get("exited")}
+                "pid": st.get("pid"), "started": st.get("started"),     # v2.3.2: the status line read "pid undefined"
+                "exited": st.get("exited"), "pause_requested": st.get("pause_requested")}   # until the run's log file existed
     with open(log, "rb") as fh:
         size = fh.seek(0, 2)
         offset = max(0, min(int(offset), size))
@@ -510,7 +550,7 @@ def read_log(offset):
         data = fh.read()
     return {"running": st["running"], "text": data.decode("utf-8", "replace"), "offset": offset + len(data),
             "log": log, "pid": st.get("pid"), "started": st.get("started"), "status": st.get("status"),
-            "exited": st.get("exited")}
+            "exited": st.get("exited"), "pause_requested": st.get("pause_requested")}
 
 
 # --------------------------------------------------------------------------- HTTP
@@ -708,6 +748,10 @@ class UIServer(ThreadingHTTPServer):
             raise ValueError("values must be an object")
         if path == "/api/check":
             return check_values(merge_secrets(values or {}, cur, body.get("secrets")))
+        if path in ("/api/save", "/api/defaults") and run_state()["running"]:
+            # v2.3.2: .env is not rewritten under a live run (a --resume of it, or a second page, would read other
+            # settings than the run started with). The page locks these buttons; this covers every other client.
+            raise RuntimeError("Run active: the settings can't be changed until the run ends or is stopped")
         if path == "/api/save":
             merged = merge_secrets(values or {}, cur, body.get("secrets"))
             rep = check_values(merged)
@@ -741,6 +785,10 @@ class UIServer(ThreadingHTTPServer):
             return {"started": True, "pid": start_run(body.get("mode", "all"))}
         if path == "/api/stop":
             return {"stopping": stop_run()}
+        if path == "/api/pause":
+            return {"pausing": pause_run(True)}
+        if path == "/api/resume":
+            return {"resuming": pause_run(False)}
         if path == "/api/fav/save":
             name = body.get("name", "")
             p = envfile.save_favourite(configs_dir(), name, {k: v for k, v in (values or {}).items()

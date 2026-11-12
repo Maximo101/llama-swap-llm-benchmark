@@ -270,6 +270,8 @@ def same_default(doc: str, code, kind: str) -> bool:
         return doc == "" or (kind == "list" and doc.lower() in ("all", "*"))
     if kind == "bool":
         return doc.lower() in (TRUE_WORDS if code else FALSE_WORDS)
+    if kind == "budget" and code == "auto":
+        return doc.lower() in ("auto", "dynamic")
     if kind in ("int", "float", "budget") or isinstance(code, (int, float)) and not isinstance(code, bool):
         try:
             return float(doc) == float(code)
@@ -355,11 +357,11 @@ def _value_problem(value, kind, key=None):
             int(v)
         except ValueError:
             return "not a number of tokens (or empty for dynamic): the benchmark stops with an error"
-    if kind == "budget" and v.lower() not in ("off", "none", "unlimited", "false", "no"):
+    if kind == "budget" and v.lower() not in ("off", "none", "unlimited", "false", "no", "auto", "dynamic"):
         try:
             int(v)
         except ValueError:
-            return "not a number of tokens (0 = unlimited): the benchmark stops with an error"
+            return "not a number of tokens (0 = unlimited, auto = a share of the context): the benchmark stops with an error"
     if kind == "ints":
         for x in v.split(","):
             x = x.strip().lower()

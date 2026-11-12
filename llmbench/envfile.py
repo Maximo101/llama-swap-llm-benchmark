@@ -159,7 +159,7 @@ def list_favourites(configs_dir) -> list[str]:
 
 def favourite_text(name, values: dict, version: str, example_path=envspec.EXAMPLE_PATH) -> str:
     shipped = shipped_values(envspec.parse_example(example_path))
-    lines = [f"# llama-swap-llm-benchmark favourite: {name}",
+    lines = [f"# Local LLM Benchmark Suite favourite: {name}",
              f"# Saved with v{version} on {datetime.now():%Y-%m-%d %H:%M}. Only the settings that differ from the "
              "shipped .env.example; never secrets.",
              "# Load it on the settings page (python benchmark.py --ui). '# shipped:' = the .env.example value when "

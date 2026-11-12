@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>llama-swap Benchmark · Settings</title>
+<title>Local LLM Benchmark Suite · Settings</title>
 <style>
 :root{--bg:#0d1117;--card:#161b22;--line:#30363d;--text:#e6edf3;--mute:#8b949e;--link:#58a6ff;--chip:#21262d;--chipon:#1f3a5f;
   --hover:#1c2128;--warnbg:#3a1d1f;--okbg:#12261e;--red:#f85149;--green:#3fb950;--amber:#d29922;--shadow:rgba(0,0,0,.35);--input:#0d1117}
@@ -51,14 +51,21 @@ table.models td.note div{max-width:420px;overflow:hidden;display:-webkit-box;-we
 .guide th{color:var(--mute);font-weight:600}.guide td.use{white-space:normal;min-width:220px;color:var(--mute)}
 .guide tr.me td{background:var(--chipon)}.guide .off{color:var(--mute);opacity:.6}.guide .rec{color:var(--green);font-weight:600}
 .guide tr.pick{cursor:pointer}.guide tr.pick:hover td{background:var(--hover)}
+/* v2.3.2: while a run is active the status is bold red and everything that changes state is locked (a click says why) */
+#runst.running{color:var(--red);font-weight:700}
+.locked,.locked:hover{opacity:.45;cursor:not-allowed;border-color:var(--line);color:var(--text)}
+body.runlock #settings input,body.runlock #settings select,body.runlock #settings button:not([data-show]):not([data-estimate]),body.runlock #settings tr.pick,body.runlock #modellist input{opacity:.55;cursor:not-allowed}
+#toast{position:fixed;z-index:80;padding:6px 12px;border-radius:8px;background:var(--warnbg);color:var(--text);border:1px solid var(--red);font-weight:700;font-size:13px;box-shadow:0 6px 18px var(--shadow);pointer-events:none}
+.ctxi{color:var(--link);cursor:help;font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin-left:4px}
 .hidden{display:none!important}
 @media(max-width:900px){.row{grid-template-columns:1fr}body{padding:12px}}
 </style></head><body>
-<div class="topline"><div><h1>llama-swap Benchmark &middot; Settings</h1><div class="sub" id="hdr">loading&hellip;</div></div>
+<div class="topline"><div><h1>Local LLM Benchmark Suite &middot; Settings</h1><div class="sub" id="hdr">loading&hellip;</div></div>
 <div class="fg"><span class="lbl">Theme</span><button class="tog" data-theme="auto">Auto</button><button class="tog" data-theme="light">Light</button><button class="tog" data-theme="dark">Dark</button><button id="helpbtn" style="font-weight:700">? Help</button></div></div>
 <div class="card" id="helppop" hidden></div>
 <div class="card errc hidden" id="remote"></div>
 <div id="msg"></div>
+<div id="toast" class="hidden" role="alert"></div>
 
 <div class="card bar" id="actions">
   <span class="fg"><button class="primary" id="save" title="Check the settings, then write .env (the old file is kept as .env.bak)">Save</button>
@@ -68,7 +75,7 @@ table.models td.note div{max-width:420px;overflow:hidden;display:-webkit-box;-we
   <span class="fg"><button id="estimate" title="python benchmark.py --estimate with the settings on this page (saved or not)">Estimate</button>
     <button id="openlatest" title="The newest dashboard (benchmark_dashboard.html)">Open latest dashboard</button>
     <button id="reload" title="python benchmark.py --reload: rebuild the newest dashboard with this version's dashboard code">Reload dashboard</button></span>
-  <span class="fg"><span class="lbl">Run</span><button id="runall">Full run</button><button id="runspeed">Speed only</button><button id="runevals">Evals only</button><button id="runprobe" title="python benchmark.py --batch-probe: measures how much EVAL_CONCURRENCY > 1 speeds up evals on up to 4 models (loads them; takes minutes). The estimate uses its result.">Batch probe</button><button class="danger" id="stop" title="Ctrl+C for the run: it stops and writes partial results (dashboard, CSV, JSON)">Stop</button><span id="runst" class="sub"></span></span>
+  <span class="fg"><span class="lbl">Run</span><button id="runall">Full run</button><button id="runspeed">Speed only</button><button id="runevals">Evals only</button><button id="runresume" class="hidden" title="python benchmark.py --resume: continues the last run that stopped or was lost while paused. Speed tests that finished are kept, answers already given come from the result cache; whatever was half done starts again from its first step.">Resume last run</button><button id="runprobe" title="python benchmark.py --batch-probe: measures how much EVAL_CONCURRENCY > 1 speeds up evals on up to 4 models (loads them; takes minutes). The estimate uses its result.">Batch probe</button><button id="pause" title="Pauses the run that is going. It finishes the model it is testing (speed test) or the requests in flight (evals) first, so no request is cut off, then waits. Whatever was half done restarts from its first step on Resume. The run's state is saved to run_&lt;stamp&gt;.pause.json and run_&lt;stamp&gt;.rows.json. MAX_GPU_TEMP pauses by itself.">Pause run</button><button id="resume" class="hidden" title="Carries a paused run on.">Resume run</button><button class="danger" id="stop" title="Ctrl+C for the run: it stops and writes partial results (dashboard, CSV, JSON). Asks first.">Stop run</button><span id="runst" class="sub" role="status"></span><span id="lockhint" class="sub hidden">&middot; settings are locked until the run ends</span></span>
 </div>
 
 <div class="card hidden" id="outcard"><div class="topline"><b id="outtitle">Output</b><button id="outclose">Close</button></div><pre class="out" id="out"></pre></div>
@@ -146,6 +153,18 @@ function payload(){ const values = {...V}; S.entries.forEach(e => { if (e.secret
 function scheduleCheck(){ clearTimeout(checkTimer); checkTimer = setTimeout(async () => {
   try { REP = await api('/api/check', payload()); renderProblems(); renderReport(); } catch(e){} }, 600); }
 
+/* v2.3.2: every setting that takes a context size (tokens) shows the usual sizes on hover */
+const CTX_TIP = 'Suggested context sizes: 4096 (4k), 8192 (8k), 16384 (16k), 32768 (32k), 65536 (64k), 98304 (96k), 131072 (128k), 262144 (256k), 524288 (512k), 1048576 (1M)';
+const isCtxKey = k => /^(LONGCTX_LENGTHS|PREFILL_CTX_TESTS|PREFILL_DEPTH|AGENT_PROMPT_TOKENS)$/.test(k) || (/(^|_)CTX(_|$)/.test(k) && !/(PCT|ACTION)/.test(k));
+const isThinkKey = k => /^EVAL_THINK_BUDGET(_PCT|_MIN|_MAX_PCT)?$/.test(k);
+const thinkFor = (ctx, pct, mn, mx) => { const c = Math.min(Math.max(mn, ctx * pct / 100), ctx * mx / 100); return Math.max(1, c >= 1024 ? Math.floor(c / 1024) * 1024 : Math.floor(c)); };
+const thinkTip = () => { const num = (k, d) => { const x = parseFloat(String((typeof V !== 'undefined' && V[k]) || '').trim()); return isNaN(x) || x <= 0 ? d : x; };
+  const pct = num('EVAL_THINK_BUDGET_PCT', 25), mn = num('EVAL_THINK_BUDGET_MIN', 4096), mx = num('EVAL_THINK_BUDGET_MAX_PCT', 60);
+  return 'With auto, a model gets ' + pct + '% of its context for thinking, never below ' + mn + ' tokens and never above ' + mx + '% of the context. Budget per context size: ' +
+    [4096, 8192, 16384, 32768, 65536, 98304, 131072, 262144, 524288, 1048576].map(c => c + ' (' + (c >= 1048576 ? '1M' : c / 1024 + 'k') + ') -> ' + thinkFor(c, pct, mn, mx)).join(', ') + '. A plain number (or 0 = unlimited) in EVAL_THINK_BUDGET overrides all of this.'; };
+const tipOf = k => isCtxKey(k) ? CTX_TIP : isThinkKey(k) ? thinkTip() : '';
+const ctxTitle = k => tipOf(k) ? ` title="${esc(tipOf(k))}" data-ctx="1"` : '';
+const ctxMark = k => tipOf(k) ? `<span class="ctxi" title="${esc(tipOf(k))}" aria-label="${esc(tipOf(k))}">&#9432;</span>` : '';
 function widget(e){
   const v = shown(e), id = 'w_'+e.key, prob = REP && REP.problems[e.key];
   if (e.secret){
@@ -162,16 +181,16 @@ function widget(e){
   }
   if (e.family){
     const re = new RegExp(e.pattern), keys = Object.keys(V).filter(k => re.test(k) && !ent(k));
-    return keys.map(k => `<div class="fam"><input type="text" class="mono" value="${esc(k)}" disabled><input type="text" data-k="${esc(k)}" value="${esc(V[k])}"><button class="danger" data-famdel="${esc(k)}">&times;</button></div>`).join('')
+    return keys.map(k => `<div class="fam"><input type="text" class="mono" value="${esc(k)}" disabled><input type="text" data-k="${esc(k)}" value="${esc(V[k])}"${ctxTitle(k)}><button class="danger" data-famdel="${esc(k)}">&times;</button></div>`).join('')
       + `<div class="fam"><input type="text" class="mono" placeholder="${esc(e.key)}" data-famnew="${esc(e.key)}"><input type="text" placeholder="value" data-famval="${esc(e.key)}"><button data-famadd="${esc(e.key)}">add</button></div>`;
   }
-  return `<input type="text" id="${id}" data-k="${e.key}" value="${esc(v)}" class="${prob?'bad':''}" spellcheck="false" placeholder="${e.default?esc(e.default):'(not set)'}">`;
+  return `<input type="text" id="${id}" data-k="${e.key}" value="${esc(v)}" class="${prob?'bad':''}" spellcheck="false" placeholder="${e.default?esc(e.default):'(not set)'}"${ctxTitle(e.key)}>`;
 }
 function rowHtml(e){
   const isChg = (e.key in V) && String(V[e.key]) !== String(e.active ? e.shipped : e.default) && !e.family;
   const dflt = e.secret ? '' : `<b>default:</b> <span class="mono">${esc(e.default || 'empty')}</span>${e.active && e.shipped!==e.default ? ` &middot; <b>.env.example:</b> <span class="mono">${esc(e.shipped)}</span>` : ''}${e.choices.length?` &middot; <b>one of:</b> ${e.choices.map(esc).join(', ')}`:''}`;
   return `<div class="row" data-row="${esc(e.key)}" data-text="${esc((e.key+' '+e.desc+' '+e.section).toLowerCase())}" data-chg="${isChg?1:0}">
-    <div class="k">${esc(e.key)}${isChg?'<span class="chg">changed</span>':''}${(S.report&&S.report.missing.includes(e.key))?'<span class="chg">new: not in your .env yet</span>':''}</div>
+    <div class="k">${esc(e.key)}${ctxMark(e.key)}${isChg?'<span class="chg">changed</span>':''}${(S.report&&S.report.missing.includes(e.key))?'<span class="chg">new: not in your .env yet</span>':''}</div>
     <div class="w">${widget(e)}<div class="prob" id="p_${esc(e.key)}"></div></div>
     <div class="d">${esc(e.desc)}${dflt?'<br>'+dflt:''}</div>${guideHtml(e.key)}</div>`;
 }
@@ -223,7 +242,7 @@ function renderSettings(){
     Object.entries(p.secs).map(([sec, es]) => `<div class="sect"><h3>${esc(sec)}</h3>${es.map(rowHtml).join('')}</div>`).join('') + '</details>').join('');
   const unknown = Object.keys(V).filter(k => !ent(k) && !S.entries.some(e => e.family && new RegExp(e.pattern).test(k)));
   if (unknown.length) $('settings').innerHTML += `<details class="card part" open><summary>Not in .env.example (kept as they are)</summary>` +
-    unknown.map(k => `<div class="row" data-row="${esc(k)}" data-text="${esc(k.toLowerCase())}" data-chg="1"><div class="k">${esc(k)}</div><div class="w"><input type="text" data-k="${esc(k)}" value="${esc(V[k])}"></div><div class="d">${esc((REP&&REP.unknown.find(u=>u.key===k)||{}).hint||'unknown to this version')}</div></div>`).join('') + '</details>';
+    unknown.map(k => `<div class="row" data-row="${esc(k)}" data-text="${esc(k.toLowerCase())}" data-chg="1"><div class="k">${esc(k)}${ctxMark(k)}</div><div class="w"><input type="text" data-k="${esc(k)}" value="${esc(V[k])}"${ctxTitle(k)}></div><div class="d">${esc((REP&&REP.unknown.find(u=>u.key===k)||{}).hint||'unknown to this version')}</div></div>`).join('') + '</details>';
   $('setsub').textContent = `${S.entries.length} settings · ${S.env}`;
   renderProblems(); applyFilter();
 }
@@ -422,10 +441,54 @@ function runEnded(d){                  /* say how it ended; a failed run is not 
     note('warn', 'The run stopped early (' + esc(s.state) + '): partial results were written.' + dash, true, 'run');
   } else note('ok', 'The run ended.' + dash, true, 'run');
 }
+/* v2.3.2 run protection. While a run is active nothing on this page may change what it reads or writes: Save, Return to
+   defaults, the favourites, Reload dashboard, the Run buttons, every setting and the model ticks are locked, and a click
+   on any of them says "Run active". The buttons are not given the disabled attribute, because a disabled button
+   swallows the click and could not say why. The server refuses Save and Return to defaults during a run as well. */
+let RUNNING = false, toastTimer = null;
+const LOCK_IDS = ['save','defaults','favload','favsave','favdel','reload','runall','runspeed','runevals','runprobe','runresume'];
+const LOCK_SEL = '.locked, #settings input, #settings select, #settings tr.pick, #settings button:not([data-show]):not([data-estimate]), #modellist input';
+const TEXTY = t => t.tagName==='INPUT' && !['checkbox','radio','button'].includes(t.type);
+function toast(text, near){
+  const t = $('toast'); t.textContent = text; t.classList.remove('hidden');
+  const r = near && near.getBoundingClientRect ? near.getBoundingClientRect() : {left:20, bottom:20, width:0};
+  t.style.left = Math.max(8, Math.min(r.left, window.innerWidth - t.offsetWidth - 8)) + 'px';
+  t.style.top = Math.max(8, Math.min(r.bottom + 6, window.innerHeight - t.offsetHeight - 8)) + 'px';
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), 1800);
+}
+['click','mousedown','keydown','beforeinput','paste','cut','drop'].forEach(type => document.addEventListener(type, e => {
+  if (!RUNNING || !e.target.closest) return;
+  const t = e.target.closest(LOCK_SEL); if (!t) return;
+  if (type==='keydown'){                              /* moving around and copying stay possible */
+    if (['Tab','Escape','Shift','Control','Alt','Meta'].includes(e.key) || e.key.startsWith('Arrow') && TEXTY(t)) return;
+    if ((e.ctrlKey || e.metaKey) && ['c','a'].includes(e.key.toLowerCase())) return;
+    if (TEXTY(t)) return;                             /* typing is stopped by beforeinput, which also says why */
+  }
+  if (type==='mousedown' && t.tagName!=='SELECT') return;      /* a select must not open; text can still be selected */
+  if (type==='click' && TEXTY(t)){ toast('Run active', t); return; }
+  e.preventDefault(); e.stopImmediatePropagation();
+  toast('Run active', t);
+}, true));
 function setRun(running, d){
-  $('runst').textContent = running ? `running (pid ${d.pid}, since ${d.started})` : 'idle';
-  ['runall','runspeed','runevals','runprobe'].forEach(id => $(id).disabled = running); $('stop').disabled = !running;
+  RUNNING = !!running;
+  const s = (d && d.status) || {}, paused = !!(running && s.paused), asked = !!(running && !paused && d.pause_requested);
+  const st = $('runst'); st.textContent = running ? `${paused ? 'PAUSED' : asked ? 'pausing (finishing the current step)' : 'running'} (pid ${d.pid}, since ${d.started})` + (paused ? ' \u00b7 ' + pauseWhy(s) : '') : 'idle';
+  st.classList.toggle('running', RUNNING); st.classList.toggle('sub', !RUNNING);
+  $('pause').classList.toggle('hidden', !running || paused || asked);
+  $('resume').classList.toggle('hidden', !(paused || asked));
+  $('runresume').classList.toggle('hidden', !!running || !(S.outputs && S.outputs.resumable));
+  document.body.classList.toggle('runlock', RUNNING); $('lockhint').classList.toggle('hidden', !RUNNING);
+  LOCK_IDS.forEach(id => { const b = $(id); b.classList.toggle('locked', RUNNING); b.setAttribute('aria-disabled', String(RUNNING)); });
+  $('stop').disabled = !running;
+  if (!RUNNING) $('toast').classList.add('hidden');
   if (running) $('runinfo').textContent = progress(d.status) + (d.log ? 'log: ' + d.log : '');
+}
+function pauseWhy(s){                  /* run_status.json: why the run waits */
+  const r = s.pause_reason || '', t = [];
+  if (r.includes('thermal')) t.push(`GPU ${s.pause_temp != null ? Math.round(s.pause_temp) + '\u00b0C' : 'too hot'}, limit ${s.pause_max}\u00b0C, carries on at ${s.pause_resume_below}\u00b0C`);
+  if (r.includes('manual')) t.push('paused by request');
+  if (s.pause_restart) t.push('restarts: ' + s.pause_restart);
+  return t.join('; ');
 }
 function progress(s){                  /* run_status.json: phase, model i of N, dataset, questions done */
   if (!s || s.state !== 'running') return '';
@@ -438,20 +501,24 @@ function progress(s){                  /* run_status.json: phase, model i of N, 
 async function startRun(mode){
   if (changed().length && !confirm('There are unsaved changes: the run uses the SAVED .env. Start anyway?')) return;
   if (S.remote && mode !== 'evals' && !confirm('llama-swap is on another machine: the speed test would record THIS machine\'s GPU, VRAM, power and RAM, and the VRAM budget checks would use this GPU. Start anyway? (Evals only is fine from here.)')) return;
-  const what = mode==='probe' ? 'a batch probe (loads up to 4 models, BATCH_PROBE_MODELS / BATCH_PROBE_LEVELS)' : `a ${mode==='all'?'full':mode+'-only'} benchmark run`;
+  const what = mode==='probe' ? 'a batch probe (loads up to 4 models, BATCH_PROBE_MODELS / BATCH_PROBE_LEVELS)'
+    : mode==='resume' ? 'the last run that stopped (--resume: finished speed tests are kept, answered questions come from the cache)' : `a ${mode==='all'?'full':mode+'-only'} benchmark run`;
   if (!confirm(`Start ${what} now? It runs on this machine and keeps going if you close the page.`)) return;
   try { await api('/api/run', {mode}); $('runlog').textContent = ''; logOff = 0; curLog = null; $('runcard').classList.remove('hidden');
     setTimeout(pollRun, 800); if (!logTimer) logTimer = setInterval(pollRun, 2000); } catch(e){ note('errc', esc(e.message)); }
 }
 $('runall').onclick = () => startRun('all'); $('runprobe').onclick = () => startRun('probe'); $('runspeed').onclick = () => startRun('speed'); $('runevals').onclick = () => startRun('evals');
-$('stop').onclick = async () => { if (!confirm('Stop the run? It finishes the current step and writes partial results (dashboard, CSV, JSON).')) return;
+$('pause').onclick = async () => { try { await api('/api/pause', {}); note('warn', 'Pause requested: the run finishes its current model or the requests in flight, then waits. Resume carries it on.'); setTimeout(pollRun, 1200); } catch(e){ note('errc', esc(e.message)); } };
+$('resume').onclick = async () => { try { await api('/api/resume', {}); note('ok', 'Resume requested: the run carries on within a few seconds.'); setTimeout(pollRun, 3000); } catch(e){ note('errc', esc(e.message)); } };
+$('runresume').onclick = () => startRun('resume');
+$('stop').onclick = async () => { if (!confirm('Existing run will stop, are you sure?\n\nIt finishes the current step and writes partial results (dashboard, CSV, JSON).')) return;
   try { await api('/api/stop', {}); note('warn', 'Stopping: the run writes its partial results first.'); } catch(e){ note('errc', esc(e.message)); } };
 
 /* help */
 $('helpbtn').onclick = e => { e.stopPropagation(); const p = $('helppop'); p.hidden = !p.hidden; if (!p.hidden) p.innerHTML = `
   <h3 style="margin-top:0">This page</h3><div class="sub">Edits <code>${esc(S.env)}</code> for <b>v${esc(S.version)}</b>. Nothing changes until you press <b>Save</b>: it checks every value first (the same checks as a run), then writes .env in the .env.example layout and keeps the old file as <code>.env.bak</code>. Editing .env by hand and running from the command line / Unraid User Scripts work exactly as before.</div>
   <h3>Favourites</h3><div class="sub"><code>configs/&lt;name&gt;.env</code> holds only the settings that differ from the shipped .env.example, never tokens or keys. Loading one starts from this version's defaults and puts the favourite on top: renamed settings follow along, removed ones are listed, and where the shipped value changed and your favourite changed it too, you choose. The first visit saves your current .env as <code>main</code>.</div>
-  <h3>Buttons</h3><div class="sub"><b>Estimate</b> uses the settings on this page, saved or not. <b>Reload dashboard</b> rebuilds the newest run's dashboard with this version's code. <b>Compare</b> combines finished runs. <b>Full run / Speed only / Evals only</b> start the benchmark with the saved .env (one run at a time; it keeps going if you close the page, and the page re-attaches to it). <b>Stop</b> is Ctrl+C for the run: it writes partial results.</div>
+  <h3>Buttons</h3><div class="sub"><b>Estimate</b> uses the settings on this page, saved or not. <b>Reload dashboard</b> rebuilds the newest run's dashboard with this version's code. <b>Compare</b> combines finished runs. <b>Full run / Speed only / Evals only</b> start the benchmark with the saved .env (one run at a time; it keeps going if you close the page, and the page re-attaches to it). <b>Pause run</b> lets the model (speed test) or the requests in flight (evals) finish, then waits; <b>Resume run</b> carries on, and what was half done restarts from its first step. <b>Resume last run</b> continues a run that stopped or was lost while paused. <code>MAX_GPU_TEMP</code> pauses by itself when the GPU gets too hot. <b>Stop run</b> asks first, then is Ctrl+C for the run: it writes partial results. <b>While a run is active</b> the status is red and Save, Return to defaults, the favourites, Reload dashboard, the settings and the model ticks are locked (a click says &ldquo;Run active&rdquo;); Estimate, the checks and Compare still work.</div>
   <h3>Security</h3><div class="sub">Every button runs a fixed command of this tool; nothing here can run anything else. Localhost only unless <code>UI_HOST</code> is set; on the LAN a token is required (<code>UI_TOKEN</code>). The page is plain HTTP: on the LAN the token and any secret you reveal travel unencrypted. Tokens and keys are masked; <b>show</b> fetches one when you ask.</div>`; };
 document.addEventListener('click', e => { const p = $('helppop'); if (!p.hidden && !e.target.closest('#helppop')) p.hidden = true; });
 document.addEventListener('keydown', e => { if (e.key==='Escape') $('helppop').hidden = true; });

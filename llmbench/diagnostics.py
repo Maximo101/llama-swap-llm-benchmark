@@ -12,7 +12,7 @@ import requests
 
 from .common import now
 from .client import make_session
-from .config import BUDGET_DEFAULTS, EVAL_SPECS
+from .config import BUDGET_DEFAULTS, EVAL_SPECS, think_budget_label
 from .evals.sandbox import resolve_sandbox
 from .scoring import blank, parse_params
 from .telemetry import HostMeter, RamSampler, detect_hardware, find_listener_pids
@@ -155,8 +155,7 @@ def _check_eval_client(cfg):
             print(f"Hugging Face datasets: NOT AVAILABLE - the evals ({', '.join(wants)}) cannot load and a full run or "
                   f"evals-only run stops at once. Run: {sys.executable} -m pip install -r requirements.txt")
     if cfg.eval_stream:
-        print(f"Eval streaming: ON  (thinking budget {cfg.eval_think_budget or 'unlimited'}"
-              f"{' tokens' if cfg.eval_think_budget else ''}, loop abort {'on' if cfg.eval_loop_abort else 'off'}, "
+        print(f"Eval streaming: ON  (thinking budget {think_budget_label(cfg.eval_think_budget, cfg)}, loop abort {'on' if cfg.eval_loop_abort else 'off'}, "
               f"salvage {'on' if cfg.eval_salvage else 'off'}, timeout {cfg.eval_timeout:.0f}s)")
     else:
         print("Eval streaming: OFF (EVAL_STREAM=false) - no loop abort, no salvage; max_tokens is the only limit")

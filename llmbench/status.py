@@ -81,6 +81,12 @@ def update(force=False, every=10.0, **kw):
             pass
 
 
+def snapshot():
+    """A copy of what is being reported now (phase, model, dataset, question count): the pause file records it."""
+    with _LOCK:
+        return dict(_S["data"])
+
+
 def finish(state):
     """The run ended: 'complete', 'partial', 'interrupted' or 'failed'. Reporting stops."""
     update(force=True, state=state, finished=_stamp())

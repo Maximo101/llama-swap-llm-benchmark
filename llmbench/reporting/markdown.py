@@ -17,7 +17,7 @@ def _f(v, d=1): return "–" if v is None else f"{v:.{d}f}"
 
 def _md_header(results, cfg, speed):
     return ["---", "tags: [llm/benchmark, llama-swap]", f"date: {datetime.now():%Y-%m-%d}", "---", "",
-            "# llama-swap Benchmark Report", "", f"> {len(results)} models · {datetime.now():%Y-%m-%d %H:%M}"
+            "# Local LLM Benchmark Suite Report", "", f"> {len(results)} models · {datetime.now():%Y-%m-%d %H:%M}"
             + (f" · VRAM limit {cfg.vram_limit_gb:g} GB" if speed else " · evaluations only (no speed/hardware telemetry)")]
 
 

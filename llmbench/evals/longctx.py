@@ -30,6 +30,7 @@ import re
 import time
 
 from ..client import post_chat
+from ..pause import CONTROL
 from ..common import BenchError, add_time, avg, now
 from ..config import LONGCTX_SLOTS, PREFILL_SLOTS
 from ..modelinfo import kv_at_least
@@ -168,6 +169,7 @@ def run_longctx(cfg, session, r, ctx, sink=None):
             names = list(needles)
             try:
                 first = _ask(cfg, session, model, doc + question(names[:keys]), timeout)
+                CONTROL.checkpoint()
                 break
             except BenchError as e:
                 over = _OVER.search(str(e))
@@ -189,6 +191,7 @@ def run_longctx(cfg, session, r, ctx, sink=None):
             except BenchError as e:
                 notes.append(f"{label}: {e}")
                 break
+            CONTROL.checkpoint()      # too hot: the long-context test of this model restarts (pause.py)
             if used:
                 toks.append(used)
             if trial == 0:

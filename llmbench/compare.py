@@ -37,6 +37,9 @@ from .scoring import finalize
 _MUST_MATCH = {"seed": "eval seed (EVAL_SEED)", "temperature": "temperature (EVAL_TEMPERATURE)",
                "server_sampling_models": "models using their own sampling (EVAL_SERVER_SAMPLING_MODELS)",
                "think_budget": "thinking budget (EVAL_THINK_BUDGET)",
+               "think_budget_pct": "thinking budget share of the context (EVAL_THINK_BUDGET_PCT)",
+               "think_budget_min": "thinking budget floor (EVAL_THINK_BUDGET_MIN)",
+               "think_budget_max_pct": "thinking budget ceiling (EVAL_THINK_BUDGET_MAX_PCT)",
                "think_budgets": "per-dataset thinking budgets (EVAL_THINK_BUDGET_<DATASET>)",
                "stream": "streaming (EVAL_STREAM)", "loop_abort": "loop abort (EVAL_LOOP_ABORT)",
                "salvage": "partial-answer salvage (EVAL_SALVAGE)", "budget_forcing": "budget forcing (EVAL_BUDGET_FORCING)"}

@@ -46,8 +46,9 @@ from dataclasses import dataclass
 from .. import status
 from ..client import get_ctx, get_props, is_outage, post_chat, props_ctx, upstream_url, wait_ready
 from ..common import BenchError, BenchTimeout, add_time, avg, fmt_hms, stamp_line, now
-from ..config import (EVAL_SPECS, FALLBACK_TOKENS, eval_temperature_for, funnel_stages, rows_for, sampling_label,
-                      stage_rows, temperature_label, think_budget)
+from ..pause import CONTROL, PauseRestart
+from ..config import (AUTO_BUDGET, EVAL_SPECS, FALLBACK_TOKENS, eval_temperature_for, funnel_stages, rows_for, sampling_label,
+                      stage_rows, temperature_label, think_budget, think_budget_label, think_budget_basis)
 from .answers import extract_choice, strip_think
 from .cache import ResultCache, SanityCheck, model_fingerprint, question_key, same_answer
 from .funnel import gate
@@ -210,7 +211,7 @@ def per_request_tokens(cfg, key, item, ctx):
     """Worst-case KV tokens one request can occupy: prompt + max_tokens (after the thinking-budget clamp)."""
     kind = EVAL_SPECS[key]["kind"]
     prompt = item.get("prompt") or ""
-    mt = clamp_to_budget(dynamic_max_tokens(cfg, kind, ctx, prompt), think_budget(cfg, key))
+    mt = clamp_to_budget(dynamic_max_tokens(cfg, kind, ctx, prompt), think_budget(cfg, key, ctx))
     return len(prompt) // 3 + 64 + mt
 
 
@@ -253,7 +254,7 @@ class DatasetRun:
         self.me, self.cfg = me, me.cfg
         self.model, self.key, self.items, self.stage, self.inflight = me.model, key, items, stage, inflight
         self.spec = EVAL_SPECS[key]
-        self.budget = think_budget(self.cfg, key)
+        self.budget = think_budget(self.cfg, key, me.ctx)       # auto: a share of THIS model's context
         cfg = self.cfg
         self.timeout = max(cfg.eval_timeout, cfg.timeout_load)
         extra_kw = (cfg.eval_extra_body or {}).get("chat_template_kwargs")
@@ -270,6 +271,7 @@ class DatasetRun:
         # backpressure: at most this many replies may wait for (or be in) grading; generation pauses beyond it
         self._grade_slots = asyncio.Semaphore(max(1, inflight) + max(2, 2 * sandbox_workers(cfg)))
         self._aborted = False
+        self.interrupted = False                  # a pause stopped this run part-way: its records are to be thrown away
         self._t0 = self._last_log = now()
 
     # -- one question ------------------------------------------------------
@@ -567,6 +569,9 @@ class DatasetRun:
     async def _worker(self, it):
         cfg, me = self.cfg, self.me
         while not self._aborted:
+            if CONTROL.requested():               # a pause (by hand or MAX_GPU_TEMP): take no new question; the ones
+                self.interrupted = True           # in flight finish and are graded (run() decides what that means)
+                return
             item = next(it, None)                 # shared iterator: safe, the loop is single-threaded
             if item is None:
                 return
@@ -615,6 +620,14 @@ class DatasetRun:
             if isinstance(o, BaseException) and not isinstance(o, asyncio.CancelledError):
                 raise o
         wall = now() - t0
+        if self.interrupted and (self._aborted or len(self.records) >= len(self.items)):
+            self.interrupted = False              # every question was taken before the pause: nothing is half done
+        if self.interrupted:
+            print(("\r" if self.live else "") + f"    {self.spec['short']:<10} paused at {len(self.records)}/"
+                  f"{len(self.items)} questions: this dataset starts again from its first question when the run "
+                  "carries on (answers already given come from the result cache)" + (" " * 12 if self.live else ""),
+                  flush=True)
+            return self.records, wall
         self._report(wall)
         return self.records, wall
 
@@ -777,8 +790,7 @@ class EvalPhase:
                          if cfg.eval_sanity_adaptive else "") + f"; seed {self.sanity.seed}")
         if cfg.eval_stream:
             budgets = {k: v for k, v in (cfg.eval_think_budgets or {}).items() if k in self.keys}
-            print("  streaming: thinking budget " + (f"{cfg.eval_think_budget:,} tokens" if cfg.eval_think_budget
-                                                     else "unlimited")
+            print("  streaming: thinking budget " + think_budget_label(cfg.eval_think_budget, cfg)
                   + (" (" + ", ".join(f"{EVAL_SPECS[k]['short']} {v or 'unlimited'}" for k, v in budgets.items()) + ")"
                      if budgets else "")
                   + f", loop abort {'on' if cfg.eval_loop_abort else 'off'}, partial-answer salvage "
@@ -841,23 +853,16 @@ class EvalPhase:
         cfg, model = self.cfg, r["model"]
         sname = self.stages[si][0]
         me = await self._prepare(r)
+        if si == 0 and cfg.eval_stream and cfg.eval_think_budget == AUTO_BUDGET and self.keys:
+            print(f"    thinking budget {think_budget(cfg, self.keys[0], me.ctx):,} tokens ({think_budget_basis(cfg, me.ctx)})")
         if si == 0 and cfg.eval_longctx and cfg.longctx_lengths:
             if r.get("_resumed") and longctx_done(cfg, r, me.ctx):
                 print("    Long-ctx   kept from the resumed run")
             else:
-                for attempt in range(2):
-                    try:
-                        await asyncio.to_thread(run_longctx, cfg, self.session, r, me.ctx, self.sink)
-                    except Exception as e:             # optional check: never abort the evals for it
-                        print(f"    [warn] long-context check failed: {e.__class__.__name__}: {e}")
-                        break
-                    # v2.3.1: the server was not there (not the model's fault): wait for it and test once more
-                    if attempt or not is_outage(r.get("longctx_note")) \
-                            or not await asyncio.to_thread(wait_ready, cfg, self.session):
-                        break
-                    await self._warm(r)
+                await self._longctx(r, me)
         done_model = self.store.setdefault(model, {})
         for key in self.keys:
+            await CONTROL.await_resume(f"before {EVAL_SPECS[key]['short']} for {model}")     # a pause between datasets
             want = [it for it in self.data[key] if it["id"] in stage_ids[key][si]]
             done = done_model.setdefault(key, {})
             ask = [it for it in want if it["id"] not in done]
@@ -866,7 +871,7 @@ class EvalPhase:
                 print(f"    {EVAL_SPECS[key]['short']:<10} in flight: {inflight} (capped: {why})")
             r["eval_inflight"] = max(r.get("eval_inflight") or 1, inflight)
             if ask:
-                recs, wall = await DatasetRun(me, key, ask, sname, inflight).run()
+                recs, wall = await self._dataset(me, key, ask, sname, inflight)
                 for rec in recs:
                     done[rec["id"]] = rec
                 add_time(r, f"eval:{key}", wall)
@@ -880,7 +885,7 @@ class EvalPhase:
                     print(f"    {EVAL_SPECS[key]['short']:<10} asking {len(again)} question(s) again: the server did "
                           "not answer them")
                     await self._warm(r)
-                    recs, wall = await DatasetRun(me, key, again, sname, min(inflight, len(again))).run()
+                    recs, wall = await self._dataset(me, key, again, sname, min(inflight, len(again)))
                     for rec in recs:
                         rec["reasked"] = True
                         done[rec["id"]] = rec
@@ -893,6 +898,50 @@ class EvalPhase:
                             wall=(r.get("timing") or {}).get(f"eval:{key}", 0.0))
             for field, v in res.items():
                 r[f"eval_{key}_{field}"] = v
+
+    async def _dataset(self, me, key, items, sname, inflight):
+        """One dataset run. A pause that stops it part-way throws it away; when the run carries on it is asked again from
+        its first question. Answers already given are in the result cache, so only the unanswered ones cost time
+        (with EVAL_RESULT_CACHE=false everything is asked again, which is what a fresh start means)."""
+        short = EVAL_SPECS[key]["short"]
+        while True:
+            run = DatasetRun(me, key, items, sname, inflight)
+            recs, wall = await run.run()
+            if not run.interrupted:
+                return recs, wall
+            CONTROL.discard(f"{short} for {me.model}")
+            await CONTROL.await_resume(f"{short} for {me.model}")
+
+    def _longctx_thread(self, r, ctx, sink):
+        with CONTROL.restartable():                    # too hot between two prompts: this test restarts (pause.py)
+            run_longctx(self.cfg, self.session, r, ctx, sink)
+
+    async def _longctx(self, r, me):
+        """The long-context test of one model. If the GPU trips MAX_GPU_TEMP part-way the half-done test is dropped (the
+        row goes back to how it was) and, after the pause, the test starts again from its first length."""
+        cfg, snap, restarts = self.cfg, dict(r), 0
+        while True:
+            sink = self.sink if not restarts else (lambda rec, n=restarts: self.sink({**rec, "pause_restart": n}))
+            try:
+                for attempt in range(2):
+                    try:
+                        await asyncio.to_thread(self._longctx_thread, r, me.ctx, sink)
+                    except Exception as e:             # optional check: never abort the evals for it
+                        print(f"    [warn] long-context check failed: {e.__class__.__name__}: {e}")
+                        break
+                    # v2.3.1: the server was not there (not the model's fault): wait for it and test once more
+                    if attempt or not is_outage(r.get("longctx_note")) \
+                            or not await asyncio.to_thread(wait_ready, cfg, self.session):
+                        break
+                    await self._warm(r)
+                return
+            except PauseRestart:
+                r.clear()
+                r.update(snap)
+                print("    [pause] the GPU got too hot during the long-context test: it is discarded")
+                CONTROL.discard(f"the long-context test of {r['model']}")
+                await CONTROL.await_resume(f"long-context test of {r['model']}")
+                restarts += 1
 
     def _sanity_report(self, todo):
         checked = [r for r in todo if r.get("eval_sanity_n")]
@@ -960,7 +1009,15 @@ class EvalPhase:
         stage_ids = _stage_ids(cfg, self.data, self.stages)
         try:
             with open(self.path, "a", encoding="utf-8") as fh:
+                written = set()
+
                 def sink(rec):
+                    # a dataset restarted after a pause gets its earlier answers back from the result cache: they are in
+                    # this file already, so they are not written twice
+                    k = (rec.get("model"), rec.get("dataset"), rec.get("id"), rec.get("stage"))
+                    if rec.get("cached") and k in written:
+                        return
+                    written.add(k)
                     fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
                     fh.flush()
                 self.sink = sink
@@ -976,6 +1033,7 @@ class EvalPhase:
                         print(f"[eval {i}/{len(alive)}] {r['model']}" + (f"  [{sname}]" if len(self.stages) > 1 else ""))
                         status.update(force=True, phase="evals", model=r["model"], model_i=i, models=len(alive),
                                       stage=sname if len(self.stages) > 1 else None, dataset=None, done=None, total=None)
+                        await CONTROL.await_resume(f"before the evals of {r['model']}")     # a pause between models
                         await self._model_stage(r, si, stage_ids)
                         if self.on_model:
                             self.on_model()
