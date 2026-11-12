@@ -429,11 +429,25 @@ On a 16 GB card with ~28 models, 94-98% of a full run is the GPU generating (or 
 
 ### Funnel (`EVAL_PROFILE=funnel`)
 
-Every model answers the first stage (`quick`, 11 questions per dataset). After each stage a gate keeps every model whose upper bound (one-sided, `EVAL_FUNNEL_CONF`, default 95%) reaches the lower bound of the `EVAL_LEADERS`-th best model, and never fewer than `EVAL_LEADERS` models. The survivors answer the next stage (`basic`, `moderate`, ... up to `EVAL_FUNNEL_FINAL`, default `standard`); questions are nested, so each stage only asks the new ones. The compared figure is the one the Agent score ranks on: the composite of the evals, tool calling and long-context retrieval (v2.3; a model without a long-context result is compared on the parts it has). Tool calling is asked in full at every stage.
+Every model answers the first stage (`quick`, 11 questions per dataset). **v2.3.3:** hard rules are applied first, then a gate compares the rest. After each stage the gate keeps every model whose upper bound (score + z × the error of its evals part + `EVAL_FUNNEL_MARGIN` points, one-sided at `EVAL_FUNNEL_CONF`, default 95%) reaches the lower bound (score − z × that error) of the `EVAL_LEADERS`-th best model, and never fewer than `EVAL_LEADERS` models. The error used is that of the **evals part only**: tool calling (32 cases) and long-context retrieval (8 per length) are asked in full at the first stage, so more stages cannot shrink their error, and counting it only kept every model alive (the v2.3.1 real runs pruned 1 of 26). The survivors answer the next stage (`basic`, `moderate`, ... up to `EVAL_FUNNEL_FINAL`, default `standard`); questions are nested, so each stage only asks the new ones. The compared figure is the one the Agent score ranks on: the composite of the evals, tool calling and long-context retrieval (v2.3; a model without a long-context result is compared on the parts it has). Tool calling is asked in full at every stage.
 
 A plain "keep the top 5 after `quick`" was rejected: in a simulation with a crowded top (six models within six points) it screened out the true best model in 18-33% of runs. The confidence gates lost it in at most 0.1% of runs and picked as well as running everyone at the final profile. A screened-out model keeps its stage score (with its larger margin of error) and the column **First-stage avg** compares every model on the same first-stage questions, but it is **not ranked** and never on the podium.
 
 Note: v2.1 samples questions as nested prefixes of one seeded order per dataset, so every profile's questions are a subset of the next one's. v2.0 drew each profile independently, so per-question results are not row-for-row comparable with v2.0 runs (the statistical precision is the same).
+
+#### Three states: Ranked, Screened out, No Agent score (v2.3.3)
+
+Every evaluated model ends in exactly one state (`rank_state` and `rank_reason` in `results.json`, a badge and a **Rank** filter in the dashboard, and a line per model at every gate in the log):
+
+| State | Meaning | Decided by |
+|---|---|---|
+| **Ranked** | has an Agent score | passed every hard rule and was not screened out |
+| **No Agent score** | fails a hard rule on its own measurements: loaded or usable context below `AGENT_CTX_MIN`, long-context below `AGENT_CTX_PASS_PCT` at every length that counts, tool calling below `MIN_TOOLCALL_PCT` | a rule, **outside the funnel**: no estimate, no margin of error, never compared with other models, never in the leaders' bar |
+| **Screened out** | the funnel gate found it statistically clearly below the leaders after the first stages | the gate (reducible error + margin) |
+
+A model that fails a hard rule is not asked further stages (`EVAL_HARD_FAIL=stop`, the default; `continue` keeps asking so its later-stage scores exist). If a result set contains both (for example one screened out by v2.3.2 that also fails the long-context rule), **No Agent score wins**. The log prints score ± the error the gate used (and the error of all parts), and the gap to the leaders' bar in decimals, for example `SCREENED OUT  82.00 +/-2.22 (all parts +/-2.56) gap -2.36`. A positive gap is how far inside the bar the model is.
+
+The hard rules are only as strict as their settings: with the default `AGENT_CTX_MIN=65536` a model that passes 64k but fails 128k keeps its Agent score (with a lower context factor from `AGENT_CTX_CURVE`). Set `AGENT_CTX_MIN=131072` to make 128k mandatory; on the 2026-11-12 server run that would remove 13 of 26 models from the Agent ranking, because many are loaded at 64k-90k.
 
 ### Batched evaluation (`EVAL_CONCURRENCY`)
 

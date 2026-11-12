@@ -24,6 +24,7 @@ from .reporting.dashboard import render_dashboard
 _EVAL_RUN = {"eval_avg_pct": "avg_pct", "eval_avg_sec": "avg_sec", "eval_retry_n": "retries",
              "eval_retry_pct": "retry_pct", "eval_quality": "quality_after_retry_penalty",
              "eval_incomplete": "incomplete", "eval_skipped": "skipped", "eval_screened": "screened",
+             "eval_hard_fail": "hard_fail",
              "eval_stage": "stage", "eval_stage1_avg_pct": "stage1_avg_pct", "eval_inflight": "in_flight",
              "eval_sec_basis": "sec_basis", "eval_cached_n": "cached", "eval_tok_think": "tokens_think",
              "eval_tok_answer": "tokens_answer", "eval_sanity_n": "sanity_checked",

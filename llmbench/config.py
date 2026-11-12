@@ -462,6 +462,8 @@ class Config:
     eval_funnel_stages: tuple = ()          # EVAL_FUNNEL_STAGES: explicit stage profiles (default: chain up to the final)
     eval_leaders: int = 5                   # EVAL_LEADERS: minimum number of models kept at every funnel gate
     eval_funnel_conf: float = 0.95          # EVAL_FUNNEL_CONF: one-sided confidence of each gate's bounds
+    eval_funnel_margin: float = 3.0         # EVAL_FUNNEL_MARGIN: points added to a model's upper bound at a gate (v2.3.3)
+    eval_hard_fail: str = "stop"            # EVAL_HARD_FAIL: stop | continue (a model failing a hard Agent rule at a gate)
     eval_result_cache: bool = True          # EVAL_RESULT_CACHE: reuse answers already obtained (resume / reruns)
     eval_cache_refresh: bool = False        # EVAL_RESULT_CACHE=refresh: ask everything again, store the new answers
     eval_sanity_pct: float = 0.0            # EVAL_SANITY_PCT: % of cached answers re-asked to check they still hold
@@ -626,6 +628,9 @@ def load_config() -> Config:
                                                                                                          cache_mode)
     if cache_mode not in ("true", "false", "refresh"):
         sys.exit(f"[config] EVAL_RESULT_CACHE must be true, refresh or false (got {cache_mode!r})")
+    hard_fail = (_env("EVAL_HARD_FAIL", "stop") or "stop").lower()
+    if hard_fail not in ("stop", "continue"):
+        sys.exit(f"[config] EVAL_HARD_FAIL must be stop or continue (got {hard_fail!r})")
     sq_basis = (_env("EVAL_SQ_BASIS", "auto") or "auto").lower()
     if sq_basis not in ("auto", "measured", "single"):
         sys.exit(f"[config] EVAL_SQ_BASIS must be auto, measured or single (got {sq_basis!r})")
@@ -829,6 +834,8 @@ def load_config() -> Config:
         eval_funnel_stages=funnel_stages_env,
         eval_leaders=max(1, _env("EVAL_LEADERS", 5, int)),
         eval_funnel_conf=min(0.999, max(0.5, _env("EVAL_FUNNEL_CONF", 0.95, float))),
+        eval_funnel_margin=max(0.0, _env("EVAL_FUNNEL_MARGIN", 3.0, float)),
+        eval_hard_fail=hard_fail,
         eval_result_cache=cache_mode != "false",
         eval_cache_refresh=cache_mode == "refresh",
         eval_sanity_pct=min(100.0, max(0.0, _env("EVAL_SANITY_PCT", 0.0, float))),

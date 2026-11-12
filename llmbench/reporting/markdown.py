@@ -95,11 +95,16 @@ def _md_evals(results, cfg, evk):
          "|---|" + "---|" * (2 * len(evk) + 2)]
     # funnel finalists first: a model screened out after fewer questions never sorts above one that finished
     ranked = sorted((r for r in results if r["status"] == "ok" and r.get("eval_avg_pct") is not None),
-                    key=lambda r: (bool(r.get("eval_screened")), -r["eval_avg_pct"]))
+                    key=lambda r: (r.get("rank_state") in ("screened", "no_agent") or bool(r.get("eval_screened")),
+                                   -r["eval_avg_pct"]))
     for r in ranked:
         rt = r.get("eval_retry_n")
         retry = "–" if rt is None else f"{rt} ({r['eval_retry_pct']:.0f}%)" + (" ⚠" if r["eval_retry_pct"] > 20 else "")
-        name = r["model"] + (f" _(screened out at {r['eval_stage']})_" if r.get("eval_screened") else "")
+        state = r.get("rank_state")
+        name = r["model"] + (f" _(no Agent score: {(r.get('rank_reason') or '').replace('no Agent score: ', '', 1)})_"
+                             if state == "no_agent" else
+                             f" _(screened out at {r['eval_stage']})_" if state == "screened" or
+                             (state is None and r.get("eval_screened")) else "")
         L.append(f"| {name} | " + " | ".join(_md_eval_cells(r, evk)) + f" | {r['eval_avg_pct']:.1f}% | {retry} |")
     unranked = [r for r in results if r["status"] == "ok" and (r.get("eval_incomplete") or r.get("eval_skipped"))]
     if unranked:

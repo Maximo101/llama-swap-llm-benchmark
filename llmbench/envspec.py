@@ -51,6 +51,7 @@ CHOICES = {
     "EVAL_SKIP_INELIGIBLE": ("auto", "true", "false"),
     "EVAL_RESULT_CACHE": ("true", "refresh", "false"),
     "EVAL_SQ_BASIS": ("auto", "measured", "single"),
+    "EVAL_HARD_FAIL": ("stop", "continue"),
     "GPU_BACKEND": ("auto", "nvml", "smi"),
     "EVAL_HTTP_BACKEND": ("auto", "aiohttp", "threads"),
     "EVAL_CODE_SANDBOX": ("auto", "docker", "subprocess"),

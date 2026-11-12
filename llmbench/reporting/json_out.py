@@ -63,6 +63,8 @@ _GROUPS = {
                "cost_1kq_off"],
     "scores": ["goldilocks", "score_chat", "score_agent", "agent_quality", "vram_fit", "score_sweet", "eligible",
                "score_note",
+               # v2.3.3: Ranked / Screened out / No Agent score (+ the reason)
+               "rank_state", "rank_reason",
                # v2.3: the Agent score's parts
                "agent_composite_pct", "agent_longctx_pct", "agent_ctx_usable", "agent_ctx_factor", "agent_borderline",
                "agent_basis"],
@@ -86,8 +88,8 @@ _EVAL_SUFFIXES = ("pct", "n", "err", "na", "fallback", "sec", "trunc", "degr", "
                   # v2.3.1: client-side seconds to the first token / first answer token (median, 95th percentile)
                   "ttft", "ttfa", "ttfa95")
 _EVAL_RUN_KEYS = ("eval_avg_pct", "eval_avg_sec", "eval_retry_n", "eval_retry_pct", "eval_quality", "eval_incomplete",
-                  "eval_skipped", "eval_screened", "eval_stage", "eval_stage1_avg_pct", "eval_inflight",
-                  "eval_sec_basis", "eval_cached_n", "eval_tok_think", "eval_tok_answer", "eval_sanity_n",
+                  "eval_skipped", "eval_screened", "eval_hard_fail", "eval_stage", "eval_stage1_avg_pct",
+                  "eval_inflight", "eval_sec_basis", "eval_cached_n", "eval_tok_think", "eval_tok_answer", "eval_sanity_n",
                   "eval_sanity_diff", "eval_sampling")
 _TIMING_KEYS = ("time_total_s", "time_speed_s", "time_load_s", "time_eval_s", "time_longctx_s")
 
@@ -123,7 +125,8 @@ def _model_entry(r):
                          "retries": r.get("eval_retry_n"), "retry_pct": r.get("eval_retry_pct"),
                          "quality_after_retry_penalty": r.get("eval_quality"),
                          "incomplete": r.get("eval_incomplete"), "skipped": r.get("eval_skipped"),
-                         "screened": r.get("eval_screened"), "stage": r.get("eval_stage"),
+                         "screened": r.get("eval_screened"), "hard_fail": r.get("eval_hard_fail"),
+                         "stage": r.get("eval_stage"),
                          "stage1_avg_pct": r.get("eval_stage1_avg_pct"), "in_flight": r.get("eval_inflight"),
                          "sec_basis": r.get("eval_sec_basis"), "cached": r.get("eval_cached_n"),
                          "tokens_think": r.get("eval_tok_think"), "tokens_answer": r.get("eval_tok_answer"),
@@ -189,7 +192,8 @@ def build_report(results, cfg, info):
                                       else 0, "sanity_adaptive": cfg.eval_sanity_adaptive,
                         "skip_ineligible": cfg.eval_skip_ineligible,
                         "funnel": ({"stages": [list(x) for x in funnel_stages(cfg)], "leaders": cfg.eval_leaders,
-                                    "confidence": cfg.eval_funnel_conf, "gates": info.get("funnel") or []}
+                                    "confidence": cfg.eval_funnel_conf, "margin": cfg.eval_funnel_margin,
+                                    "hard_fail": cfg.eval_hard_fail, "gates": info.get("funnel") or []}
                                    if cfg.eval_profile == "funnel" else None),
                         "margin_of_error": margin_of_error(cfg, results),
                         "long_context": ({"lengths": list(cfg.longctx_lengths), "trials": cfg.longctx_trials,

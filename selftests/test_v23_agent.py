@@ -252,10 +252,12 @@ def test_gate_uses_the_agent_composite(cfg):
     keys = ["mmlu_pro", "humaneval", "toolcall"]
     a = _row("A-9B-Q4_K_M", lc={"64k": 100.0}, n=96)
     b = _row("B-9B-Q4_K_M", lc={"64k": 100.0}, n=96)
-    # a model that cannot be an agent (ctx below the minimum, no 64k result) is still gated, on the parts it has
+    # v2.3.3: a model that cannot be an agent (ctx below the minimum) fails a hard rule: it is not gated against the
+    # others (no score, not in the bar) and, with EVAL_HARD_FAIL=stop, it goes no further
     c = _row("C-9B-Q4_K_M", ctx=32768, lc=None, n=96)
     keep, rep, _ = funnel.gate([a, b, c], keys, leaders=3, cfg=cfg)
-    assert rep["C-9B-Q4_K_M"]["score"] is not None and "C-9B-Q4_K_M" in keep
+    assert rep["C-9B-Q4_K_M"]["state"] == "no_agent" and "C-9B-Q4_K_M" not in keep
+    assert {"A-9B-Q4_K_M", "B-9B-Q4_K_M"} <= keep
 
 
 # --------------------------------------------------------------------------- --compare guard

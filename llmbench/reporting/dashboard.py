@@ -77,7 +77,8 @@ def render_dashboard(results, cfg, path, cpu_source="none", hardware="", partial
         meta["evals"]["margin"] = margin_of_error(cfg, results)
         meta["evals"]["fallback_penalty"] = cfg.agent_fallback_penalty
         meta["evals"]["funnel"] = ({"stages": [list(x) for x in funnel_stages(cfg)], "leaders": cfg.eval_leaders,
-                                    "confidence": cfg.eval_funnel_conf} if cfg.eval_profile == "funnel" else None)
+                                    "confidence": cfg.eval_funnel_conf, "margin": cfg.eval_funnel_margin,
+                                    "hard_fail": cfg.eval_hard_fail} if cfg.eval_profile == "funnel" else None)
         meta["evals"]["sq_basis"] = next((r.get("eval_sec_basis") for r in results if r.get("eval_sec_basis")), None)
         meta["evals"]["cache"] = bool(cfg.eval_result_cache)
         meta["evals"]["budget_forcing"] = cfg.eval_budget_forcing

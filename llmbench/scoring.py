@@ -358,7 +358,39 @@ def _no_score_notes(ok):
             r["score_note"] = f"not ranked: {r['eval_screened']}"
 
 
+def _fill_rank_states(results, cfg):
+    """v2.3.3: every evaluated model is in ONE of three states (rank_state, with the reason in rank_reason):
+      ranked    has an Agent score
+      no_agent  fails a hard rule (context / usable context below AGENT_CTX_MIN, tool calling below MIN_TOOLCALL_PCT):
+                a rule, decided on the model's own measurements, never a comparison with other models
+      screened  dropped by the funnel's confidence gate: statistically clearly below the leaders on the first stages
+    no_agent wins over screened (a model that fails 128k is a hard failure even if the funnel also dropped it, e.g.
+    results of v2.3.2 and older). Anything else (evals skipped / failed / incomplete, no evals in the run) is None;
+    score_note says why."""
+    from . import agent
+    ok = [r for r in results if r["status"] == "ok"]
+    lengths = agent.run_lc_lengths(ok)
+    _, has_tools = agent.eval_keys(ok)
+    for r in ok:
+        r["rank_state"] = r["rank_reason"] = None
+        measured = r.get("eval_avg_pct") is not None or agent.lc_results(r) or r.get("eval_hard_fail")
+        why = agent.exclusion(r, cfg, has_tools, lengths) if measured and not r.get("eval_skipped") else None
+        if not why and r.get("eval_hard_fail"):
+            why = "no Agent score: " + r["eval_hard_fail"]
+        if r.get("score_agent") is not None and not why:
+            r["rank_state"] = "ranked"
+        elif why:
+            r["rank_state"], r["rank_reason"], r["score_note"] = "no_agent", why, why
+        elif r.get("eval_screened"):
+            r["rank_state"], r["rank_reason"] = "screened", r["eval_screened"]
+
+
 def _fill_agent_scores(results, cfg):
+    _fill_agent_scores_core(results, cfg)
+    _fill_rank_states(results, cfg)
+
+
+def _fill_agent_scores_core(results, cfg):
     """Agent score (0-100), quality first and speed second. VRAM is deliberately not part of it (see score_sweet).
 
     score_agent = credit(composite -> tie zone -> quadratic fall-off) x retry_keep x ctx_factor x (1 - W + W x speed)
