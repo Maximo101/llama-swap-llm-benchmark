@@ -107,11 +107,11 @@ def test_concurrent_evals_same_answers_and_faster(monkeypatch, tmp_path, server)
     mock_server.CTX.update(slots=4, n_ctx=131072)          # 4 slots, a 128k shared KV pool: room for 4 requests
     try:
         code1, t1, d1 = run_cli(monkeypatch, tmp_path / "seq", server, ["--evals-only"], datasets=ds,
-                                EVAL_CONCURRENCY="1") if (tmp_path / "seq").mkdir() is None else None
+                                EVAL_CONCURRENCY="1", EVAL_THINK_BUDGET="16384") if (tmp_path / "seq").mkdir() is None else None
         seq_max = mock_server.STATE["max_in_flight"]
         (tmp_path / "par").mkdir()
         code2, t2, d2 = run_cli(monkeypatch, tmp_path / "par", server, ["--evals-only"], datasets=ds,
-                                EVAL_CONCURRENCY="4")
+                                EVAL_CONCURRENCY="4", EVAL_THINK_BUDGET="16384")   # a fixed budget: the auto one is bigger at 128k and fits 3 requests, not 4
     finally:
         mock_server.CTX.clear()
         mock_server.CTX.update(old)

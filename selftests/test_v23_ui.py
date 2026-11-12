@@ -181,7 +181,7 @@ def test_host_header_guard(ui):
     assert _req(u.port, "GET", "/", host=f"127.0.0.1:{u.port + 1}")[0] == 403    # another port
     st, hd, page = _req(u.port, "GET", "/")
     assert st == 200 and "frame-ancestors 'none'" in hd["Content-Security-Policy"] and hd["X-Frame-Options"] == "DENY"
-    assert "llama-swap Benchmark" in page
+    assert "Local LLM Benchmark Suite" in page
     assert _req(u.port, "GET", "/", host=f"localhost:{u.port}")[0] == 200
     assert server.host_ok("[::1]:41010", 41010) and server.host_ok("192.168.1.20:41010", 41010)
     assert not server.host_ok("attacker.test:41010", 41010) and not server.host_ok("", 41010)
@@ -647,3 +647,55 @@ def test_check_flags_missing_datasets(monkeypatch, capsys):
     monkeypatch.setattr(builtins, "__import__", fake)
     diagnostics._check_eval_client(cfg)
     assert "NOT AVAILABLE" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- v2.3.2 run protection
+@pytest.mark.skipif(os.name != "posix", reason="uses the POSIX run lock helpers of the tests above")
+def test_save_and_defaults_are_refused_while_a_run_is_active(ui):
+    """.env is not rewritten under a live run, whoever asks (the page locks its buttons; this is the server side)."""
+    u = ui()
+    vals = {"OUTPUT_DIR": str(u.dir / "results"), "EVAL_PROFILE": "deep"}
+    before = u.env.read_text()
+    child = _sleeper()
+    try:
+        (u.dir / "results" / cli.LOCK_NAME).write_text(json.dumps({"pid": child.pid, "started": "now", "log": None}))
+        st, _, out = _req(u.port, "POST", "/api/save", {"values": vals})
+        assert st == 409 and out["error"].startswith("Run active"), out
+        st, _, out = _req(u.port, "POST", "/api/defaults", {})
+        assert st == 409 and out["error"].startswith("Run active"), out
+        assert u.env.read_text() == before and not (u.dir / "my.env.bak").exists()
+        assert _req(u.port, "POST", "/api/check", {"values": vals})[0] == 200          # reading and checking still work
+        st, _, log = _req(u.port, "GET", "/api/log?offset=0")                         # no log file yet: still names the run
+        assert log["running"] and log["pid"] == child.pid and log["started"] == "now"
+    finally:
+        child.kill()
+        child.wait()
+    st, _, out = _req(u.port, "POST", "/api/save", {"values": vals})                    # the run is over: saved
+    assert st == 200 and out["saved"], out
+    assert envfile.read_values(u.env)["EVAL_PROFILE"] == "deep"
+
+
+def test_settings_page_has_the_run_lock_and_context_tips():
+    html = (Path(server.__file__).with_name("settings.html")).read_text(encoding="utf-8")
+    assert ("Suggested context sizes: 4096 (4k), 8192 (8k), 16384 (16k), 32768 (32k), 65536 (64k), 98304 (96k), "
+            "131072 (128k), 262144 (256k), 524288 (512k), 1048576 (1M)") in html
+    assert "Existing run will stop, are you sure?" in html and "toast('Run active', t)" in html
+    assert "#runst.running{color:var(--red);font-weight:700}" in html
+    for b in ("save", "defaults", "favload", "favsave", "favdel", "reload", "runall"):
+        assert f"'{b}'" in html.split("const LOCK_IDS = ", 1)[1].split("]", 1)[0], b
+
+
+@pytest.mark.skipif(not __import__("shutil").which("node"), reason="Node.js not installed")
+def test_context_tip_goes_on_context_sizes_only(tmp_path):
+    """isCtxKey: token-size settings get the tip; percentages, actions and switches that merely mention ctx do not."""
+    import re
+    html = (Path(server.__file__).with_name("settings.html")).read_text(encoding="utf-8")
+    fn = re.search(r"const isCtxKey = .*", html).group(0)
+    yes = ["AGENT_CTX_MIN", "AGENT_CTX_CURVE", "LONGCTX_LENGTHS", "PREFILL_CTX_TESTS", "PREFILL_DEPTH",
+           "AGENT_PROMPT_TOKENS", "MIN_CTX", "STRATA_CTX", "BUDGET_SERVER_MIN_CTX"]
+    no = ["AGENT_CTX_PASS_PCT", "MAX_CTX_VRAM_PCT", "MIN_CTX_ACTION", "EVAL_LONGCTX", "LONGCTX_KV_MIN", "LONGCTX_KEYS",
+          "EVAL_THINK_BUDGET", "MAX_TOKENS_TECH", "UI_TOKEN", "HF_TOKEN"]
+    f = tmp_path / "k.js"
+    f.write_text(fn + f"\nconsole.log(JSON.stringify([{json.dumps(yes)}.filter(k=>!isCtxKey(k)), {json.dumps(no)}.filter(isCtxKey)]))")
+    r = subprocess.run(["node", str(f)], capture_output=True, text=True)
+    assert r.returncode == 0 and json.loads(r.stdout) == [[], []], r.stdout + r.stderr

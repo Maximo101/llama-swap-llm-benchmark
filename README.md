@@ -1,17 +1,48 @@
-# Llama-Swap LLM Benchmark Suite
+# Local LLM Benchmark Suite
 
 <a href="./assets/banner.png" target="_blank">
   <img src="./assets/banner.png" alt="Banner" width="100%" />
 </a>
 
-An automated, real-load benchmark for LLMs served by [llama-swap](https://github.com/mostlygeek/llama-swap).
+An automated, real-load benchmark for LLMs tested on [llama-swap](https://github.com/mostlygeek/llama-swap), this benchmark suite works out-of-the-box with any OpenAI API-compatible endpoint—including Ollama, llama.cpp, LM Studio, vLLM, and cloud providers.
 
-For every model on your server it measures generation speed (Technical + Logic prompts), prefill speed at the prompt lengths you actually deploy, agent-prompt time to first token, load time, prompt-cache efficiency and context size, while tracking GPU power, VRAM, temperature and CPU power. It reads what the server really loaded (launch flags and the GGUF header: KV-cache type, bits per weight, experts, KV cost per token). From those it derives energy per token, efficiency and (optionally) electricity cost. After the speed tests it runs dataset evaluations that grade knowledge, math, coding, tool calling and long-context retrieval, then ranks the models for real use on that machine and builds a self-contained interactive dashboard.
+## **Speed Test**
+For every model on your server selected it measures generation speed (Technical + Logic prompts), prefill speed at the prompt lengths you actually deploy, agent-prompt time to first token, load time, prompt-cache efficiency and context size, while tracking GPU power, VRAM, temperature and CPU power. It reads what the server really loaded (launch flags and the GGUF header: KV-cache type, bits per weight, experts, KV cost per token). From those it derives energy per token, efficiency and (optionally) electricity cost. Note: Speed tests are quick and can be done seperately to evaluation tests.
 
-A full run of ~28 models is dominated by the GPU generating eval answers. v2.1 adds the tools to make that much shorter without making the ranking less trustworthy: a confidence-gated funnel, a per-question result cache with resume, batched evaluation with a measured probe, skipping models that cannot be deployed anyway, a single shared long-context document, and a per-phase timing report with `--estimate`. See [Making a full run faster](#making-a-full-run-faster). v2.2 adds a full-retest mode and sanity checks for the result cache, a cache-aware `--estimate`, and `--compare` to put runs (for example a Strata run and a llama-swap run) in one dashboard. v2.2.1 adds a settings file you can read at a glance, and a check for your `.env` v2.3 makes the Agent score fit agentic use (a minimum and a preference for long context, tool calling as its own part, a tool-calling minimum), adds **prefill at depth** (what an agent waits for each turn on a long, cached context), six colour tiers with a light theme and model families in the dashboard, and a **settings page** (`python benchmark.py --ui`) to edit `.env`, keep favourites, estimate, compare and start or stop runs from the browser. v2.3.1: runs that survive trouble, `--resume`, honest timings, a harder settings page
+## **Evaluation Tests**
+After the speed tests it runs dataset evaluations that grade knowledge, math, coding, tool calling and long-context retrieval, then ranks the models for real use on that machine and builds a self-contained interactive dashboard. Different tests can be enabled and disabled. (Refer to Credits and datasets) A Full test would take hours and days across multiple models at once.
+To manage this time efficiently, the suite uses three core mechanisms: **Evaluation Profiles**, **The Funnel**, and **Cached Results**.
 
+1. **Evaluation Profiles & Margins of Error**
+Fixed evaluation profiles determine how many rows (questions) are tested per benchmark, directly controlling the statistical margin of error:
+* Smaller profiles (test, quick, basic): Run very quickly with fewer questions, resulting in a higher margin of error (e.g., $\pm20\%$ to $\pm40\%$). These are ideal for rapid sanity checks.
+* Larger profiles (standard, thorough, deep, ultra, full): Test hundreds or thousands of questions per benchmark, shrinking the margin of error down to $\pm7\%$ or even $\pm1\%$. These provide high-precision comparisons but take significantly longer to execute.
+
+2. **The Funnel Strategy**
+To get the precision of deep evaluation without wasting hours testing underperforming models, The Funnel was developed.
+* Graduated Stages: Instead of running every model through a massive question set, the funnel starts everyone on a small, fast set of questions (quick 11 per test).
+* Confidence Gating: A statistical confidence gate then compares each model against the current leaders. Any model whose score falls clearly below the leaders (even accounting for its margin of error) is "screened out" and stops testing there.
+* Survivor Advancement: The models that pass move on to the next, larger tier of questions (e.g., basic 24 $\rightarrow$ moderate 43 $\rightarrow$ standard 96) and are gated again, all the way up to your configured EVAL_FUNNEL_FINAL profile.
+* Efficiency: Testing shows the funnel achieves the exact same ultimate winner as running every model through a full deep evaluation, but saves 40–50% of the total compute time. A guaranteed minimum number of top models (EVAL_LEADER = 5) always make it through regardless.
+
+<a href="./assets/eval1.png" target="_blank">
+  <img src="./assets/eval1.png" alt="Settings Page - Evaluation Profiles" width="100%" />
+</a>
+
+3. **Result Caching**
+The evaluation suite includes a robust caching layer that stores past test results.
+This allows you to:
+* Reuse previous scores across runs without re-running completed tests.
+* Progressively build up deeper evaluations over time.
+* Spread out testing overhead across multiple runs rather than waiting for a massive batch all at once.
+* To improve this cache process, we developed the Sanity Check %. A configurable percentage of cached answers is randomly re-tested to detect non-deterministic decoding or cache drift. Adaptive mode automatically reduces checks for models that remain consistent while keeping higher scrutiny on models whose outputs change.
+
+
+* 📊 **Demo Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/llama-swap-llm-benchmark/blob/main/assets/demo_dashboard.html)
 * 📊 **RTX 5070 Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/llama-swap-llm-benchmark/blob/main/assets/5070_benchmark_dashboard.html)
 * 📊 **RTX 5070 Ti Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/llama-swap-llm-benchmark/blob/main/assets/5070ti_benchmark_dashboard.html)
+
+(if you would like to share results please contact us)
 
 <a href="./assets/m1.png" target="_blank">
   <img src="./assets/m1.png" alt="5070 12GB Benchmark Result" width="100%" />
@@ -33,6 +64,23 @@ Settings Page
 <a href="./assets/models.png" target="_blank">
   <img src="./assets/models.png" alt="Settings Page - Models" width="100%" />
 </a>
+
+v1.0 Created a simple speed test and basic dashboard. v1.50 added basic evaluation tests. v2.1 added the tools to make that much shorter without making the ranking less trustworthy: a confidence-gated funnel, a per-question result cache with resume, batched evaluation with a measured probe, skipping models that cannot be deployed anyway, a single shared long-context document, and a per-phase timing report with `--estimate`. See [Making a full run faster](#making-a-full-run-faster). v2.2 addsed full-retest mode and sanity checks for the result cache, a cache-aware `--estimate`, and `--compare` to put runs (for example a Strata run and a llama-swap run) in one dashboard. v2.2.1 adds a settings file you can read at a glance, and a check for your `.env` v2.3 makes the Agent score fit agentic use (a minimum and a preference for long context, tool calling as its own part, a tool-calling minimum), adds **prefill at depth** (what an agent waits for each turn on a long, cached context), six colour tiers with a light theme and model families in the dashboard, and a **settings page** (`python benchmark.py --ui`) to edit `.env`, keep favourites, estimate, compare and start or stop runs from the browser. v2.3.1: runs that survive trouble, `--resume`, honest timings, a harder settings page. v2.3.2 adds Agent leaderboard, fixed chart order, top axis numbers, data-fitted scatter axes and other improvements to the full model comparison table.
+
+## 🔌 Universal Compatibility (OpenAI API Standard)
+
+While this benchmark suite was originally built and thoroughly tested using **llama-swap**, it is completely engine-agnostic.
+
+Because the tool utilizes the industry-standard OpenAI API format (`/v1/chat/completions`), **any backend that mimics this format will seamlessly plug into the dashboard.**
+
+This means it works out-of-the-box with:
+* **Local Inference Engines:** `llama.cpp` (via `llama-server`), **Ollama** (which natively exposes an OpenAI-compatible endpoint), **LM Studio**, and **vLLM**.
+* **Cloud Providers:** **Groq**, standard **OpenAI** endpoints, or any other API-compatible hosted service.
+
+> ⚠️ **Note on Cloud Providers:** While the dashboard supports cloud-based OpenAI-compatible endpoints, **it is primarily optimized and tested for local hardware evaluation.** If you run comprehensive test suites against commercial cloud providers, standard API usage rates and token costs will apply.
+
+### How to Connect
+To use a different backend, simply update your environment variables or configuration file to point the **Base URL** and **API Key** to the correct local port or remote endpoint of your chosen inference server.
 
 ## 📦 Features
 
@@ -98,6 +146,7 @@ llmbench/
   client.py             llama-swap / Strata HTTP, backend detection, model selection
   speed.py              speed, prefill and cache tests for one model
   status.py             run_status.json (progress, heartbeat) and run_<stamp>.rows.json (--resume)
+  pause.py              pause / resume (run_control.json, run_<stamp>.pause.json) and the MAX_GPU_TEMP guard
   modelinfo.py, gguf.py  launch flags, /props and the GGUF header (own reader)
   scoring.py            CSV schema, derived metrics, Goldilocks / Chat / Agent / Sweet-spot scores, budgets
   telemetry/            gpu.py (NVML + nvidia-smi), host.py (RAPL, RAM, launch flags), hardware.py
@@ -273,10 +322,6 @@ python benchmark.py --validate                                # do the settings 
 4. A stopped reply (repetition loop, thinking cap, timeout) whose visible answer is already complete is graded as it is; otherwise, and also when a reply is cut off by the token limit, the question is asked once more with thinking disabled (or, with `EVAL_BUDGET_FORCING=true`, the reasoning is closed and the answer asked for).
 5. Every answer is stored in the result cache. With `EVAL_PROFILE=funnel` the models clearly below the leaders are dropped after each stage and the rest answer the next stage's new questions.
 
-<a href="./assets/eval1.png" target="_blank">
-  <img src="./assets/eval1.png" alt="Funnel Test" width="100%" />
-</a>
-
 ## Configuration
 
 All settings live in `.env`, next to `benchmark.py`. `.env.example` is the complete, annotated list: copy it once (`cp .env.example .env`) and edit. It has three parts:
@@ -318,6 +363,24 @@ This compares your `.env` with this version's `.env.example`. It reads files onl
 
 It exits with status 1 if it found an unknown setting or an unusable value. A selftest checks that `.env.example` lists every setting the code reads and that each documented default matches the code, so the file and the code can't drift apart.
 
+### Pausing a run, and the GPU temperature limit
+
+A run can wait and carry on, by hand or when the GPU gets too hot. The same process waits: the model stays loaded, the run lock stays, and `run_status.json` (and the settings page) say `paused` and why.
+
+```bash
+python benchmark.py --pause      # ask the run that is going in OUTPUT_DIR to pause
+python benchmark.py --resume     # while a run is paused: carry it on (otherwise: continue a run that stopped, see above)
+```
+
+The settings page has the same buttons (**Pause run**, **Resume run**, and **Resume last run** for a run that stopped). A request is a small file, `results/run_control.json`, so it also reaches a run on another machine that shares `OUTPUT_DIR`.
+
+* **By hand:** nothing is cut off. The speed phase finishes the model it is testing; the evals stop taking questions, let the requests in flight finish and be graded, and then wait. Between two models or two datasets the run simply waits.
+* **GPU too hot:** set `MAX_GPU_TEMP` (e.g. `85`, in C; `0` = off). The hottest GPU on *this* machine is watched on its own sampler, during speed tests and evals. At the limit the run stops at the end of the request that is going, waits until the GPU has been at or below `MAX_GPU_TEMP - GPU_TEMP_RESUME_DELTA` (default 10) for a few seconds, and carries on by itself. If the temperature cannot be read (no NVML or `nvidia-smi`) or llama-swap is on another machine, the limit is **not** enforced and the run says so.
+* **Fresh start of the line that was going:** anything half done is thrown away and done again from its first step: a model's speed test (numbers taken on a hot or interrupted GPU are not kept), the dataset being evaluated, a model's long-context test. Finished models stay (rows file) and every graded answer stays (result cache), so the restarted dataset only asks the questions that were not answered yet. Scores are the same as an uninterrupted run's. With `EVAL_RESULT_CACHE=false` the restarted dataset asks everything again. In `eval_details_<stamp>.jsonl` an answer is never written twice; a repeated long-context record carries `"pause_restart": n`.
+* **State on disk:** when the run pauses it saves its rows and writes `results/run_<stamp>.pause.json` (why, phase, model i of N, dataset and question count, finished models, a line per row, what will restart). The file is deleted when the run carries on. If the process is lost while paused, `--resume` carries on from the rows file and says where it had stopped.
+* **A line that keeps tripping the limit** (more than `GPU_TEMP_MAX_RESTARTS`, default 3) ends the run like Ctrl+C (exit code 130, partial results written, resumable): improve the cooling or raise the limit.
+* Time spent paused is in `phases.paused_s` of the JSON export (it is also inside `speed_s` / `eval_s`). The batch probe cannot be paused.
+
 ### Settings page (`--ui`)
 
 ```bash
@@ -325,8 +388,6 @@ python benchmark.py --ui            # prints the address; on a desktop it opens 
 ```
 
 A page in the dashboard's style (light or dark) for everything in `.env`. Editing `.env` by hand and running from the command line or Unraid User Scripts work exactly as before; the page is optional.
-
-<img width="1228" height="329" alt="d2" src="https://github.com/user-attachments/assets/9ab0f57f-50eb-4327-8c54-09aaf15029e6" />
 
 * **Every setting** grouped by PART and section as in `.env.example`, with its description, built-in default, the `.env.example` value and, where there is a fixed set, a drop-down of the allowed values. Values are checked as you type with the same rules as `--check-env` and a run (a wrong value is marked in red with the reason). Settings new in this version, old names and unknown settings are listed under **Checks**. A filter box and *only changed* help find a setting.
 * **Save** checks every value (and that a run would load them), then writes `.env` in the `.env.example` layout: your values on their own lines, untouched settings as shipped, anything `.env.example` doesn't know kept at the end. The previous file is kept as `.env.bak`. **Return to defaults** (asks first) writes the shipped `.env.example` values and keeps your tokens and keys.
@@ -336,7 +397,10 @@ A page in the dashboard's style (light or dark) for everything in `.env`. Editin
 * **Guides** under `EVAL_PROFILE` (why `funnel` is recommended, how the funnel works, the margin of error per test for every profile, a link to Estimate for the time), `EVAL_FUNNEL_FINAL` (the stages and the finalists' margin for each choice), `ESTIMATE_GPU_BW_GBS` (common GPUs with their memory bandwidth; click one to use it) and the two temperature settings.
 * **On opening** the page lists the server's models and runs `--check` (once per browser session; it tests the GPU readers and the code sandbox, so it takes a moment).
 * **Buttons:** **Estimate** (with the settings on the page, saved or not), **Run --check again**, **Reload dashboard**, **Compare** (pick finished runs), **Open latest dashboard**, **? Help**.
-* **Run / Stop:** **Full run**, **Speed only**, **Evals only** or **Batch probe** (`--batch-probe`) start the benchmark with the saved `.env`. One run at a time; it keeps going when you close the page, and the page follows its log again when you come back. **Stop** is Ctrl+C for the run: it finishes the current request and writes partial results (dashboard, CSV, JSON). A run started from the command line shows up too (`OUTPUT_DIR/.benchmark_run.json`), and a second run on the same GPU prints a warning.
+* **Run / Stop:** **Full run**, **Speed only**, **Evals only** or **Batch probe** (`--batch-probe`) start the benchmark with the saved `.env`. One run at a time; it keeps going when you close the page, and the page follows its log again when you come back. **Stop run** asks first ("Existing run will stop, are you sure?"), then is Ctrl+C for the run: it finishes the current request and writes partial results (dashboard, CSV, JSON). A run started from the command line shows up too (`OUTPUT_DIR/.benchmark_run.json`), and a second run on the same GPU prints a warning.
+
+* **While a run is active (v2.3.2)** the status next to the Run buttons is bold red (`running (pid ..., since ...)`; grey `idle` otherwise) and everything that changes state is locked: **Save**, **Return to defaults**, the favourites, **Reload dashboard**, the Run buttons, every setting and the model ticks. A click on any of them shows **Run active**. Estimate, the checks, Compare and opening the dashboard still work. The server refuses Save and Return to defaults during a run as well (HTTP 409), whichever page or script asks.
+* **Context sizes:** every setting that takes a context size in tokens (`AGENT_CTX_MIN`, `AGENT_CTX_CURVE`, `LONGCTX_LENGTHS`, `PREFILL_CTX_TESTS`, `PREFILL_DEPTH`, `AGENT_PROMPT_TOKENS`, `MIN_CTX`, `STRATA_CTX`, `BUDGET_<PROFILE>_MIN_CTX`) has an ⓘ and a hover tip with the usual sizes: 4096 (4k), 8192 (8k), 16384 (16k), 32768 (32k), 65536 (64k), 98304 (96k), 131072 (128k), 262144 (256k), 524288 (512k), 1048576 (1M).
 
 **Opening it from another PC** (a headless server, Unraid): set `UI_HOST=0.0.0.0` (or the server's LAN address) in `.env`. On the first start a token is generated, saved as `UI_TOKEN` and printed in the address (`http://192.168.1.20:41010/?token=...`). Open that address once; the browser keeps the token as a cookie. `UI_PORT` changes the port.
 
@@ -474,10 +538,16 @@ Missing measurements are `null`, never `NaN`. A JSON file is also written when e
 ## The dashboard
 
 * **Header:** Model count, the tests run, date, your host hardware (CPU, RAM, GPU) and the power sources used. Each dataset name links to the Hugging Face page it was loaded from (the pinned revision when `EVAL_<DATASET>_REVISION` is set; built-in tool calling links to its source file); hover it for a description.
-* **Filters:** A sticky toggle bar for quantization, Dense/MoE, parameter-size bucket, "Hide VRAM ≥95%" and "Hide failed".
+* **Header:** next to **Tests**, a funnel run shows where its funnel stopped (**Funnel final: Moderate**; hover it for the stages and how many models reached the last one).
+* **Filters:** A sticky toggle bar for quantization, Dense/MoE, parameter-size bucket, "Hide VRAM ≥95%" and "Hide failed". **▾ Filters** folds it to one line (the model count and the number of filters that are on stay visible); it starts folded on a phone and the choice is remembered in your browser.
+* **Agent leaderboard (v2.3.2):** one full-width bar chart above everything else, best first. It ranks by the **Agent score**, which is already the combined figure (Agent quality × the speed factor); a dashed line on each bar marks that model's **Agent quality**, and **Rank by** switches the order to quality alone. The chart computes nothing new: both numbers are the run's own. Models without an Agent score are left out and counted in the note above the chart. Click a bar or a name to highlight that model everywhere.
 * **Top 3 Goldilocks podium:** Gold/silver/bronze cards ranking Overall Balance, Chat Driver, and Agentic Reasoner (which factors in eval quality).
-* **Charts:** Generation speed, VRAM vs speed, power efficiency, energy per token, TTFT leaderboard, latency vs throughput, prefill vs generation, active vs idle GPU power, speed by quantization, and **Accuracy & Pass rates** (knowledge, math and coding shown as separate groups).
-* **Full model comparison:** Hover any column header for what it measures and which way is better. Hide columns with the × in a header or the **Columns** panel (single columns, whole groups such as Speed or Evals, or *Only this group*); **Show all columns** restores the full table. The choice is remembered in your browser, so the next run's dashboard opens with the same view. Columns with no data in a run are hidden automatically. Click a row to set it as a baseline, and every other row shows its +/- % against it. Models that are not ranked (incomplete evals, screened out by the funnel) or whose evals were skipped carry a badge; hover it for the reason.
+* **Charts:** two to a row on a wide screen, in this order: prefill vs generation speed | memory footprint; average generation speed | VRAM vs speed; active vs idle GPU power | prefill speed by prompt length; then power efficiency, energy per token, prompt processing time, latency vs throughput and speed by quantization, and **Accuracy & Pass rates** (knowledge, math and coding shown as separate groups).
+  * The numbers of a numeric bottom axis are repeated above each chart, so a long chart can be read while its bottom axis is off screen.
+  * The two scatter charts (**VRAM vs speed**, **Quality vs speed**) fit their axes to the data instead of starting at 0 (models that all score 80 to 100 are drawn on an axis from 75). A small gap looks larger there, so read the numbers; bar charts always start at 0.
+  * Hiding a series in a chart's legend also hides its value labels.
+* **Full model comparison:** Hover any column header for what it measures and which way is better. Hide columns with the × in a header or the **Columns** panel (single columns, whole groups such as Speed or Evals, or *Only this group*); **Show all columns** restores the full table. The choice is remembered in your browser, so the next run's dashboard opens with the same view. Columns with no data in a run are hidden automatically. **Resize a column** by dragging the right edge of its header (double-click the edge for automatic width, **Reset column widths** in the Columns panel for all of them; remembered in your browser); the header row is two rows high and its text wraps to the column, the data rows stay on one line and are cut with an ellipsis. The line above the table names the eval profile that ran, with the funnel's final stage and stages. Click a row to set it as a baseline, and every other row shows its +/- % against it. Models that are not ranked (incomplete evals, screened out by the funnel) or whose evals were skipped carry a badge; hover it for the reason.
+* **Hide a model (v2.3.2):** the × in front of a model's name removes it from the table, the winners and every chart. **Hidden models** under the table lists what you removed, with **Restore** per model and **Restore all**. It is a view setting for the open page only (not remembered): scores were fixed when the run ended and do not change when a model is hidden.
 * **Combined runs (`--compare`):** a **Run** column and a **Run** filter show which run each model comes from and hide or show a run's rows (the scores stay as computed over all models).
 * **Where the time went:** time per model and phase (speed tests, eval load, long context, each dataset) as a stacked chart, the totals, and the thinking vs answer tokens generated.
 * **Quantization analysis and methodology:** Per-quant averages, plus the exact definitions used for this run.
@@ -486,9 +556,7 @@ Missing measurements are `null`, never `NaN`. A JSON file is also written when e
 * **Families:** chips in the filter bar group models by `DASH_FAMILIES` in `.env` (`Gemma=*gemma-4*;BigBang=*bigbang*`, several patterns per family with `|`) and automatically by the first word of the model name when two or more models share it (e.g. all `endless-frontier_BigBang` quants). Click chips to show only those families; the box next to them takes wildcard patterns, comma-separated, `*` and `?`, case-insensitive: `*gemma-4*` also finds `agent-gemma-4-26B...`. Chips and patterns combine with OR (either matches), and with the other filter groups (quant, size, ...) with AND.
 * **? Help:** what the colours mean with every threshold for this run (and the VRAM and tool-calling marks), how the toggles and family patterns work, and a rough speed-by-setup table: the generation speed to expect from a few typical GPUs and model sizes (estimates from memory bandwidth, not measurements), to read the tiers against your hardware.
 
-<a href="./assets/colour.png" target="_blank">
-  <img src="./assets/colour.png" alt="Colour Tool tip" width="100%" />
-</a>
+<img width="551" height="798" alt="m1" src="https://github.com/user-attachments/assets/0aab53fc-f4b0-434a-a1b3-52515a556116" />
 
 ## Metric definitions
 
@@ -555,13 +623,13 @@ Missing measurements are `null`, never `NaN`. A JSON file is also written when e
 Reasoning models can fall into endless loops, and a non-streaming request returns nothing until the model has finished, so a looping reply used to run into the 10-minute timeout and the benchmark learned nothing about it. Since v2.1 the evaluation phase reads replies as a stream (the speed tests do not), which allows:
 
 1. **Loop abort:** a reply that repeats itself is stopped within seconds and flagged `Fail: Degradation`. A line is printed as it happens, for example `[Fail: Degradation] gpqa-10: repetition loop (a 59-character block repeated 67+ times) after ~1,058 tokens (7s) -> retried with thinking disabled`.
-2. **Thinking cap:** `EVAL_THINK_BUDGET` (default 16384 tokens) limits the thinking per question; `EVAL_THINK_BUDGET_<DATASET>` (e.g. `EVAL_THINK_BUDGET_GSM8K=2048`) overrides it for one dataset. The server is also told `max_tokens <= budget + 4096`.
+2. **Thinking cap:** `EVAL_THINK_BUDGET` limits the thinking per question. The default, `auto`, gives each model `EVAL_THINK_BUDGET_PCT` (25) % of its own context (131,072 gives 32,768; 65,536 gives 16,384), never below `EVAL_THINK_BUDGET_MIN` (4,096 tokens) and never above `EVAL_THINK_BUDGET_MAX_PCT` (60) % of the context, so a small context still leaves room for the answer. A number fixes it for every model and `0` is unlimited. `EVAL_THINK_BUDGET_<DATASET>` (e.g. `EVAL_THINK_BUDGET_GSM8K=2048`) overrides it for one dataset. The server is also told `max_tokens <= budget + 4096`. The run prints each model's budget (`thinking budget 32,768 tokens (25% of 131,072 ctx)`), and the settings page shows the budget for each context size when you hover the ⓘ on these settings.
 3. **Partial-answer salvage:** a stopped reply whose *visible* answer is already complete is graded as it is. Otherwise the question is retried once with thinking disabled (`EVAL_RETRY_ON_LENGTH`), and if that fails too it counts as wrong and keeps its flag.
 4. **Budget forcing (opt-in, `EVAL_BUDGET_FORCING=true`):** at the thinking cap the reasoning written so far is kept, the thinking block is closed, and the model is asked for its answer (through llama-server's `/apply-template` and `/completion`, for chat templates that use `<think>` tags). This keeps the work already done instead of throwing it away for a No-Thinking retry. Method from *s1: Simple test-time scaling* (Muennighoff et al., 2025). It changes what is measured compared with the retry, so compare runs with the same setting. llama-server's own `--reasoning-budget` launch flag is an alternative on the server side.
 5. **Evidence:** the tail of every stopped reply is kept in `eval_details_*.jsonl` (`attempts[].tail`), and the per-dataset summary shows how many questions were affected and how many were recovered.
 6. **No runaway generation:** closing the connection makes llama-server stop generating. (A non-streaming request that times out is not reliably cancelled, so the abandoned generation could keep the GPU busy and slow the next question down.)
 
-The default budget is a judgement call: it keeps a run's duration predictable, but it also means that a model which needs more than about 16k tokens of thinking for a question is scored as if it had not answered that way. Every cap hit is counted, so you can see how many questions were affected and raise the budget if it matters to you (`EVAL_THINK_BUDGET=32768`, or `0` for unlimited). Per-dataset budgets are opt-in for the same reason: a tight budget measures "accuracy within N thinking tokens", which can reorder models (a strong model that reasons at length can drop below a terse weaker one). The budgets in use are recorded in `results.json` and shown in the dashboard's methodology. Set `EVAL_STREAM=false` to switch streaming off.
+Any budget is a judgement call: it keeps a run's duration predictable, but a model that needs more thinking than its budget for a question is scored as if it had not answered that way. Every cap hit is counted, so you can see how many questions were affected and raise the budget if it matters to you (`EVAL_THINK_BUDGET_PCT`, or a fixed number, or `0` for unlimited). Per-dataset budgets are opt-in for the same reason: a tight budget measures "accuracy within N thinking tokens", which can reorder models (a strong model that reasons at length can drop below a terse weaker one). The budgets in use are recorded in `results.json` and shown in the dashboard's methodology. Set `EVAL_STREAM=false` to switch streaming off. Because the budget is part of the result-cache key, changing it (or moving from v2.3.2's fixed 16,384 to `auto`) re-asks the questions whose budget changed; `EVAL_THINK_BUDGET=16384` keeps old cached answers and results comparable. A bigger budget also means fewer requests fit in the shared KV cache at once, so `in flight` can drop (for example from 4 to 3 at a 128k context).
 
 ## Troubleshooting
 
@@ -580,7 +648,7 @@ The default budget is a judgement call: it keeps a run's duration predictable, b
 * **A rerun finishes instantly / did not ask anything:** the result cache had every answer. Set `EVAL_RESULT_CACHE=refresh` to measure everything again (the new answers replace the cached ones), or `EVAL_SANITY_PCT` to spot-check a share of them.
 * **A rerun asked everything again although nothing changed:** something in the cache key did change, most often the llama.cpp build (an updated llama-swap container image), a launch flag, the context size or an eval setting in `.env`. `--estimate` shows how many answers it expects to reuse per model.
 * **Many `Fail: Degradation` lines, or questions taking 10 minutes:** Reasoning models often loop under greedy decoding (`EVAL_TEMPERATURE=0`; Gemma-family models especially). With the default `EVAL_TEMPERATURE=server` each model uses the sampling in its llama-swap command: put the authors' recommended sampling there (with a number in `EVAL_TEMPERATURE` that number overrides `--temp`; list such models in `EVAL_SERVER_SAMPLING_MODELS`).
-* **Many `Fail: Think cap` lines:** The model genuinely thinks for a long time. Raise `EVAL_THINK_BUDGET` (the run then takes longer), or accept the cap as part of the score.
+* **Many `Fail: Think cap` lines:** The model genuinely thinks for a long time. Raise `EVAL_THINK_BUDGET_PCT` / `EVAL_THINK_BUDGET_MAX_PCT`, or set a fixed `EVAL_THINK_BUDGET` (the run then takes longer), or accept the cap as part of the score.
 * **After a timeout the next request is unusually slow (about half speed):** In the llama-swap log, requests that follow a 499 status (client closed) can decode much more slowly. With non-streaming requests the abandoned generation may keep running on the server. Streaming (the default since v2.1) closes the connection explicitly; to check on your build, run `curl http://<server>/slots` right after an abort and confirm no slot is still processing.
 * **Eval scores aren't comparable with older runs:** v2.1 samples nested questions, so a profile's questions differ from v2.0's (scores move within the margin of error); the long-context test uses one document per length; `EVAL_LCB_SINCE` restricts LiveCodeBench to newer (harder) problems. The thinking cap can also lower the score of a model that needs very long reasoning; compare runs with the same `EVAL_THINK_BUDGET`. Enabling GSM8K or MATH changes the eval average, since it averages every enabled dataset.
 * **Prefill @depth is blank:** the depth plus ~4k new tokens did not fit the loaded context (the log says *skipped*; with a fixed `PREFILL_DEPTH`, try `auto`), or the server did not reuse the cached prompt (*not recorded: the server reused X of ~Y prompt tokens*). Prompt-cache reuse needs `cache_prompt` (llama-server's default) and the follow-up landing on the same slot; with several slots (`-np`) and no `--kv-unified` it may land on another one. A model with no depth figure is scored on its cold agent-prompt TTFT instead.
@@ -659,15 +727,19 @@ The licence of this repository covers its own code only. It does not re-license 
 
 ### Evaluation datasets
 
-| Eval | Original authors and paper | Original source | Copy this tool downloads | Licence |
-| --- | --- | --- | --- | --- |
-| **GPQA Diamond** | Rein, Hou, Stickland, Petty, Pang, Dirani, Michael, Bowman. *GPQA: A Graduate-Level Google-Proof Q&A Benchmark* (COLM 2024). [arXiv:2311.12022](https://arxiv.org/abs/2311.12022) | [idavidrein/gpqa](https://github.com/idavidrein/gpqa) · [Idavidrein/gpqa](https://huggingface.co/datasets/Idavidrein/gpqa) (gated) | [fingertap/GPQA-Diamond](https://huggingface.co/datasets/fingertap/GPQA-Diamond) (community copy of the 198-question Diamond subset) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), plus the authors' request below |
-| **MMLU-Pro** | Wang et al. (TIGER-Lab). *MMLU-Pro: A More Robust and Challenging Multi-Task Language Understanding Benchmark* (NeurIPS 2024 Datasets and Benchmarks). [arXiv:2406.01574](https://arxiv.org/abs/2406.01574) | [TIGER-AI-Lab/MMLU-Pro](https://github.com/TIGER-AI-Lab/MMLU-Pro) | [TIGER-Lab/MMLU-Pro](https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro) | MIT. Built from MMLU (Hendrycks et al., [arXiv:2009.03300](https://arxiv.org/abs/2009.03300), MIT), TheoremQA (MIT), SciBench (MIT) and STEM websites |
-| **HumanEval** | Chen et al. (OpenAI). *Evaluating Large Language Models Trained on Code*, 2021. [arXiv:2107.03374](https://arxiv.org/abs/2107.03374) | [openai/human-eval](https://github.com/openai/human-eval) | [openai/openai_humaneval](https://huggingface.co/datasets/openai/openai_humaneval) | MIT |
-| **MBPP** | Austin et al. (Google Research). *Program Synthesis with Large Language Models*, 2021. [arXiv:2108.07732](https://arxiv.org/abs/2108.07732) | [google-research/mbpp](https://github.com/google-research/google-research/tree/master/mbpp) | [google-research-datasets/mbpp](https://huggingface.co/datasets/google-research-datasets/mbpp) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
-| **LiveCodeBench** | Jain, Han, Gu, Li, Yan, Zhang, Wang, Solar-Lezama, Sen, Stoica. *LiveCodeBench: Holistic and Contamination Free Evaluation of Large Language Models for Code*, 2024. [arXiv:2403.07974](https://arxiv.org/abs/2403.07974) · [livecodebench.github.io](https://livecodebench.github.io/) | [LiveCodeBench/LiveCodeBench](https://github.com/LiveCodeBench/LiveCodeBench) (code: MIT) · [livecodebench/code_generation_lite](https://huggingface.co/datasets/livecodebench/code_generation_lite) | [bzantium/livecodebench](https://huggingface.co/datasets/bzantium/livecodebench) (a copy of `code_generation_lite` in plain JSONL, because the original's loading script no longer works with current `datasets`; default config `release_latest`, 1,055 problems from May 2023 to April 2025) | The dataset card says "cc" without naming a specific Creative Commons licence, so the exact terms are **unclear**. The problems come from LeetCode, AtCoder and Codeforces, whose own terms apply to the problem statements. The original repository's code is MIT |
-| **GSM8K** | Cobbe et al. (OpenAI). *Training Verifiers to Solve Math Word Problems*, 2021. [arXiv:2110.14168](https://arxiv.org/abs/2110.14168) | [openai/grade-school-math](https://github.com/openai/grade-school-math) | [openai/gsm8k](https://huggingface.co/datasets/openai/gsm8k) (`main`) | MIT |
-| **MATH-500** | The 500 test problems held out by Lightman et al. (OpenAI), *Let's Verify Step by Step*, 2023 ([arXiv:2305.20050](https://arxiv.org/abs/2305.20050)), from the MATH dataset by Hendrycks et al., *Measuring Mathematical Problem Solving With the MATH Dataset* (NeurIPS 2021, [arXiv:2103.03874](https://arxiv.org/abs/2103.03874)) | [openai/prm800k](https://github.com/openai/prm800k) (`math_splits`) · [hendrycks/math](https://github.com/hendrycks/math) | [HuggingFaceH4/MATH-500](https://huggingface.co/datasets/HuggingFaceH4/MATH-500) | MATH is MIT. The Hugging Face card states no licence of its own; the terms of MATH and openai/prm800k apply |
+The suite supports multiple accuracy, reasoning, coding, tool-use, and long-context evaluation datasets.
+
+| Eval | Details | Copy this tool downloads | Original source | Licence | Original authors and paper |
+| --- | --- | --- | --- | --- | --- |
+| **GPQA Diamond** | 198 questions, 4 choices. Slow and highly expert-level. | [fingertap/GPQA-Diamond](https://huggingface.co/datasets/fingertap/GPQA-Diamond) (community copy of the 198-question Diamond subset) | [idavidrein/gpqa](https://github.com/idavidrein/gpqa) · [Idavidrein/gpqa](https://huggingface.co/datasets/Idavidrein/gpqa) (gated) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), plus the authors' request below | Rein, Hou, Stickland, Petty, Pang, Dirani, Michael, Bowman. *GPQA: A Graduate-Level Google-Proof Q&A Benchmark* (COLM 2024). [arXiv:2311.12022](https://arxiv.org/abs/2311.12022) |
+| **MMLU-Pro** | 12,032 questions, up to 10 choices covering broad professional knowledge. | [TIGER-Lab/MMLU-Pro](https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro) | [TIGER-AI-Lab/MMLU-Pro](https://github.com/TIGER-AI-Lab/MMLU-Pro) | MIT. Built from MMLU (Hendrycks et al., [arXiv:2009.03300](https://arxiv.org/abs/2009.03300), MIT), TheoremQA (MIT), SciBench (MIT) and STEM websites | Wang et al. (TIGER-Lab). *MMLU-Pro: A More Robust and Challenging Multi-Task Language Understanding Benchmark* (NeurIPS 2024 Datasets and Benchmarks). [arXiv:2406.01574](https://arxiv.org/abs/2406.01574) |
+| **HumanEval** | 164 coding problems, pass@1 metric (runs code securely in the sandbox). | [openai/openai_humaneval](https://huggingface.co/datasets/openai/openai_humaneval) | [openai/human-eval](https://github.com/openai/human-eval) | MIT | Chen et al. (OpenAI). *Evaluating Large Language Models Trained on Code*, 2021. [arXiv:2107.03374](https://arxiv.org/abs/2107.03374) |
+| **MBPP** | 500 Python programming problems, pass@1 metric (runs code in the sandbox). | [google-research-datasets/mbpp](https://huggingface.co/datasets/google-research-datasets/mbpp) | [google-research/mbpp](https://github.com/google-research/google-research/tree/master/mbpp) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Austin et al. (Google Research). *Program Synthesis with Large Language Models*, 2021. [arXiv:2108.07732](https://arxiv.org/abs/2108.07732) |
+| **LiveCodeBench** | 1,055 problems with a date window; a heavy (~4 GB) download and the slowest test suite. | [bzantium/livecodebench](https://huggingface.co/datasets/bzantium/livecodebench) (a copy of `code_generation_lite` in plain JSONL, because the original's loading script no longer works with current `datasets`; default config `release_latest`, 1,055 problems from May 2023 to April 2025) | [LiveCodeBench/LiveCodeBench](https://github.com/LiveCodeBench/LiveCodeBench) (code: MIT) · [livecodebench/code_generation_lite](https://huggingface.co/datasets/livecodebench/code_generation_lite) | The dataset card says "cc" without naming a specific Creative Commons licence, so the exact terms are **unclear**. The problems come from LeetCode, AtCoder and Codeforces, whose own terms apply to the problem statements. The original repository's code is MIT | Jain, Han, Gu, Li, Yan, Zhang, Wang, Solar-Lezama, Sen, Stoica. *LiveCodeBench: Holistic and Contamination Free Evaluation of Large Language Models for Code*, 2024. [arXiv:2403.07974](https://arxiv.org/abs/2403.07974) · [livecodebench.github.io](https://livecodebench.github.io/) |
+| **GSM8K** | 1,319 grade-school multi-step mathematical word problems. | [openai/gsm8k](https://huggingface.co/datasets/openai/gsm8k) (`main`) | [openai/grade-school-math](https://github.com/openai/grade-school-math) | MIT | Cobbe et al. (OpenAI). *Training Verifiers to Solve Math Word Problems*, 2021. [arXiv:2110.14168](https://arxiv.org/abs/2110.14168) |
+| **MATH-500** | 500 challenging high-school competition math problems. | [HuggingFaceH4/MATH-500](https://huggingface.co/datasets/HuggingFaceH4/MATH-500) | [openai/prm800k](https://github.com/openai/prm800k) (`math_splits`) · [hendrycks/math](https://github.com/hendrycks/math) | MATH is MIT. The Hugging Face card states no licence of its own; the terms of MATH and openai/prm800k apply | The 500 test problems held out by Lightman et al. (OpenAI), *Let's Verify Step by Step*, 2023 ([arXiv:2305.20050](https://arxiv.org/abs/2305.20050)), from the MATH dataset by Hendrycks et al., *Measuring Mathematical Problem Solving With the MATH Dataset* (NeurIPS 2021, [arXiv:2103.03874](https://arxiv.org/abs/2103.03874)) |
+| **Tool Calling** | 32 built-in agent use cases testing tool selection and execution (no external download required). | *Built-in suite* | N/A (Internal test case suite) | MIT / Open Source | Local-LLM-Benchmark Built-in Module |
+| **Long-Context Retrieval** | Tests retrieval capabilities by hiding specific codes deep inside a very long document. | *Built-in suite* | N/A (Internal test case suite) | MIT / Open Source | Local-LLM-Benchmark Built-in Module |
 
 #### LiveCodeBench: which copy, and which problems
 
@@ -692,6 +764,9 @@ The GPQA authors ask users **not to reveal examples from the dataset in plain te
 | **Long-context retrieval** (`EVAL_LONGCTX`) | The needle-in-a-haystack test by Greg Kamradt ([gkamradt/LLMTest_NeedleInAHaystack](https://github.com/gkamradt/LLMTest_NeedleInAHaystack)), and the multi-key variant from *RULER: What's the Real Context Size of Your Long-Context Language Models?* by Hsieh et al. (NVIDIA, COLM 2024, [arXiv:2404.06654](https://arxiv.org/abs/2404.06654), [NVIDIA/RULER](https://github.com/NVIDIA/RULER)). The haystack, keys and decoys are generated by this tool at run time | See each repository |
 | **Margin of error, funnel gates** | The standard 95% binomial interval (worst case, ±98/√n percentage points); the funnel's one-sided bounds use the normal approximation with each dataset's binomial standard error | n/a |
 | **Budget forcing** (`EVAL_BUDGET_FORCING`) | Closing the thinking at a token budget and asking for the answer, from *s1: Simple test-time scaling* by Muennighoff, Yang, Shi, Li, Fei-Fei, Hajishirzi, Zettlemoyer, Liang, Candès and Hashimoto, 2025 ([arXiv:2501.19393](https://arxiv.org/abs/2501.19393), [simplescaling/s1](https://github.com/simplescaling/s1)). Only the idea is used; no code or data | Apache 2.0 (s1 repository) |
+
+## 🤖 Acknowledgements
+This project was built through a collaborative multi-AI workflow: directed by the author via Gemini to generate detailed prompts, implemented in code by Claude, and thoroughly tested across a suite of local open-source LLMs.
 
 ### Software
 

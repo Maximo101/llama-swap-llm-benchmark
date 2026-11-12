@@ -144,3 +144,45 @@ def test_dashboard_javascript_parses(cfg, tmp_path):
     r = subprocess.run(["node", "-e", "new Function(require('fs').readFileSync(process.argv[1],'utf8'))",
                         str(tmp_path / "d.js")], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+# --------------------------------------------------------------------------- v2.3.2 leaderboard, table and chart views
+def test_template_has_the_v232_view_features():
+    t = TEMPLATE_PATH.read_text(encoding="utf-8")
+    for needle in ('id="lbsec"', "function renderLeaderboard", "LBKEYS = {score:['score_agent'", 'id="hiddenbox"',
+                   "data-restoreall", "state.excluded.has(m.model)", "function bindResize", "llmbench.colWidths.v1",
+                   "Chart.register(topTicks)", "function fitAxis", "data-fmin", "Funnel final: ${esc(cap(FUNNEL_FINAL))}",
+                   "if (!chart.isDatasetVisible(di)) return;"):
+        assert needle in t, needle
+    # the leaderboard sits above the winners and the charts, in its own full-width card
+    assert t.index('id="lbsec"') < t.index('id="podium"') < t.index('id="charts"')
+    # chart order: prefill|memory, speed|VRAM, power|prefill-by-length, then the rest
+    ch = t.split("const CH = ", 1)[1].split(";\n", 1)[0]
+    order = re.findall(r"\['(\w+)',", ch)
+    assert order == ["pg", "mem", "tps", "vram", "pwr", "pctx", "eff", "jt", "ttft", "lat", "quant"], order
+    # the leaderboard ranks by figures the run stored: nothing is blended or re-scored in the page
+    lb = t.split("function renderLeaderboard", 1)[1].split("\n}\n", 1)[0]
+    assert "sort((a,b) => (b[k]-a[k])" in lb and "score_agent *" not in lb and "agent_quality *" not in lb
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="Node.js not installed")
+def test_fit_axis_follows_the_data(tmp_path):
+    """Scatter axes: 80..100% starts near the lowest point, never below 0 or above 100; the data always fits."""
+    t = TEMPLATE_PATH.read_text(encoding="utf-8")
+    fn = "function fitAxis" + t.split("function fitAxis", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+    cases = [[[80, 91.5, 100], 0, 100], [[12.7, 10.8, 14.5], 0, None], [[57.6, 93.6], 0, 100], [[5], 0, None],
+             [[0.4, 2.1], 0, None], [[99.2, 99.9], 0, 100], [[], 0, 100], [[None, 70], 0, 100]]
+    (tmp_path / "f.js").write_text(fn + f"console.log(JSON.stringify({json.dumps(cases)}.map(c=>fitAxis(c[0],c[1]??undefined,c[2]??undefined))))",
+                                   encoding="utf-8")
+    r = subprocess.run(["node", str(tmp_path / "f.js")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out[0] == {"min": 75, "max": 100} and out[6] == {}
+    for (vals, lo, hi), b in zip(cases, out):
+        v = [x for x in vals if x is not None]
+        if not v:
+            continue
+        assert b["min"] <= min(v) and b["max"] >= max(v), (vals, b)
+        assert b["min"] >= lo and (hi is None or b["max"] <= hi), (vals, b)
+        assert b["max"] - b["min"] <= max(4 * ((max(v) - min(v)) or 1), 2), (vals, b)     # no wide empty margin
+    assert out[1]["min"] > 0          # VRAM 10.8..14.5 GB does not start at 0

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-llama-swap benchmark (run it ON the machine that has the GPU)
-=============================================================
+Local LLM Benchmark Suite (run it ON the machine that has the GPU)
+==================================================================
 Thin launcher: all of the code lives in the ./llmbench package next to this file, so
 `python benchmark.py ...` works exactly as before (same flags, same .env, same results/ folder).
 
