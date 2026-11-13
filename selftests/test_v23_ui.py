@@ -699,3 +699,28 @@ def test_context_tip_goes_on_context_sizes_only(tmp_path):
     f.write_text(fn + f"\nconsole.log(JSON.stringify([{json.dumps(yes)}.filter(k=>!isCtxKey(k)), {json.dumps(no)}.filter(isCtxKey)]))")
     r = subprocess.run(["node", str(f)], capture_output=True, text=True)
     assert r.returncode == 0 and json.loads(r.stdout) == [[], []], r.stdout + r.stderr
+
+
+# --------------------------------------------------------------------------- Strata fallback in the models list
+def test_models_list_falls_back_to_strata(monkeypatch):
+    calls = []
+
+    def fake(url, key, strata=False):
+        calls.append((url, key, strata))
+        if "8000" in url:
+            raise ConnectionError("refused")
+        return ["Qwen3.8-Next-Flash"]
+    monkeypatch.setattr(server, "_fetch_model_ids", fake)
+    vals = {"LLAMA_SWAP_URL": "http://h:8000", "STRATA_URL": "http://h:8080", "STRATA_API_KEY": "k"}
+    d = server.list_server_models(vals)
+    assert d["backend"] == "Strata" and d["url"] == "http://h:8080" and "llama-swap did not answer" in d["note"]
+    assert [m["id"] for m in d["models"]] == ["Qwen3.8-Next-Flash"]
+    assert calls[-1] == ("http://h:8080", "k", True)
+    # llama-swap answering wins, no note
+    monkeypatch.setattr(server, "_fetch_model_ids", lambda u, k, strata=False: ["a", "b"])
+    d = server.list_server_models(vals)
+    assert d["backend"] == "llama-swap" and d["note"] is None and len(d["models"]) == 2
+    # no Strata configured: the llama-swap error is shown as before
+    monkeypatch.setattr(server, "_fetch_model_ids", fake)
+    d = server.list_server_models({"LLAMA_SWAP_URL": "http://h:8000"})
+    assert d["models"] == [] and "refused" in d["error"]

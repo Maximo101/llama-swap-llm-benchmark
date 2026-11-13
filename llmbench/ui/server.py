@@ -385,18 +385,49 @@ def gguf_meta(model, values, last=None):
             "arch": None, "bpw": None, "src": "model name"}
 
 
-def list_server_models(values):
-    """GET <LLAMA_SWAP_URL>/v1/models with the form's URL / key, and which ones INCLUDE/EXCLUDE/MODEL_FILTER pick."""
+def _fetch_model_ids(url, key, strata=False):
+    """GET <url>/v1/models. Returns the ids; raises on any failure. Strata gets its key both ways, like the run."""
     import requests
+    headers = {}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+        if strata:
+            headers["x-api-key"] = key
+    r = requests.get(f"{url}/v1/models", timeout=8, headers=headers)
+    r.raise_for_status()
+    return [m["id"] for m in r.json().get("data", []) if isinstance(m, dict) and "id" in m]
+
+
+def list_server_models(values):
+    """GET <LLAMA_SWAP_URL>/v1/models with the form's URL / key, and which ones INCLUDE/EXCLUDE/MODEL_FILTER pick.
+    Like the run itself, falls back to STRATA_URL when llama-swap does not answer (or lists nothing), so the
+    page lists the Strata model while llama-swap is stopped."""
     from ..client import model_skip_reason
     url = (values.get("LLAMA_SWAP_URL") or "http://localhost:8080").rstrip("/")
-    key = values.get("LLAMA_SWAP_API_KEY") or envfile.read_values(env_path()).get("LLAMA_SWAP_API_KEY")
+    saved = envfile.read_values(env_path())
+    key = values.get("LLAMA_SWAP_API_KEY") or saved.get("LLAMA_SWAP_API_KEY")
+    surl = (values.get("STRATA_URL") or values.get("STRATA_SWAP_URL") or "").strip().rstrip("/")
+    skey = values.get("STRATA_API_KEY") or saved.get("STRATA_API_KEY")
+    backend, note = "llama-swap", None
     try:
-        r = requests.get(f"{url}/v1/models", timeout=8, headers={"Authorization": f"Bearer {key}"} if key else {})
-        r.raise_for_status()
-        ids = [m["id"] for m in r.json().get("data", []) if isinstance(m, dict) and "id" in m]
+        ids = _fetch_model_ids(url, key)
+        err = None if ids else f"{url}/v1/models lists no models"
     except Exception as e:                                      # shown on the page, never fatal
-        return {"error": f"{url}/v1/models: {e.__class__.__name__}: {e}", "models": []}
+        ids, err = [], f"{url}/v1/models: {e.__class__.__name__}: {e}"
+    if not ids and surl and surl != url:
+        try:
+            ids = _fetch_model_ids(surl, skey, strata=True)
+            name = (values.get("STRATA_MODEL") or "").strip()
+            if name and name not in ids:                        # the run sends STRATA_MODEL, whatever /v1/models says
+                ids = [name] + ids
+            elif not ids:
+                ids = [name or "strata"]
+            backend, url = "Strata", surl
+            note = f"llama-swap did not answer ({err}); listing Strata at {surl}, as a run would."
+        except Exception as e:
+            return {"error": f"{err}; Strata {surl}/v1/models: {e.__class__.__name__}: {e}", "models": []}
+    elif not ids:
+        return {"error": err, "models": []}
     lst = lambda k: tuple(x.strip().strip('"').strip("'") for x in (values.get(k) or "").split(",") if x.strip())
     inc = () if any(x.lower() in ("all", "*") for x in lst("INCLUDE_MODELS")) else lst("INCLUDE_MODELS")
     ns = SimpleNamespace(model_filter=values.get("MODEL_FILTER") or "", include_models=inc,
@@ -409,7 +440,7 @@ def list_server_models(values):
         except re.error as e:
             why = f"MODEL_FILTER is not a valid regex: {e}"
         out.append({"id": m, "skip": why, "last": last.get(m), "gguf": gguf_meta(m, values, last.get(m))})
-    return {"url": url, "models": out,
+    return {"url": url, "backend": backend, "note": note, "models": out,
             "gguf_hint": None if any(x["gguf"]["src"] == "GGUF header" for x in out) else
             "File sizes come from the GGUF headers when the files are readable here: set GGUF_SEARCH_DIRS (e.g. "
             "/mnt/AI-Models) or GGUF_PATH_MAP (e.g. /models=/mnt/AI-Models) below."}

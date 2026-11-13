@@ -390,7 +390,7 @@ const fmtB = b => b >= 10 ? Math.round(b)+'B' : b.toFixed(1).replace(/\.0$/,'')+
 function renderModels(d){
   if (d.error){ $('modellist').innerHTML = `<div class="prob">${esc(d.error)}</div>`; return; }
   const n = d.models.filter(m=>!m.skip).length;
-  $('modellist').innerHTML = `<div class="sub" style="margin:6px 0">${n} of ${d.models.length} will run &middot; INCLUDE_MODELS <code>${esc(listOf('INCLUDE_MODELS').join(', ')||'all')}</code> &middot; EXCLUDE_MODELS <code>${esc(listOf('EXCLUDE_MODELS').join(', ')||'none')}</code>${shown(ent('MODEL_FILTER'))?` &middot; MODEL_FILTER <code>${esc(shown(ent('MODEL_FILTER')))}</code>`:''}</div>
+  $('modellist').innerHTML = (d.note?`<div class="sub" style="margin:6px 0;color:var(--warn,#d29922)">${esc(d.note)}</div>`:'') + `<div class="sub" style="margin:6px 0">${n} of ${d.models.length} will run &middot; INCLUDE_MODELS <code>${esc(listOf('INCLUDE_MODELS').join(', ')||'all')}</code> &middot; EXCLUDE_MODELS <code>${esc(listOf('EXCLUDE_MODELS').join(', ')||'none')}</code>${shown(ent('MODEL_FILTER'))?` &middot; MODEL_FILTER <code>${esc(shown(ent('MODEL_FILTER')))}</code>`:''}</div>
    ${d.gguf_hint?`<div class="sub" style="margin:0 0 6px">${esc(d.gguf_hint)}</div>`:''}
    <div class="tscroll"><table class="models"><tr><th>Run</th><th>Model</th><th>Why not</th><th title="GGUF file size (all shards)">File</th><th title="Total parameters; MoE: total / active">Params</th><th title="Context the model was trained for (GGUF)">Trained ctx</th><th title="Architecture (GGUF) and bits per weight">Arch / BPW</th><th>VRAM (last run)</th><th>ctx</th><th>Agent</th><th>Note (last run)</th></tr>` +
    d.models.map(m => { const g = m.gguf||{}, src = g.src ? `from the ${g.src}` : '';
