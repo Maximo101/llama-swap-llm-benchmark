@@ -65,7 +65,7 @@ Settings Page
   <img src="./assets/models.png" alt="Settings Page - Models" width="100%" />
 </a>
 
-v1.0 Created a simple speed test and basic dashboard. v1.50 added basic evaluation tests. v2.1 added the tools to make that much shorter without making the ranking less trustworthy: a confidence-gated funnel, a per-question result cache with resume, batched evaluation with a measured probe, skipping models that cannot be deployed anyway, a single shared long-context document, and a per-phase timing report with `--estimate`. See [Making a full run faster](#making-a-full-run-faster). v2.2 addsed full-retest mode and sanity checks for the result cache, a cache-aware `--estimate`, and `--compare` to put runs (for example a Strata run and a llama-swap run) in one dashboard. v2.2.1 adds a settings file you can read at a glance, and a check for your `.env` v2.3 makes the Agent score fit agentic use (a minimum and a preference for long context, tool calling as its own part, a tool-calling minimum), adds **prefill at depth** (what an agent waits for each turn on a long, cached context), six colour tiers with a light theme and model families in the dashboard, and a **settings page** (`python benchmark.py --ui`) to edit `.env`, keep favourites, estimate, compare and start or stop runs from the browser. v2.3.1: runs that survive trouble, `--resume`, honest timings, a harder settings page. v2.3.2 adds Agent leaderboard, fixed chart order, top axis numbers, data-fitted scatter axes and other improvements to the full model comparison table.
+v1.0 Created a simple speed test and basic dashboard. v1.50 added basic evaluation tests. v2.1 added the tools to make that much shorter without making the ranking less trustworthy: a confidence-gated funnel, a per-question result cache with resume, batched evaluation with a measured probe, skipping models that cannot be deployed anyway, a single shared long-context document, and a per-phase timing report with `--estimate`. See [Making a full run faster](#making-a-full-run-faster). v2.2 addsed full-retest mode and sanity checks for the result cache, a cache-aware `--estimate`, and `--compare` to put runs (for example a Strata run and a llama-swap run) in one dashboard. v2.2.1 adds a settings file you can read at a glance, and a check for your `.env` v2.3 makes the Agent score fit agentic use (a minimum and a preference for long context, tool calling as its own part, a tool-calling minimum), adds **prefill at depth** (what an agent waits for each turn on a long, cached context), six colour tiers with a light theme and model families in the dashboard, and a **settings page** (`python benchmark.py --ui`) to edit `.env`, keep favourites, estimate, compare and start or stop runs from the browser. v2.3.1: runs that survive trouble, `--resume`, honest timings, a harder settings page. v2.3.2 adds Agent leaderboard, fixed chart order, top axis numbers, data-fitted scatter axes and other improvements to the full model comparison table. v2.3.3 adjusted how the funnel works and which results get shown in the dashboards.
 
 ## 🔌 Universal Compatibility (OpenAI API Standard)
 
@@ -119,8 +119,8 @@ To use a different backend, simply update your environment variables or configur
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/Maximo101/llama-swap-llm-benchmark.git
-   cd llama-swap-llm-benchmark
+   git clone https://github.com/Maximo101/Local-LLM-Benchmark.git
+   cd Local-LLM-Benchmark
    ```
 
 2. Install dependencies:
