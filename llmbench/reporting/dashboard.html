@@ -252,13 +252,20 @@ function vramTier(p){
   const lo = META.vram_sweet_low, hi = META.vram_sweet_high, mx = META.vram_sweet_max;
   if (p >= mx) return 0; if (p > hi) return 1; if (p >= lo) return 5; if (p >= lo-10) return 4; if (p >= lo-25) return 3; return 2;
 }
-const vramColor = p => TH.tiers[vramTier(p)];
+// v2.3.4: above the sweet band (VRAM_SWEET_HIGH) the bar is red and darkens linearly to black at 100% (no pink step).
+// Below the band the tiers are unchanged. The hazard sign still starts at VRAM_SWEET_MAX (vramTier 0).
+function vramColor(p){
+  const hi = META.vram_sweet_high;
+  if (p > hi) return mix(TH.tiers[0], '#000000', Math.min(1, Math.max(0, (p - hi) / Math.max(0.1, 100 - hi))));
+  return TH.tiers[vramTier(p)];
+}
 const HLRED = () => TH.hl;                                 // highlighted (clicked) model: red text everywhere
 const hlc = name => (state.base!=null && state.base===name) ? ' hl' : '';
 const isHlLabel = (chart, i) => state.base!=null && !!chart.data.labels && chart.data.labels[i]===state.base;
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = (v,d=1) => v==null ? '&ndash;' : Number(v).toFixed(d);
 const ctxFmt = v => v==null ? '&ndash;' : (v>=1024 ? Math.round(v/1024)+'k' : String(v));
+const ctxTip = v => v==null ? '' : (v>=1024 ? Math.round(v/1024)+'k (' + v + ' tokens)' : v + ' tokens');   // tooltips: label and exact size
 
 Chart.defaults.maintainAspectRatio = false;
 applyTheme();
@@ -969,10 +976,10 @@ function cell(m, c, base){
     inner = (v==null ? '&ndash;' : (v>0 ? `<span class="err">\u26A0 ${v.toFixed(1)}</span>` : '0')) + dl;
   } else if (c.k==='ctx_size'){
     const bad = m.ctx_ok===false; if (bad) cls += ' warn';
-    inner = v==null ? '&ndash;' : `<span class="${bad?'err':''}" title="${bad?'below MIN_CTX '+META.min_ctx:''}">${bad?'\u26A0 ':''}${ctxFmt(v)}</span>`;
+    inner = v==null ? '&ndash;' : `<span class="${bad?'err':''}" title="${(bad?'below MIN_CTX '+META.min_ctx+': ':'')+ctxTip(v)}">${bad?'\u26A0 ':''}${ctxFmt(v)}</span>`;
   } else if (c.k==='max_ctx_vram'){
     const low = v!=null && m.ctx_size && v < m.ctx_size, under = v!=null && META.min_ctx && v < META.min_ctx;
-    inner = v==null ? '&ndash;' : `<span class="${under?'err':low?'hint-room':''}" title="context that fits with VRAM at ${META.max_ctx_pct}% (KV ${m.kv_type||'f16?'}${m.kv_approx?', approximate':''})">${ctxFmt(v)}${m.kv_approx?'*':''}</span>` + dl;
+    inner = v==null ? '&ndash;' : `<span class="${under?'err':low?'hint-room':''}" title="context that fits with VRAM at ${META.max_ctx_pct}%: ${ctxTip(v)} (KV ${m.kv_type||'f16?'}${m.kv_approx?', approximate':''})">${ctxFmt(v)}${m.kv_approx?'*':''}</span>` + dl;
   } else if (c.sanity){
     const bad = (m.eval_sanity_diff||0) > 0;
     inner = v==null ? '&ndash;' : `<span class="${bad?'hint-room':''}" title="${m.eval_sanity_diff||0} of ${m.eval_sanity_n} re-asked cached answers came out different">${m.eval_sanity_diff||0}/${m.eval_sanity_n}</span>`;
@@ -1312,7 +1319,7 @@ function buildHelp(){
     ${VIEW.mode==='relative' ? '<b>Relative scale is on:</b> the thresholds below are spread evenly over this run&rsquo;s own range (log scale for speeds and times), not the absolute ones.' : 'Absolute scale: set your own with <code>COLOUR_&lt;METRIC&gt;=a,b,c,d,e</code> in .env, or switch to Relative.'}
     Tables: <b>${VIEW.tstyle}</b>; charts: <b>${VIEW.cstyle}</b>.</div>
     <table style="margin-top:8px"><tr><th>Metric</th><th colspan="5">Thresholds (tier reached)</th><th>.env</th></tr>${rows}
-    <tr><td>VRAM %</td><td colspan="5">${sw(5)}${META.vram_sweet_low}&ndash;${META.vram_sweet_high}% (sweet spot) &middot; ${sw(4)}${sw(3)}${sw(2)} further below it &middot; ${sw(1)} above it &middot; ${sw(0)}&#9888; at ${META.vram_sweet_max}% or more</td><td class="sub">VRAM_SWEET_*</td></tr>
+    <tr><td>VRAM %</td><td colspan="5">${sw(5)}${META.vram_sweet_low}&ndash;${META.vram_sweet_high}% (sweet spot) &middot; ${sw(4)}${sw(3)}${sw(2)} further below it &middot; <span class="sw" style="background:linear-gradient(90deg,${TH.tiers[0]},#000)"></span> above it: red, darker towards 100% (black) &middot; ${sw(0)}&#9888; at ${META.vram_sweet_max}% or more</td><td class="sub">VRAM_SWEET_*</td></tr>
     ${META.min_toolcall_pct?`<tr><td>Tool calling</td><td colspan="5">${sw(0)}&#9888; below ${META.min_toolcall_pct}% (MIN_TOOLCALL_PCT: no Agent score); <span class="bline">&asymp;</span> = borderline, within its margin of error of that minimum</td><td class="sub">MIN_TOOLCALL_PCT</td></tr>`:''}</table>
     <h3>Rough speed by setup</h3>
     <div class="sub">To read the generation tiers against your hardware. <b>Estimates</b> from memory bandwidth &divide; the size of the active weights, not measurements; real speed depends on the quant, context, offload and backend.</div>

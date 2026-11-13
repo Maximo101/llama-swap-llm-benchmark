@@ -154,14 +154,14 @@ function scheduleCheck(){ clearTimeout(checkTimer); checkTimer = setTimeout(asyn
   try { REP = await api('/api/check', payload()); renderProblems(); renderReport(); } catch(e){} }, 600); }
 
 /* v2.3.2: every setting that takes a context size (tokens) shows the usual sizes on hover */
-const CTX_TIP = 'Suggested context sizes: 4096 (4k), 8192 (8k), 16384 (16k), 32768 (32k), 65536 (64k), 98304 (96k), 131072 (128k), 262144 (256k), 524288 (512k), 1048576 (1M)';
+const CTX_TIP = 'Suggested context sizes: 4096 (4k), 8192 (8k), 16384 (16k), 32768 (32k), 65536 (64k), 92160 (90k), 131072 (128k), 262144 (256k), 524288 (512k), 1048576 (1M)';
 const isCtxKey = k => /^(LONGCTX_LENGTHS|PREFILL_CTX_TESTS|PREFILL_DEPTH|AGENT_PROMPT_TOKENS)$/.test(k) || (/(^|_)CTX(_|$)/.test(k) && !/(PCT|ACTION)/.test(k));
 const isThinkKey = k => /^EVAL_THINK_BUDGET(_PCT|_MIN|_MAX_PCT)?$/.test(k);
 const thinkFor = (ctx, pct, mn, mx) => { const c = Math.min(Math.max(mn, ctx * pct / 100), ctx * mx / 100); return Math.max(1, c >= 1024 ? Math.floor(c / 1024) * 1024 : Math.floor(c)); };
 const thinkTip = () => { const num = (k, d) => { const x = parseFloat(String((typeof V !== 'undefined' && V[k]) || '').trim()); return isNaN(x) || x <= 0 ? d : x; };
   const pct = num('EVAL_THINK_BUDGET_PCT', 25), mn = num('EVAL_THINK_BUDGET_MIN', 4096), mx = num('EVAL_THINK_BUDGET_MAX_PCT', 60);
   return 'With auto, a model gets ' + pct + '% of its context for thinking, never below ' + mn + ' tokens and never above ' + mx + '% of the context. Budget per context size: ' +
-    [4096, 8192, 16384, 32768, 65536, 98304, 131072, 262144, 524288, 1048576].map(c => c + ' (' + (c >= 1048576 ? '1M' : c / 1024 + 'k') + ') -> ' + thinkFor(c, pct, mn, mx)).join(', ') + '. A plain number (or 0 = unlimited) in EVAL_THINK_BUDGET overrides all of this.'; };
+    [4096, 8192, 16384, 32768, 65536, 92160, 131072, 262144, 524288, 1048576].map(c => c + ' (' + (c >= 1048576 ? '1M' : c / 1024 + 'k') + ') -> ' + thinkFor(c, pct, mn, mx)).join(', ') + '. A plain number (or 0 = unlimited) in EVAL_THINK_BUDGET overrides all of this.'; };
 const tipOf = k => isCtxKey(k) ? CTX_TIP : isThinkKey(k) ? thinkTip() : '';
 const ctxTitle = k => tipOf(k) ? ` title="${esc(tipOf(k))}" data-ctx="1"` : '';
 const ctxMark = k => tipOf(k) ? `<span class="ctxi" title="${esc(tipOf(k))}" aria-label="${esc(tipOf(k))}">&#9432;</span>` : '';
