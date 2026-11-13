@@ -279,8 +279,28 @@ def _uncached_work(shape, cached_share):
     return work
 
 
+def _strata_models(cfg):
+    """The one model a Strata run benchmarks, named as the run names it (STRATA_MODEL, else the first id from
+    Strata's /v1/models, else "strata"), after INCLUDE/EXCLUDE/MODEL_FILTER. [] if Strata is not configured."""
+    from .client import make_session, select_models
+    if not getattr(cfg, "strata_url", None):
+        return []
+    name = cfg.strata_model or getattr(cfg, "strata_model_id", None)
+    if not name:
+        try:
+            s = make_session(cfg, "strata")
+            r = s.get(cfg.strata_url + "/v1/models", timeout=5)
+            data = r.json().get("data") or [] if r.ok else []
+            name = data[0].get("id") if data and isinstance(data[0], dict) else None
+        except Exception:
+            name = None
+    return select_models(cfg, [name or "strata"])
+
+
 def _models(cfg, history):
     from .client import make_session, select_models
+    if getattr(cfg, "backend", None) == "strata":                # the run already fell back to Strata: one model
+        return _strata_models(cfg), "Strata"
     try:
         s = make_session(cfg, "llama-swap")
         r = s.get(cfg.models_url, timeout=5)
@@ -290,6 +310,9 @@ def _models(cfg, history):
             return ids, "server"
     except Exception:
         pass
+    ids = _strata_models(cfg)                                    # --estimate on its own, llama-swap stopped
+    if ids:
+        return ids, "Strata (llama-swap not reachable)"
     return sorted(history), "history (server not reachable)"
 
 

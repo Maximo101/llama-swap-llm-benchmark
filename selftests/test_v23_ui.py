@@ -724,3 +724,24 @@ def test_models_list_falls_back_to_strata(monkeypatch):
     monkeypatch.setattr(server, "_fetch_model_ids", fake)
     d = server.list_server_models({"LLAMA_SWAP_URL": "http://h:8000"})
     assert d["models"] == [] and "refused" in d["error"]
+
+
+# --------------------------------------------------------------------------- Strata: estimate and server process
+def test_estimate_names_the_strata_model_not_the_history(monkeypatch):
+    from types import SimpleNamespace
+    from llmbench import estimate
+    cfg = SimpleNamespace(backend="strata", strata_url="http://h:8080", strata_model="Qwen3.8-Next-Flash",
+                          strata_model_id="x", model_filter="", include_models=(), exclude_models=())
+    assert estimate._models(cfg, {"a": {}, "b": {}}) == (["Qwen3.8-Next-Flash"], "Strata")
+    cfg.exclude_models = ("Qwen3.8-Next-Flash",)                 # excluded: not silently replaced by the history
+    assert estimate._models(cfg, {"a": {}, "b": {}})[0] == []
+
+
+def test_ram_sampler_finds_a_docker_server_by_its_mapped_model(monkeypatch):
+    from types import SimpleNamespace
+    from llmbench.telemetry import host
+    s = host.RamSampler(SimpleNamespace(ram_poll_ms=500, ram_process_pattern="no-such-process-name"))
+    s.listen_port = 8080
+    monkeypatch.setattr(host, "find_listener_pids", lambda port: set())      # only docker-proxy listens on the host
+    monkeypatch.setattr(s, "_mapped_gguf_pids", lambda: {4242})
+    assert s.find_processes() == {4242}

@@ -212,6 +212,9 @@ class RamSampler(threading.Thread):
             pids = {p for p in find_listener_pids(self.listen_port) if comm(p) != "docker-proxy"}
             if pids:
                 return pids
+            pids = self._mapped_gguf_pids()   # Docker with a published port: the listener is docker-proxy
+            if pids:
+                return pids
         found = set()
         try:
             names = os.listdir("/proc")
@@ -227,6 +230,32 @@ class RamSampler(threading.Thread):
             if argv0 and self.pattern.search(os.path.basename(argv0)):
                 found.add(int(d))
         return found
+
+    def _mapped_gguf_pids(self) -> set:
+        """Processes that have a .gguf file memory-mapped (llama.cpp maps its model), found in /proc/<pid>/maps.
+        In Docker with a published port the host's listener is docker-proxy, and the server inside has a name nobody
+        configured (Strata's is not 'llama-server'); the mapped model finds it anyway. Needs root to read other
+        users' maps. Re-scanned at most every 30 s (it opens every process's maps), and only while nothing matched."""
+        t = now()
+        if t - getattr(self, "_maps_scanned", -1e9) < 30:
+            return set(getattr(self, "_maps_pids", ()))
+        self._maps_scanned = t
+        found = set()
+        try:
+            names = os.listdir("/proc")
+        except OSError:
+            names = []
+        for d in names:
+            if not d.isdigit() or int(d) == os.getpid():
+                continue
+            try:
+                with open(f"/proc/{d}/maps", "rb") as f:
+                    if any(b".gguf" in line for line in f):
+                        found.add(int(d))
+            except OSError:
+                continue
+        self._maps_pids = found
+        return set(found)
 
     def launch_info(self):
         """Launch flags of the (largest) inference-server process, or None if unreadable."""
