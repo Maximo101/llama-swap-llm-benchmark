@@ -38,9 +38,9 @@ This allows you to:
 * To improve this cache process, we developed the Sanity Check %. A configurable percentage of cached answers is randomly re-tested to detect non-deterministic decoding or cache drift. Adaptive mode automatically reduces checks for models that remain consistent while keeping higher scrutiny on models whose outputs change.
 
 
-* 📊 **Demo Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/llama-swap-llm-benchmark/blob/main/assets/demo_dashboard.html)
-* 📊 **RTX 5070 Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/llama-swap-llm-benchmark/blob/main/assets/5070_benchmark_dashboard.html)
-* 📊 **RTX 5070 Ti Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/llama-swap-llm-benchmark/blob/main/assets/5070ti_benchmark_dashboard.html)
+* 📊 **Demo Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/Local-LLM-Benchmark/blob/main/assets/demo_dashboard.html)
+* 📊 **RTX 5070 Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/Local-LLM-Benchmark/blob/main/assets/5070_benchmark_dashboard.html)
+* 📊 **RTX 5070 Ti Dashboard:** [View Live Interactive Dashboard](https://htmlpreview.github.io/?https://github.com/Maximo101/Local-LLM-Benchmark/blob/main/assets/5070ti_benchmark_dashboard.html)
 
 (if you would like to share results please contact us)
 
