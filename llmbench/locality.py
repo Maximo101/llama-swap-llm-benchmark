@@ -1,6 +1,6 @@
 """Is the llama-swap server on THIS machine? (v2.3)
 
-The speed test reads GPU power, VRAM, CPU power and RAM on the machine the benchmark runs on. When LLAMA_SWAP_URL
+The speed test reads GPU power, VRAM, CPU power and RAM on the machine the benchmark runs on. When SERVER_URL
 points at another machine (e.g. the settings page started on a desktop PC from a share of the server's folder), those
 readings belong to the wrong machine: VRAM / power / the budget checks would be the desktop's. Evals don't depend on
 it (they only talk HTTP), so an evals-only run from another machine is fine.

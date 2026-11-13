@@ -225,7 +225,7 @@ def test_sandbox_modes(cfg):
 
 
 def test_sandbox_does_not_leak_environment(cfg, monkeypatch):
-    monkeypatch.setenv("LLAMA_SWAP_API_KEY", "sekrit-token")
+    monkeypatch.setenv("SERVER_API_KEY", "sekrit-token")
     sandbox.resolve_sandbox(cfg, run_selftest=False)
     code = "import os\nassert 'sekrit-token' not in str(dict(os.environ)), 'leaked'\n"
     assert sandbox.run_in_sandbox(cfg, code, "script", [], 5) == (True, "")

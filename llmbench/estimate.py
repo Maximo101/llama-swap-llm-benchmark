@@ -280,7 +280,7 @@ def _uncached_work(shape, cached_share):
 
 
 def _strata_models(cfg):
-    """The one model a Strata run benchmarks, named as the run names it (STRATA_MODEL, else the first id from
+    """The one model a Strata run benchmarks, named as the run names it (SECONDARY_MODEL, else the first id from
     Strata's /v1/models, else "strata"), after INCLUDE/EXCLUDE/MODEL_FILTER. [] if Strata is not configured."""
     from .client import make_session, select_models
     if not getattr(cfg, "strata_url", None):

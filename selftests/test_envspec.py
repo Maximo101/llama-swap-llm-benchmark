@@ -44,7 +44,7 @@ def test_example_lines_follow_the_format():
             assert "[default:" not in line, f"commented line must show its default as the value: {e.key}"
         assert e.part == 3 or e.active or e.default == "" or e.family, \
             f"PART 1/2 settings with a non-empty default should be active lines: {e.key}"
-        assert e.desc or e.key in ("STRATA_API_KEY", "MAX_TOKENS_TECH", "MAX_TOKENS_LOGIC", "RETRIES",
+        assert e.desc or e.key in ("SECONDARY_API_KEY", "MAX_TOKENS_TECH", "MAX_TOKENS_LOGIC", "RETRIES",
                                    "EVAL_CODE_MEM_MB", "EVAL_CODE_DOCKER_IMAGE", "CURRENCY_SYMBOL",
                                    "TECH_PROMPT", "LOGIC_PROMPT") or e.key.endswith("_REVISION"), \
             f"no description: {e.key}"
@@ -77,7 +77,7 @@ def test_dotenv_empty_value_with_comment_is_the_comment(tmp_path):
 def test_check_env_finds_problems(tmp_path):
     p = tmp_path / ".env"
     p.write_text("\n".join([
-        "LLAMA_SWAP_URL=http://server:8000",
+        "SERVER_URL=http://server:8000",
         "EVAL_TOOLCAL=true",                        # typo
         "EVAL_STREAM=tue",                          # bad boolean
         "AGENT_ACC_TOL=   # empty = 1 SE",          # dotenv reads the comment
@@ -90,7 +90,7 @@ def test_check_env_finds_problems(tmp_path):
         "BUDGET_MAIN_MIN_TPS=30",                   # other profile: a note
         "EVAL_THINK_BUDGET_GSM8K=2048",
         "EVAL_THINK_BUDGET_GSM8=2048",              # unknown dataset
-        "STRATA_SWAP_URL=http://x",                 # legacy name
+        "STRATA_SWAP_URL=http://x",                # legacy name
         "EVAL_SEED=42",                             # = default
         "GPU_POLL_MS=300",                          # changed, optional
     ]) + "\n", encoding="utf-8")
@@ -102,14 +102,14 @@ def test_check_env_finds_problems(tmp_path):
     invalid = {k for k, *_ in rep.invalid}
     assert invalid == {"EVAL_STREAM", "AGENT_ACC_TOL", "EVAL_CONCURRENCY"}
     assert rep.duplicates == [("EVAL_PROFILE", [6, 7], "funnel")]
-    assert rep.legacy == [("STRATA_SWAP_URL", "STRATA_URL", 14)]
+    assert rep.legacy == [("STRATA_SWAP_URL", "SECONDARY_URL", 14)]
     assert rep.shell == [("EVAL_SEED", "7", "42")]
     assert any("BUDGET_MAIN_MIN_TPS" in n for n in rep.info)
     assert any("BUDGET_SERVER_VRAM_RESERVE_GB=1.75" in n and "2" in n for n in rep.info)
     missing = {e.key for e in rep.missing}
-    assert "RUN_EVAL_TESTS" in missing and "LLAMA_SWAP_URL" not in missing and "GPU_POLL_MS" not in missing
+    assert "RUN_EVAL_TESTS" in missing and "SERVER_URL" not in missing and "GPU_POLL_MS" not in missing
     changed = {k: d for k, _, d, _ in rep.changed}
-    assert changed["GPU_POLL_MS"] == "200" and changed["LLAMA_SWAP_URL"] == "http://localhost:8080"
+    assert changed["GPU_POLL_MS"] == "200" and changed["SERVER_URL"] == "http://localhost:8080"
     assert ("EVAL_SEED", "42") in rep.at_default
     assert envspec.print_report(rep) == 1
 

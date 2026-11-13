@@ -55,9 +55,24 @@ def _export_hf_token():
         os.environ.pop("HF_TOKEN", None)       # an empty value must not be sent as a bogus token
 
 
+_LEGACY_WARNED: set = set()
+
+
 def _env(name, default=None, cast=str):
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
+        raw = None
+        from .envspec import old_names                 # v2.3.5: renamed settings still work under their old name
+        for old in old_names(name):
+            v = os.getenv(old)
+            if v is not None and v.strip() != "":
+                raw = v
+                if old not in _LEGACY_WARNED:
+                    _LEGACY_WARNED.add(old)
+                    print(f"[config] {old} is now called {name}: the old name still works, rename it in .env "
+                          "(the settings page does it for you when you save)")
+                break
+    if raw is None:
         return default
     if cast is bool:
         return raw.strip().lower() in ("1", "true", "yes", "on")
@@ -702,8 +717,8 @@ def load_config() -> Config:
                  f"(MAX_GPU_TEMP={max_gpu_temp:g}, got {resume_delta:g})")
     depth_cap, depth_auto = _prefill_depth(_env("PREFILL_DEPTH", "auto"))
     return Config(
-        base_url=(_env("LLAMA_SWAP_URL", "http://localhost:8080")).rstrip("/"),
-        api_key=_env("LLAMA_SWAP_API_KEY"),
+        base_url=(_env("SERVER_URL", "http://localhost:8080")).rstrip("/"),
+        api_key=_env("SERVER_API_KEY"),
         vram_limit_gb=_env("VRAM_LIMIT_GB", 16.0, float),
         gpu_index=_env("GPU_INDEX"),
         gpu_poll_ms=max(100, _env("GPU_POLL_MS", 200, int)),
@@ -733,13 +748,13 @@ def load_config() -> Config:
         rate_offpeak=_env("ELECTRICITY_RATE_OFFPEAK", None, float),
         currency=_env("CURRENCY_SYMBOL", "$"),
         hw_cpu=_env("HW_CPU"), hw_ram=_env("HW_RAM"), hw_gpu=_env("HW_GPU"),
-        strata_url=(_env("STRATA_URL") or _env("STRATA_SWAP_URL") or "").rstrip("/") or None,
-        strata_api_key=_env("STRATA_API_KEY"),
-        strata_model=_env("STRATA_MODEL"),
-        strata_params_b=_env("STRATA_PARAMS_B", None, float),
-        strata_active_b=_env("STRATA_ACTIVE_B", None, float),
-        strata_quant=_env("STRATA_QUANT"),
-        strata_ctx=_env("STRATA_CTX", None, int),
+        strata_url=(_env("SECONDARY_URL") or "").rstrip("/") or None,
+        strata_api_key=_env("SECONDARY_API_KEY"),
+        strata_model=_env("SECONDARY_MODEL"),
+        strata_params_b=_env("SECONDARY_PARAMS_B", None, float),
+        strata_active_b=_env("SECONDARY_ACTIVE_B", None, float),
+        strata_quant=_env("SECONDARY_QUANT"),
+        strata_ctx=_env("SECONDARY_CTX", None, int),
         goldilocks_vram_only=_env("GOLDILOCKS_VRAM_ONLY", False, bool),
         ram_process_pattern=_env("RAM_PROCESS_PATTERN", "llama"),
         ram_poll_ms=max(200, _env("RAM_POLL_MS", 500, int)),

@@ -115,7 +115,7 @@ def _check_servers(cfg):
                                  "messages": [{"role": "user", "content": "hi"}]})):
         try:
             r = s.request(method, cfg.strata_url + path, json=body, timeout=15)
-            hint = "  <- authentication failed: check STRATA_API_KEY" if r.status_code in (401, 403) else ""
+            hint = "  <- authentication failed: check SECONDARY_API_KEY" if r.status_code in (401, 403) else ""
             print(f"  {method} {path} -> HTTP {r.status_code}{hint}")
         except requests.RequestException as e:
             print(f"  {method} {path} -> FAILED: {e.__class__.__name__}")

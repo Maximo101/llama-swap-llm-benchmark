@@ -26,9 +26,9 @@ def run_cli(monkeypatch, tmp_path, server, argv, datasets=ALL_DATASETS, fake=Non
     import llmbench.evals.datasets as ds_mod
     import llmbench.reporting.dashboard as dash_mod
     for k in list(os.environ):
-        if k.startswith(("EVAL_", "GPU_", "RUN_", "STRATA_", "HA_")):
+        if k.startswith(("EVAL_", "GPU_", "RUN_", "STRATA_", "SECONDARY_", "LLAMA_SWAP_", "SERVER_URL", "SERVER_API", "HA_")):
             monkeypatch.delenv(k, raising=False)
-    base = {"LLAMA_SWAP_URL": server.url, "OUTPUT_DIR": str(tmp_path / "results"), "EVAL_CACHE_DIR": str(tmp_path / "tests"),
+    base = {"SERVER_URL": server.url, "OUTPUT_DIR": str(tmp_path / "results"), "EVAL_CACHE_DIR": str(tmp_path / "tests"),
             "SETTLE_SECONDS": "0", "COOLDOWN_SECONDS": "0", "RUNS_PER_PROMPT": "1", "PREFILL_WORDS": "40",
             "RUN_EVAL_TESTS": "true", "EVAL_PROFILE": "full", "EVAL_CODE_SANDBOX": "subprocess", "EVAL_CODE_TIMEOUT": "5",
             "WRITE_MARKDOWN": "true", "RAM_PROCESS_PATTERN": "no-such-process", "RETRIES": "2", "LOG": "true",

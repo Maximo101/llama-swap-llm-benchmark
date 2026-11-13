@@ -65,11 +65,23 @@ TIMEOUTS = {"check": 180, "check-env": 60, "list-models": 60, "estimate": 300, "
 
 # --------------------------------------------------------------------------- settings of the page itself
 def _setting(vals, key, default=None):
-    """Like python-dotenv: the shell environment wins over .env."""
-    v = os.environ.get(key)
-    if v is None or v.strip() == "":
-        v = vals.get(key)
+    """Like python-dotenv: the shell environment wins over .env. A renamed setting is also read under its old name."""
+    v = None
+    for k in [key] + envspec.old_names(key):
+        v = os.environ.get(k)
+        if v is None or v.strip() == "":
+            v = vals.get(k)
+        if v is not None and str(v).strip() != "":
+            break
     return default if v is None or str(v).strip() == "" else str(v).strip().strip('"').strip("'")
+
+
+def _pick(vals, key):
+    """vals[key], or its value under an old name (envspec.LEGACY)."""
+    for k in [key] + envspec.old_names(key):
+        if vals.get(k):
+            return vals[k]
+    return None
 
 
 def clean_host(v):
@@ -399,15 +411,15 @@ def _fetch_model_ids(url, key, strata=False):
 
 
 def list_server_models(values):
-    """GET <LLAMA_SWAP_URL>/v1/models with the form's URL / key, and which ones INCLUDE/EXCLUDE/MODEL_FILTER pick.
-    Like the run itself, falls back to STRATA_URL when llama-swap does not answer (or lists nothing), so the
+    """GET <SERVER_URL>/v1/models with the form's URL / key, and which ones INCLUDE/EXCLUDE/MODEL_FILTER pick.
+    Like the run itself, falls back to SECONDARY_URL when llama-swap does not answer (or lists nothing), so the
     page lists the Strata model while llama-swap is stopped."""
     from ..client import model_skip_reason
-    url = (values.get("LLAMA_SWAP_URL") or "http://localhost:8080").rstrip("/")
+    url = (_pick(values, "SERVER_URL") or "http://localhost:8080").rstrip("/")
     saved = envfile.read_values(env_path())
-    key = values.get("LLAMA_SWAP_API_KEY") or saved.get("LLAMA_SWAP_API_KEY")
-    surl = (values.get("STRATA_URL") or values.get("STRATA_SWAP_URL") or "").strip().rstrip("/")
-    skey = values.get("STRATA_API_KEY") or saved.get("STRATA_API_KEY")
+    key = _pick(values, "SERVER_API_KEY") or _pick(saved, "SERVER_API_KEY")
+    surl = (_pick(values, "SECONDARY_URL") or "").strip().rstrip("/")
+    skey = _pick(values, "SECONDARY_API_KEY") or _pick(saved, "SECONDARY_API_KEY")
     backend, note = "llama-swap", None
     try:
         ids = _fetch_model_ids(url, key)
@@ -417,8 +429,8 @@ def list_server_models(values):
     if not ids and surl and surl != url:
         try:
             ids = _fetch_model_ids(surl, skey, strata=True)
-            name = (values.get("STRATA_MODEL") or "").strip()
-            if name and name not in ids:                        # the run sends STRATA_MODEL, whatever /v1/models says
+            name = (values.get("SECONDARY_MODEL") or "").strip()
+            if name and name not in ids:                        # the run sends SECONDARY_MODEL, whatever /v1/models says
                 ids = [name] + ids
             elif not ids:
                 ids = [name or "strata"]
@@ -770,7 +782,7 @@ class UIServer(ThreadingHTTPServer):
                 "report": rep, "favourites": favs, "created_main": just_created, "run": run_state(cur),
                 "outputs": outputs(cur), "lan": self.cfg.lan, "port": self.cfg.port,
                 "legacy": envspec.LEGACY, "guides": guides(cur),
-                "remote": remote_warning(_setting(cur, "LLAMA_SWAP_URL", "http://localhost:8080"))}
+                "remote": remote_warning(_setting(cur, "SERVER_URL", "http://localhost:8080"))}
 
     def post(self, path, body):
         cur = self.current()

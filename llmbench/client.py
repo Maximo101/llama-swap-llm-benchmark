@@ -205,7 +205,7 @@ def ctx_from_details(details):
 def probe_strata(cfg):
     """--probe-strata: list what Strata's API exposes and save the raw JSON for inspection."""
     if not cfg.strata_url:
-        sys.exit("[error] Set STRATA_URL in .env first.")
+        sys.exit("[error] Set SECONDARY_URL in .env first.")
     cfg.backend, cfg.base_url = "strata", cfg.strata_url
     found = strata_discover(cfg, make_session(cfg, "strata"))
     for path, data in found.items():
@@ -276,7 +276,7 @@ def get_ctx(cfg, session, model, props=None):
     if cfg.backend == "strata" and (cfg.strata_ctx or cfg.strata_ctx_detected):
         return cfg.strata_ctx or cfg.strata_ctx_detected
     n = props_ctx(props if props is not None else get_props(cfg, session, model))
-    if n or cfg.backend == "strata":       # Strata: works if it is a llama-server; otherwise set STRATA_CTX
+    if n or cfg.backend == "strata":       # Strata: works if it is a llama-server; otherwise set SECONDARY_CTX
         return n
     from .telemetry.host import parse_launch_args
     argv = running_cmd(cfg, session, model)
@@ -291,7 +291,7 @@ def make_session(cfg, backend):
 
 
 def detect_backend(cfg):
-    """Use llama-swap if it answers; otherwise fall back to a single Strata endpoint (if STRATA_URL is set).
+    """Use llama-swap if it answers; otherwise fall back to a single Strata endpoint (if SECONDARY_URL is set).
     Returns (session, model_ids) and sets cfg.backend / cfg.base_url."""
     session, why = make_session(cfg, "llama-swap"), ""
     try:
@@ -305,7 +305,7 @@ def detect_backend(cfg):
         why = e.__class__.__name__
     if not cfg.strata_url:
         sys.exit(f"[error] llama-swap at {cfg.base_url} is unavailable ({why}). "
-                 "Set STRATA_URL in .env to fall back to a single Strata endpoint.")
+                 "Set SECONDARY_URL in .env to fall back to a single Strata endpoint.")
 
     print(f"[info] llama-swap unavailable ({why}); falling back to Strata at {cfg.strata_url}")
     cfg.backend, cfg.base_url = "strata", cfg.strata_url

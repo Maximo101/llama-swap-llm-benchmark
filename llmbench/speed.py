@@ -138,7 +138,7 @@ def _cold_load(cfg, session, host, model, r, strata, unloaded, unload_state):
     if r["ctx_size"] is None and not unload_state.get("ctx_warned"):
         unload_state["ctx_warned"] = True
         print("  [warn] could not read the context size ("
-              + ("set STRATA_CTX in .env)" if strata else "tried /upstream/<model>/props and /running)"))
+              + ("set SECONDARY_CTX in .env)" if strata else "tried /upstream/<model>/props and /running)"))
 
 
 def check_min_ctx(cfg, r):

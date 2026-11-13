@@ -49,7 +49,7 @@ def test_secrets_and_choice_kinds():
 
 # --------------------------------------------------------------------------- writing .env
 def _sample():
-    return {"LLAMA_SWAP_URL": "http://10.0.0.5:8080", "HF_TOKEN": "hf_abc#def", "EVAL_PROFILE": "thorough",
+    return {"SERVER_URL": "http://10.0.0.5:8080", "HF_TOKEN": "hf_abc#def", "EVAL_PROFILE": "thorough",
             "MODEL_FILTER": "gemma|qwen", "DASH_FAMILIES": "Gemma=*gemma-4*;BigBang=*bigbang*",
             "COLOUR_GEN": "20,30,40,60,80", "AGENT_CTX_CURVE": "131072:1.0,92160:0.9,65536:0.75",
             "INCLUDE_MODELS": "all", "BUDGET_SERVER_VRAM_RESERVE_GB": "1.5", "SOME_OLD_THING": "it's kept"}
@@ -89,9 +89,9 @@ def test_write_env_refuses_values_it_cannot_write(tmp_path):
 
 
 def test_defaults_keep_secrets_only(tmp_path):
-    cur = {"HF_TOKEN": "hf_x", "EVAL_PROFILE": "deep", "LLAMA_SWAP_API_KEY": ""}
+    cur = {"HF_TOKEN": "hf_x", "EVAL_PROFILE": "deep", "SERVER_API_KEY": ""}
     d = envfile.defaults_with_secrets(cur)
-    assert d["HF_TOKEN"] == "hf_x" and "LLAMA_SWAP_API_KEY" not in d
+    assert d["HF_TOKEN"] == "hf_x" and "SERVER_API_KEY" not in d
     assert d.get("EVAL_PROFILE") == envfile.shipped_values()["EVAL_PROFILE"]
 
 
@@ -124,7 +124,7 @@ def test_favourite_onto_a_newer_release(tmp_path):
                  "HF_TOKEN=from_the_favourite\n")
     res = envfile.apply_favourite(p, {"HF_TOKEN": "hf_now"})
     v = res["values"]
-    assert ("STRATA_SWAP_URL", "STRATA_URL") in [tuple(x) for x in res["renamed"]] and v["STRATA_URL"] == "http://strata:9000"
+    assert ("STRATA_SWAP_URL", "SECONDARY_URL") in [tuple(x) for x in res["renamed"]] and v["SECONDARY_URL"] == "http://strata:9000"
     assert [tuple(x) for x in res["removed"]] == [("GONE_SETTING", "5")]
     assert [c["key"] for c in res["conflicts"]] == ["EVAL_PROFILE"] and v["EVAL_PROFILE"] == "deep"
     assert v["COLOUR_MODE"] == "relative"
@@ -557,7 +557,7 @@ def test_page_serves_the_newest_dashboard_and_warns_when_remote(ui, monkeypatch)
     assert "cmp" in _req(u.port, "GET", "/compare")[2]
     assert _req(u.port, "GET", "/api/state")[2]["remote"] is None or "another machine" in \
         _req(u.port, "GET", "/api/state")[2]["remote"]
-    u.env.write_text(u.env.read_text() + "LLAMA_SWAP_URL=http://192.0.2.10:8000\n")
+    u.env.write_text(u.env.read_text() + "SERVER_URL=http://192.0.2.10:8000\n")
     assert "another machine" in _req(u.port, "GET", "/api/state")[2]["remote"]
 
 
@@ -692,7 +692,7 @@ def test_context_tip_goes_on_context_sizes_only(tmp_path):
     html = (Path(server.__file__).with_name("settings.html")).read_text(encoding="utf-8")
     fn = re.search(r"const isCtxKey = .*", html).group(0)
     yes = ["AGENT_CTX_MIN", "AGENT_CTX_CURVE", "LONGCTX_LENGTHS", "PREFILL_CTX_TESTS", "PREFILL_DEPTH",
-           "AGENT_PROMPT_TOKENS", "MIN_CTX", "STRATA_CTX", "BUDGET_SERVER_MIN_CTX"]
+           "AGENT_PROMPT_TOKENS", "MIN_CTX", "SECONDARY_CTX", "BUDGET_SERVER_MIN_CTX"]
     no = ["AGENT_CTX_PASS_PCT", "MAX_CTX_VRAM_PCT", "MIN_CTX_ACTION", "EVAL_LONGCTX", "LONGCTX_KV_MIN", "LONGCTX_KEYS",
           "EVAL_THINK_BUDGET", "MAX_TOKENS_TECH", "UI_TOKEN", "HF_TOKEN"]
     f = tmp_path / "k.js"
@@ -711,7 +711,7 @@ def test_models_list_falls_back_to_strata(monkeypatch):
             raise ConnectionError("refused")
         return ["Qwen3.8-Next-Flash"]
     monkeypatch.setattr(server, "_fetch_model_ids", fake)
-    vals = {"LLAMA_SWAP_URL": "http://h:8000", "STRATA_URL": "http://h:8080", "STRATA_API_KEY": "k"}
+    vals = {"SERVER_URL": "http://h:8000", "SECONDARY_URL": "http://h:8080", "SECONDARY_API_KEY": "k"}
     d = server.list_server_models(vals)
     assert d["backend"] == "Strata" and d["url"] == "http://h:8080" and "llama-swap did not answer" in d["note"]
     assert [m["id"] for m in d["models"]] == ["Qwen3.8-Next-Flash"]
@@ -722,7 +722,7 @@ def test_models_list_falls_back_to_strata(monkeypatch):
     assert d["backend"] == "llama-swap" and d["note"] is None and len(d["models"]) == 2
     # no Strata configured: the llama-swap error is shown as before
     monkeypatch.setattr(server, "_fetch_model_ids", fake)
-    d = server.list_server_models({"LLAMA_SWAP_URL": "http://h:8000"})
+    d = server.list_server_models({"SERVER_URL": "http://h:8000"})
     assert d["models"] == [] and "refused" in d["error"]
 
 

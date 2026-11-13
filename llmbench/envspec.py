@@ -37,7 +37,17 @@ FALSE_WORDS = ("0", "false", "no", "off")
 # Read by the code but not user settings (set by the tool for its own subprocesses, or by the OS).
 INTERNAL = {"LLMB_MEM_MB", "PATH", "SYSTEMROOT", "DISPLAY", "WAYLAND_DISPLAY"}
 # Old names that still work, -> the current name.
-LEGACY = {"STRATA_SWAP_URL": "STRATA_URL"}
+LEGACY = {"STRATA_SWAP_URL": "SECONDARY_URL",                       # v2.3 name -> current
+          # v2.3.5: the endpoint settings are named for their role, not for the products first tested
+          "LLAMA_SWAP_URL": "SERVER_URL", "LLAMA_SWAP_API_KEY": "SERVER_API_KEY",
+          "STRATA_URL": "SECONDARY_URL", "STRATA_API_KEY": "SECONDARY_API_KEY", "STRATA_MODEL": "SECONDARY_MODEL",
+          "STRATA_PARAMS_B": "SECONDARY_PARAMS_B", "STRATA_ACTIVE_B": "SECONDARY_ACTIVE_B",
+          "STRATA_QUANT": "SECONDARY_QUANT", "STRATA_CTX": "SECONDARY_CTX"}
+
+
+def old_names(name):
+    """The old spellings of a current setting name (LEGACY reversed), e.g. SERVER_URL -> ["LLAMA_SWAP_URL"]."""
+    return [old for old, new in LEGACY.items() if new == name]
 # Defaults the source scan can't see (written as `os.getenv(X) or 900`).
 EXTRA_DEFAULTS = {"ESTIMATE_GPU_BW_GBS": ("auto", "str"),
                   # v2.3 settings page (ui/server.py reads them from .env + the shell itself, never via load_config)
@@ -63,7 +73,7 @@ CHOICES = {
     "COLOUR_MODE": ("absolute", "relative"),
 }
 # v2.3: tokens and keys. The settings page masks them; they never go into favourites, logs or dashboards.
-SECRETS = ("LLAMA_SWAP_API_KEY", "HF_TOKEN", "STRATA_API_KEY", "HA_TOKEN", "UI_TOKEN")
+SECRETS = ("SERVER_API_KEY", "HF_TOKEN", "SECONDARY_API_KEY", "HA_TOKEN", "UI_TOKEN")
 
 _ENTRY = re.compile(r"^(?P<hash># ?)?(?P<key>[A-Z][A-Z0-9_]*(?:<[A-Z]+>[A-Z0-9_]*)*)=(?P<rest>.*)$")
 _DEFAULT_TAG = re.compile(r"\[default:\s*(?P<d>[^\]]*)\]\s*$")
