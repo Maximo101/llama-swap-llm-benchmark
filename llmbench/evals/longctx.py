@@ -1,6 +1,6 @@
 """Long-context retrieval check: several "needles" hidden in a long filler text, all asked for at once (multi-key).
 
-For each length in LONGCTX_LENGTHS (default 64k and 128k tokens) ONE haystack is built that hides
+For each length in LONGCTX_LENGTHS (default 64k, 90k (92160) and 128k tokens) ONE haystack is built that hides
 LONGCTX_TRIALS x LONGCTX_KEYS vault codes at spread-out depths, plus as many decoy vaults that are never asked for.
 The model then gets LONGCTX_TRIALS questions about that same document, each asking for a different set of
 LONGCTX_KEYS vaults. Score = share of asked codes returned correctly, over all questions of that length.
@@ -17,7 +17,7 @@ written to prefill_<len>_tps here instead of sending a second, separate long pro
 
 What this measures: whether the model (at the KV-cache precision it is deployed with) can still find and keep apart
 facts deep in a long context. It does not measure reasoning over that context. A length that does not fit the loaded
-context is skipped and reported ("ctx too small"), so a model loaded at 90k gets a 64k result and no 128k result.
+context is skipped and reported ("ctx too small"), so a model loaded at 90k gets a 64k result and no 128k result, and one loaded at 90112 (88k) holds neither 90k (92160) nor 128k.
 
 KV-cache precision: the benchmark cannot change the server's -ctk / -ctv (they are launch flags in llama-swap's
 config). It reads them, and LONGCTX_KV_MIN (default q8_0) says how low they may go: a model whose KV type is below it is

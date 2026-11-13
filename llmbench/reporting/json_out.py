@@ -77,7 +77,7 @@ _GROUPS = {
                 "agent_prompt_tokens", "agent_ttft_s", "agent_ttft_warm_s",
                 # v2.3: prefill at depth
                 "prefill_depth_tps", "prefill_depth_ttft_s", "prefill_depth_tokens", "prefill_depth_new"],
-    "long_context": ["longctx_32k_pct", "longctx_64k_pct", "longctx_128k_pct", "longctx_avg_pct", "longctx_kv_ok",
+    "long_context": ["longctx_32k_pct", "longctx_64k_pct", "longctx_90k_pct", "longctx_128k_pct", "longctx_avg_pct", "longctx_kv_ok",
                      "longctx_note"],
     "budget": ["budget_profile", "budget_pass", "budget_fails", "budget"],
 }

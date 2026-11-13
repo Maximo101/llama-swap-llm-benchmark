@@ -65,7 +65,7 @@ def test_example_values_load(monkeypatch):
     assert cfg.eval_profile == "funnel" and cfg.eval_funnel_final == "moderate"
     assert set(cfg.eval_datasets) == {"mmlu_pro", "humaneval", "mbpp", "toolcall"}
     assert cfg.budget["name"] == "server" and cfg.exclude_models == () and cfg.eval_server_sampling == ""
-    assert cfg.prefill_ctx_tests == (8192, 32768, 65536) and cfg.longctx_lengths == (65536, 131072)
+    assert cfg.prefill_ctx_tests == (8192, 32768, 65536) and cfg.longctx_lengths == (65536, 92160, 131072)
 
 
 def test_dotenv_empty_value_with_comment_is_the_comment(tmp_path):

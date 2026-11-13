@@ -102,7 +102,7 @@ def _load(monkeypatch, **env):
 
 def test_settings_default_to_auto_at_25_percent_and_are_validated(monkeypatch):
     c = _load(monkeypatch)
-    assert c.eval_think_budget == AUTO_BUDGET and c.eval_think_budget_pct == 25.0 and c.max_gpu_temp == 0
+    assert c.eval_think_budget == AUTO_BUDGET and c.eval_think_budget_pct == 25.0 and c.max_gpu_temp == 85.0 and c.eval_sanity_pct == 0.0
     assert _load(monkeypatch, EVAL_THINK_BUDGET="auto").eval_think_budget == AUTO_BUDGET
     assert _load(monkeypatch, EVAL_THINK_BUDGET="16384").eval_think_budget == 16384
     assert _load(monkeypatch, EVAL_THINK_BUDGET="unlimited").eval_think_budget == 0

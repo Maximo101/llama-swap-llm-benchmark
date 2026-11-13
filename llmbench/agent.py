@@ -36,7 +36,7 @@ from .config import EVAL_SPECS, LONGCTX_SLOTS
 DEFAULT_CTX_CURVE = "131072:1.0,78848:0.97,65536:0.95"
 DEFAULT_CTX_PASS = 75.0
 TOOL_KEY = "toolcall"
-LC_LABELS = list(LONGCTX_SLOTS.values())               # "32k", "64k", "128k"
+LC_LABELS = list(LONGCTX_SLOTS.values())               # "32k", "64k", "90k", "128k"
 
 
 # --------------------------------------------------------------------------- context
@@ -125,7 +125,7 @@ def lc_results(r):
 
 def common_lengths(rows):
     """(lengths every row has a long-context result for, models with no long-context result at all).
-    Lengths come back in slot order (32k, 64k, 128k)."""
+    Lengths come back in slot order (32k, 64k, 90k, 128k)."""
     if not rows:
         return [], []
     sets = [set(lc_results(r)) for r in rows]

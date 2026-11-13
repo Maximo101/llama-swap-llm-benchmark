@@ -31,7 +31,8 @@ def run_cli(monkeypatch, tmp_path, server, argv, datasets=ALL_DATASETS, fake=Non
     base = {"LLAMA_SWAP_URL": server.url, "OUTPUT_DIR": str(tmp_path / "results"), "EVAL_CACHE_DIR": str(tmp_path / "tests"),
             "SETTLE_SECONDS": "0", "COOLDOWN_SECONDS": "0", "RUNS_PER_PROMPT": "1", "PREFILL_WORDS": "40",
             "RUN_EVAL_TESTS": "true", "EVAL_PROFILE": "full", "EVAL_CODE_SANDBOX": "subprocess", "EVAL_CODE_TIMEOUT": "5",
-            "WRITE_MARKDOWN": "true", "RAM_PROCESS_PATTERN": "no-such-process", "RETRIES": "2", "LOG": "true"}
+            "WRITE_MARKDOWN": "true", "RAM_PROCESS_PATTERN": "no-such-process", "RETRIES": "2", "LOG": "true",
+            "EVAL_SANITY_PCT": "0", "MAX_GPU_TEMP": "0"}      # MAX_GPU_TEMP defaults to 85 (starts a GPU guard); tests ask for it explicitly. Sanity default is 0 already
     base.update({ENV_FLAG[k]: "true" for k in datasets})
     base.update(env)
     for k, v in base.items():

@@ -577,7 +577,7 @@ function renderEvalCharts(OKR){
   if (LCL.length){
     const lp = OKR.filter(m=>LCL.some(l=>m['longctx_'+l+'_pct']!=null) || m.longctx_note).sort((a,b)=>(b.longctx_avg_pct??-1)-(a.longctx_avg_pct??-1));
     if (box('evlong', lp, Math.max(380, lp.length*(LCL.length*15+14)+100))){
-      const LCOL = ['#a371f7','#f778ba','#58a6ff'];
+      const LCOL = ['#a371f7','#f778ba','#58a6ff','#3fb950'];
       mk('c_evlong', {type:'bar', plugins:[evLabels],
         data:{labels:lp.map(m=>m.model), datasets:LCL.map((l,i)=>({label:l+' tokens', data:lp.map(m=>m['longctx_'+l+'_pct']??null), backgroundColor:LCOL[i%3], borderColor:LCOL[i%3], borderWidth:1}))},
         options:{indexAxis:'y', plugins:{legend:{display:true}, tooltip:{callbacks:{label:c=>{ const m = lp[c.dataIndex];

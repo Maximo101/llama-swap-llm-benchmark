@@ -135,7 +135,7 @@ def _env_ints(name, default=()):
 
 # Fixed result columns for the prompt-length tests (CSV needs a stable header). Lengths in .env are snapped to these.
 PREFILL_SLOTS = {8192: "8k", 16384: "16k", 32768: "32k", 65536: "64k", 131072: "128k"}
-LONGCTX_SLOTS = {32768: "32k", 65536: "64k", 131072: "128k"}
+LONGCTX_SLOTS = {32768: "32k", 65536: "64k", 92160: "90k", 131072: "128k"}
 
 
 def _slots(name, raw, slots):
@@ -386,7 +386,7 @@ class Config:
     eval_max_consec_errors: int = 5
     server_wait: float = 600.0              # SERVER_WAIT_SECONDS: how long to wait for llama-swap to come back (0 = off)
     notify_url: str | None = None           # NOTIFY_URL: POST a JSON summary there when a run ends
-    max_gpu_temp: float = 0.0               # MAX_GPU_TEMP: pause the run at this GPU temperature in C (0 = off)
+    max_gpu_temp: float = 85.0              # MAX_GPU_TEMP: pause the run at this GPU temperature in C (0 = off)
     gpu_temp_resume_delta: float = 10.0     # GPU_TEMP_RESUME_DELTA: carry on at MAX_GPU_TEMP minus this
     gpu_temp_max_restarts: int = 3          # GPU_TEMP_MAX_RESTARTS: end the run when one test line trips the limit this often
     agent_sec_ref: float = 60.0             # AGENT_SEC_REF: s/q at which the time factor of the Agent score is halved
@@ -693,7 +693,7 @@ def load_config() -> Config:
         sys.exit(f"[config] EVAL_THINK_BUDGET_MAX_PCT must be between 10 and 90 (percent of the model's context; got {think_max_pct:g})")
     if think_pct > think_max_pct:
         sys.exit(f"[config] EVAL_THINK_BUDGET_PCT ({think_pct:g}) cannot be above EVAL_THINK_BUDGET_MAX_PCT ({think_max_pct:g})")
-    max_gpu_temp = _env("MAX_GPU_TEMP", 0.0, float)
+    max_gpu_temp = _env("MAX_GPU_TEMP", 85.0, float)
     if max_gpu_temp != 0 and not 40 <= max_gpu_temp <= 110:
         sys.exit(f"[config] MAX_GPU_TEMP must be 0 (off) or a temperature in C between 40 and 110 (got {max_gpu_temp:g})")
     resume_delta = _env("GPU_TEMP_RESUME_DELTA", 10.0, float)
@@ -807,7 +807,7 @@ def load_config() -> Config:
         prefill_depth_auto=depth_auto,
         eval_toolcall_strict=_env("EVAL_TOOLCALL_STRICT", True, bool),
         eval_longctx=_env("EVAL_LONGCTX", False, bool),
-        longctx_lengths=_slots("LONGCTX_LENGTHS", _env_ints("LONGCTX_LENGTHS", (65536, 131072)), LONGCTX_SLOTS),
+        longctx_lengths=_slots("LONGCTX_LENGTHS", _env_ints("LONGCTX_LENGTHS", (65536, 92160, 131072)), LONGCTX_SLOTS),
         longctx_kv_min=kv_min,
         longctx_kv_action=kv_action,
         longctx_trials=max(1, _env("LONGCTX_TRIALS", 2, int)),

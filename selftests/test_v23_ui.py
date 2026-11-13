@@ -678,7 +678,7 @@ def test_save_and_defaults_are_refused_while_a_run_is_active(ui):
 def test_settings_page_has_the_run_lock_and_context_tips():
     html = (Path(server.__file__).with_name("settings.html")).read_text(encoding="utf-8")
     assert ("Suggested context sizes: 4096 (4k), 8192 (8k), 16384 (16k), 32768 (32k), 65536 (64k), 92160 (90k), "
-            "131072 (128k), 262144 (256k), 524288 (512k), 1048576 (1M)") in html
+            "131072 (128k), 262144 (256k), 524288 (512k), 1048576 (1M) | Enter the whole number (bracket value are just for help - do not use them in the fields)") in html
     assert "Existing run will stop, are you sure?" in html and "toast('Run active', t)" in html
     assert "#runst.running{color:var(--red);font-weight:700}" in html
     for b in ("save", "defaults", "favload", "favsave", "favdel", "reload", "runall"):

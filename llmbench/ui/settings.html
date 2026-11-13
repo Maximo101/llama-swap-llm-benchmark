@@ -154,7 +154,7 @@ function scheduleCheck(){ clearTimeout(checkTimer); checkTimer = setTimeout(asyn
   try { REP = await api('/api/check', payload()); renderProblems(); renderReport(); } catch(e){} }, 600); }
 
 /* v2.3.2: every setting that takes a context size (tokens) shows the usual sizes on hover */
-const CTX_TIP = 'Suggested context sizes: 4096 (4k), 8192 (8k), 16384 (16k), 32768 (32k), 65536 (64k), 92160 (90k), 131072 (128k), 262144 (256k), 524288 (512k), 1048576 (1M)';
+const CTX_TIP = 'Suggested context sizes: 4096 (4k), 8192 (8k), 16384 (16k), 32768 (32k), 65536 (64k), 92160 (90k), 131072 (128k), 262144 (256k), 524288 (512k), 1048576 (1M) | Enter the whole number (bracket value are just for help - do not use them in the fields)';
 const isCtxKey = k => /^(LONGCTX_LENGTHS|PREFILL_CTX_TESTS|PREFILL_DEPTH|AGENT_PROMPT_TOKENS)$/.test(k) || (/(^|_)CTX(_|$)/.test(k) && !/(PCT|ACTION)/.test(k));
 const isThinkKey = k => /^EVAL_THINK_BUDGET(_PCT|_MIN|_MAX_PCT)?$/.test(k);
 const thinkFor = (ctx, pct, mn, mx) => { const c = Math.min(Math.max(mn, ctx * pct / 100), ctx * mx / 100); return Math.max(1, c >= 1024 ? Math.floor(c / 1024) * 1024 : Math.floor(c)); };
@@ -226,12 +226,23 @@ function gpuGuide(){
   <p>Bandwidths are the published memory specifications. Apple, AMD and Intel GPUs are not detected: enter their bandwidth by hand.</p></details>`;
 }
 const tempGuide = k => `<details class="guide"><summary>Guide: server or a number?</summary><p><b>server</b> (recommended) sends no temperature, so each model uses the sampling in its llama-swap config (<code>--temp</code>, <code>--top-k</code>, ...): the results match how you actually run the models. A number overrides every model's <code>--temp</code>${k==='EVAL_TEMPERATURE'?' (0 = greedy: repeatable, but some models loop or overthink without their recommended sampling). Changing it re-asks every cached answer, and runs with different values can\'t be combined with --compare':''}.</p></details>`;
+const sanityGuide = () => {
+  const raw = parseFloat(String(shown(ent('EVAL_SANITY_PCT')) || '').trim());
+  const set = isNaN(raw) ? 0 : Math.max(0, Math.min(100, raw)), base = set || 20;       /* 0 = off: show the example from 20% */
+  const seq = [base]; let cur = base;                                   /* same rule as evals/cache.py SanityCheck */
+  while (cur > 0){ const nx = Math.floor(cur / 2 + 1e-9); cur = nx >= 2 ? nx : 0; seq.push(cur); }
+  return `<details class="guide" open><summary>Guide: what the sanity check does and how it scales down</summary>
+  <p><b>What it does.</b> With the result cache on, a model's earlier answers are normally reused without asking the model again. This setting re-asks a random share of them and compares the new answer with the cached one (code and tool calls: same pass/fail; multiple choice and maths: same extracted answer). It shows whether the cache still holds for this model file, launch flags, build and sampling. The new answer is the one scored and stored. Differences appear in the log and in the dashboard's <b>Sanity diff</b> column. <code>0</code> = off; it does nothing with <code>EVAL_RESULT_CACHE=false</code> or <code>refresh</code>.</p>
+  <p><b>How it scales down</b> (<code>EVAL_SANITY_ADAPTIVE=true</code>, the default). Each model starts at the percentage above. Every re-asked answer that <b>matches</b> halves that model's rate (whole percents, rounded down); below 2% the checks for that model stop for the rest of the run. A <b>different</b> answer puts it back to the full rate. So a model that keeps answering the same is checked less and less, and one that changes keeps being checked. ${set ? 'From your setting' : 'Off now (0). Example if set to 20'}: <b>${seq.map(x=>x+'%').join(' &rarr; ')}</b>. Each new run starts again at ${base}%. Set <code>EVAL_SANITY_ADAPTIVE=false</code> to keep the rate fixed.</p>
+  <p><b>Reading a difference.</b> A few differences under identical settings are normal (batched requests on the server, or sampling above temperature 0). Many of them, or all on one model, point to a changed server build, flags or model file.</p></details>`;
+};
 function guideHtml(k){
   if (!S.guides) return '';
   if (k==='EVAL_PROFILE') return profileGuide();
   if (k==='EVAL_FUNNEL_FINAL') return finalGuide();
   if (k==='ESTIMATE_GPU_BW_GBS') return gpuGuide();
   if (k==='EVAL_TEMPERATURE' || k==='TEMPERATURE') return tempGuide(k);
+  if (k==='EVAL_SANITY_PCT') return sanityGuide();
   return '';
 }
 
